@@ -1,5 +1,5 @@
 {
-  "name": "obsidian-perplexity-saver",
+  "name": "perplexity-saver",
   "version": "1.0.0",
   "description": "Saves Perplexity dialogs into Obsidian",
   "main": "main.js",

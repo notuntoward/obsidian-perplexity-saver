@@ -1,4 +1,4 @@
-# Perplexity Dialog Saver — Obsidian Plugin
+# perplexity-saver — Obsidian Plugin
 
 ## Purpose (for AI assistants reading this code)
 
@@ -152,11 +152,11 @@ Vitest, Playwright, CodeQL, Scorecard, Dependabot, release workflow).
 5. Inside the vault, navigate to `.obsidian/plugins/`. Create this folder if it
    doesn't exist.
 6. Copy `manifest.json` and the built `main.js` into
-   `.obsidian/plugins/perplexity-dialog-saver/`. (`styles.css` is not used by
+   `.obsidian/plugins/perplexity-saver/`. (`styles.css` is not used by
    this plugin and may be omitted.) You do not need `src/`, `package.json`,
    `tsconfig.json`, or `node_modules`.
 7. In Obsidian, go to Settings → Community plugins, disable Restricted mode if
-   necessary, click the refresh icon, and enable "Perplexity Dialog Saver".
+   necessary, click the refresh icon, and enable "perplexity-saver".
 8. Go to Settings → Hotkeys, search "Save Perplexity Dialog", and assign a
    hotkey.
 
@@ -166,7 +166,7 @@ Vitest, Playwright, CodeQL, Scorecard, Dependabot, release workflow).
 2. Run `npm run build` again in the repo folder.
 3. Copy the newly generated `main.js` (and `manifest.json` if you bumped the
    version) into the vault's
-   `.obsidian/plugins/perplexity-dialog-saver/` folder, overwriting the old one.
+   `.obsidian/plugins/perplexity-saver/` folder, overwriting the old one.
 4. In Obsidian, disable and re-enable the plugin (or restart Obsidian) to load
    the updated code.
 
