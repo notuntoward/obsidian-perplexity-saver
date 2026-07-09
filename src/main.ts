@@ -175,7 +175,7 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("AI save folder")
       .setDesc(
-        "The name of the folder where perplexity notes are stored (relative to the active note)."
+        "The name of the folder where AI notes are stored (relative to the active note)."
       )
       .addText((text) =>
         text
@@ -189,7 +189,7 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("AI generated tag")
-      .setDesc("The tag inserted into the note's frontmatter.")
+      .setDesc("The tag inserted into the AI note's frontmatter.")
       .addText((text) =>
         text
           .setPlaceholder("ai-generated")
