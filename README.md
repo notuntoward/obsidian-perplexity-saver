@@ -62,10 +62,18 @@ script (2 minutes) and this plugin.
 4. **(Obsidian)** Press your assigned hotkey.
 5. **(Obsidian)** Type a filename when prompted, and press Enter.
 
-The plugin then automatically creates an `ai-searches` subfolder next to your
-current note (if it doesn't already exist), saves the clipboard content into a
-new note there, adds an `ai-generated` tag to that note's frontmatter, and
-inserts a link to it at your cursor position.
+The plugin then automatically creates a subfolder (default: `ai-searches`) in
+the same folder as your current note (if it doesn't already exist). Then it saves
+the clipboard content into a new note there, identifying it as written by AI with 
+a tag (default: `ai-generated`), and inserts a link to it at your cursor position.
+
+## Settings
+
+- **AI save folder** (default: `ai-searches`) — The name of the subfolder where
+  saved Perplexity notes are stored. It is automatically created in the same folder
+  as the currently active note.
+- **AI generated tag** (default: `ai-generated`) — The tag pushed into the frontmatter
+  tags property of every saved AI note.
 
 ## Building from source
 

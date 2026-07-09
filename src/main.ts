@@ -188,7 +188,7 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Generated tag")
+      .setName("AI generated tag")
       .setDesc("The tag inserted into the note's frontmatter.")
       .addText((text) =>
         text
