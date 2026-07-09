@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (via Complexity)
 // @namespace    scott-otterson-obsidian-export
-// @version      7.0
+// @version      7.2
 // @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link
 // @match        https://www.perplexity.ai/*
 // @grant        GM_setClipboard
@@ -143,10 +143,13 @@
     const btn = document.createElement("button");
     btn.id = "pplx-obsidian-export-btn";
 
+    // Expanded icon scaling dimensions from 22 to 28 for a better visual presence
     btn.innerHTML = `
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 2L3 10.5 12 22l9-11.5L12 2z"></path>
-        <path d="M12 2v20"></path>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="28" height="28" fill="none" stroke="currentColor" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M50 8 L72 38 L83 61 L64 85 L50 92 L36 85 L17 61 L28 38 Z" />
+        <path d="M50 8 C 55 25, 50 45, 64 63" />
+        <path d="M28 38 C 36 45, 40 52, 40 61" />
+        <path d="M40 61 C 50 63, 58 58, 64 63" />
       </svg>
     `;
 
