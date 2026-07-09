@@ -1,124 +1,106 @@
-# perplexity-saver — Obsidian Plugin
+Good enough — here's the recommended repo location for the Tampermonkey script, followed by the complete README with the workflow diagram embedded.
+## Where to put the Tampermonkey script
+```
+perplexity-dialog-saver/
+├── main.ts
+├── manifest.json
+├── package.json
+├── tsconfig.json
+├── README.md
+├── docs/
+│   └── workflow-diagram.png
+└── browser-userscript/
+    └── perplexity-obsidian-exporter.user.js
+```
 
-This plugin automates saving a Perplexity.ai research conversation into Obsidian,
-right next to the note you're currently writing, tagged as AI-generated, and
-linked back to both the original Perplexity thread and your working note — in a
-single hotkey press plus one filename prompt.
+A dedicated `browser-userscript/` folder at the repo root is the clearest signal — anyone browsing the repo on GitHub immediately sees it's a sibling component, not a hidden implementation detail, and the README can link to it with a simple relative path.
+## README.md
+```markdown
+# Perplexity Dialog Saver
 
----
+Ask Perplexity a research question, then save the entire conversation into your
+vault with one click and one keystroke — automatically filed into a linked,
+tagged note next to whatever you're currently writing. No copy-pasting, no
+manual file creation, no frontmatter editing.
 
-## Full Workflow
+```mermaid
+flowchart TD
+    A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click 'Copy for<br/>Obsidian' button<br/>(Tampermonkey)"]
+    B --> C["Step 3: Clipboard now has<br/>Link + Markdown"]
+    C --> D["Step 4: Press hotkey<br/>in Obsidian"]
+    D --> E["Step 5: Type filename"]
+    E --> F["Step 6: Note created in<br/>ai-searches/<br/>tagged + linked"]
+```
 
-### One-time setup (done once, ever)
+This works by pairing a small browser helper with this plugin — the browser
+side copies the conversation in the right format, and this plugin handles
+creating the note, tagging it, and linking it back into your current note.
 
-1. Install the Tampermonkey browser extension in Chrome.
-2. Install the "Perplexity → Obsidian Markdown Exporter" userscript (provided
-   separately) into Tampermonkey. This adds a floating "📋 Copy for Obsidian"
-   button to every Perplexity.ai page.
-3. Install the "Complexity" Chrome extension
-   (https://github.com/pnd280/complexity), which adds an export feature to
-   Perplexity's UI that the userscript relies on.
-4. Build and install this plugin (see "Installation" below).
-5. Assign a hotkey to the "Save Perplexity Dialog" command (e.g. Ctrl+Shift+V) via
-   Obsidian Settings → Hotkeys.
+## Setup
 
-### Day-to-day usage
+To get the one-click experience above, you need two quick installs: a browser
+script (2 minutes) and this plugin.
 
-1. **Ask your question(s) in Perplexity** as normal — this can be a multi-turn
-   dialog.
-2. **Click the "📋 Copy for Obsidian" button** (bottom-right of the Perplexity
-   page). This triggers Complexity's built-in "Export → Markdown → Copy" flow
-   internally, then prepends a visible `[Perplexity](url)` link to the copied
-   text and places the final Markdown on your clipboard.
-3. **Switch to Obsidian**, and place your cursor in the note you're writing
-   (e.g. `topic_note.md`), at the point where you want a link to the saved
-   dialog to appear.
-4. **Press your assigned hotkey** (e.g. Ctrl+Shift+V).
-5. **Type a filename** when prompted, and press Enter (or click Ok).
+### A. Browser setup (Tampermonkey)
 
-At this point, the plugin automatically:
+1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
+2. Install the
+   [Complexity](https://github.com/pnd280/complexity) Chrome extension, which
+   adds Markdown export support to Perplexity's UI.
+3. Open Tampermonkey's dashboard, click "Create a new script," and replace the
+   contents with
+   [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js)
+   from this repo. Save it.
+4. Visit perplexity.ai — you should see a small "📋 Copy for Obsidian" button
+   appear in the bottom-right corner of the page.
 
-- Creates an `ai-searches` subfolder next to `topic_note.md`, if it doesn't
-  already exist.
-- Creates a new note inside that folder with your chosen filename, containing
-  the clipboard content (the Perplexity link plus the full conversation).
-- Adds an `ai-generated` tag into that new note's frontmatter (merging with any
-  `created`/`modified` fields the Front Matter Timestamps plugin has already
-  added).
-- Inserts a link to the new note at your cursor position in `topic_note.md`.
+### B. Obsidian plugin setup
 
-You now have: the original Perplexity thread (optionally also saved to a
-Perplexity Space, done manually or via the userscript's right-click shortcut),
-a segregated Obsidian note tagged as AI-generated with a visible link back to
-Perplexity, and a link to that note embedded in your own working note — all from
-one click in the browser and one hotkey plus one filename in Obsidian.
+1. Download or build this plugin (see "Building from source" below).
+2. Copy the plugin folder into `<your vault>/.obsidian/plugins/`.
+3. In Obsidian, go to Settings → Community plugins, disable Restricted mode if
+   needed, refresh the plugin list, and enable "Perplexity Dialog Saver."
+4. Go to Settings → Hotkeys, search "Save Perplexity Dialog," and assign a
+   hotkey (e.g. Ctrl+Shift+V).
 
-### Linking to a specific heading or block instead of the whole note
+## Full workflow
 
-If you want to link to a specific section of the saved dialog rather than the
-whole note, skip using the auto-inserted link for that case. Instead, open the
-saved note, right-click the heading or select the block you want, choose
-"Copy link to heading" (or "Copy link to block"), and paste that into
-`topic_note.md` manually.
+1. **(Browser)** Ask your question(s) in Perplexity as normal.
+2. **(Browser)** Click the "📋 Copy for Obsidian" button. This copies a
+   Markdown version of the conversation, with a link back to the original
+   Perplexity thread, to your clipboard.
+3. **(Obsidian)** Place your cursor in the note you're writing, where you want
+   a link to the saved dialog to appear.
+4. **(Obsidian)** Press your assigned hotkey.
+5. **(Obsidian)** Type a filename when prompted, and press Enter.
 
----
+The plugin then automatically creates an `ai-searches` subfolder next to your
+current note (if it doesn't already exist), saves the clipboard content into a
+new note there, adds an `ai-generated` tag to that note's frontmatter, and
+inserts a link to it at your cursor position.
 
-## Installation (Developer / Build Instructions)
+## Building from source
 
-This repo follows the standard Obsidian plugin layout and ships the same
-automated checks as the `obsidian-plugin-template` (ESLint, Prettier, tsc,
-Vitest, Playwright, CodeQL, Scorecard, Dependabot, release workflow).
+Requires [Node.js](https://nodejs.org).
 
-### Prerequisites
+```
+npm install
+npm run build
+```
 
-- Node.js installed (https://nodejs.org)
+This produces `main.js`. Copy `manifest.json` and the built `main.js` into
+`<your vault>/.obsidian/plugins/perplexity-dialog-saver/`.
 
-### Steps
+## Troubleshooting
 
-1. Clone this repo and open a terminal in its folder.
-2. Install dependencies:
-   ```
-   npm install
-   ```
-3. Build the production bundle (runs lint + type-check + esbuild):
-   ```
-   npm run build
-   ```
-   This produces a compiled `main.js` file in the repo root.
-4. Locate your Obsidian vault folder (it contains a hidden `.obsidian`
-   subfolder).
-5. Inside the vault, navigate to `.obsidian/plugins/`. Create this folder if it
-   doesn't exist.
-6. Copy `manifest.json` and the built `main.js` into
-   `.obsidian/plugins/perplexity-saver/`. (`styles.css` is not used by
-   this plugin and may be omitted.) You do not need `src/`, `package.json`,
-   `tsconfig.json`, or `node_modules`.
-7. In Obsidian, go to Settings → Community plugins, disable Restricted mode if
-   necessary, click the refresh icon, and enable "perplexity-saver".
-8. Go to Settings → Hotkeys, search "Save Perplexity Dialog", and assign a
-   hotkey.
+- **Nothing happens when I click "Copy for Obsidian":** Make sure the
+  Complexity extension is installed and enabled, and that you're on a
+  perplexity.ai conversation page (not the homepage).
+- **Chrome asks for clipboard permission:** Allow it — the script needs to
+  read back what was copied in order to prepend the Perplexity link.
+- **Hotkey does nothing in Obsidian:** Confirm your cursor is inside an open
+  note (the command requires an active editor), and check Settings → Hotkeys
+  for a conflict with another plugin.
+```
 
-### Updating the plugin after code changes
-
-1. Edit `src/main.ts`.
-2. Run `npm run build` again in the repo folder.
-3. Copy the newly generated `main.js` (and `manifest.json` if you bumped the
-   version) into the vault's
-   `.obsidian/plugins/perplexity-saver/` folder, overwriting the old one.
-4. In Obsidian, disable and re-enable the plugin (or restart Obsidian) to load
-   the updated code.
-
-### Development workflow
-
-- `npm run dev` — watch `src` and rebuild `main.js` on change (use with the
-  Hot Reload community plugin for live updates).
-- `npm run lint` — ESLint with zero-warning policy.
-- `npm run test:run` — Vitest unit/integration suite (`obsidian` resolves to a
-  mock in `tests/__mocks__/obsidian.ts`).
-- `npm run test:browser` — Playwright browser regression suite (after
-  `npx playwright install chromium`).
-
-### Debugging
-
-Open the developer console with Ctrl+Shift+I (Cmd+Option+I on Mac), select the
-Console tab, reproduce the issue, and read any red error text shown there.
+The diagram shown above uses a horizontal flow: Perplexity question → browser copy button → clipboard → Obsidian hotkey → filename prompt → final tagged, linked note — matching the six-step sequence described in the workflow section.

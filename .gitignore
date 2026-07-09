@@ -3,6 +3,7 @@ main.js
 main.js.map
 *.js.map
 *.js
+!browser-userscript/*.js
 tsconfig.tsbuildinfo
 
 # npm
