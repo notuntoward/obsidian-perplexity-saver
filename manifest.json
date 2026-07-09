@@ -1,0 +1,10 @@
+{
+  "id": "perplexity-dialog-saver",
+  "name": "Perplexity Dialog Saver",
+  "version": "1.0.0",
+  "minAppVersion": "1.4.4",
+  "description": "Saves clipboard content as a new note in an ai-searches subfolder, tags it, and links back to the active note.",
+  "author": "Scott Otterson",
+  "authorUrl": "https://github.com/notuntoward",
+  "isDesktopOnly": false
+}
