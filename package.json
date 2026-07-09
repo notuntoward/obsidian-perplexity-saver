@@ -33,7 +33,7 @@
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.28.0",
     "eslint": "^10.6.0",
-    "eslint-plugin-obsidianmd": "^0.3.0",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "fast-check": "^4.9.0",
     "globals": "^17.6.0",
     "jsdom": "^29.0.1",
