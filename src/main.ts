@@ -1,7 +1,21 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, normalizePath, TFile } from "obsidian";
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, normalizePath, PluginSettingTab, Setting, TFile } from "obsidian";
+
+interface PerplexityDialogSaverSettings {
+  searchesFolder: string;
+  generatedTag: string;
+}
+
+const DEFAULT_SETTINGS: PerplexityDialogSaverSettings = {
+  searchesFolder: "ai-searches",
+  generatedTag: "ai-generated",
+};
 
 export default class PerplexityDialogSaverPlugin extends Plugin {
+  settings: PerplexityDialogSaverSettings;
+
   async onload(): Promise<void> {
+    await this.loadSettings();
+
     this.addCommand({
       id: "save-perplexity-dialog",
       name: "Save Perplexity Dialog",
@@ -9,6 +23,16 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
         await this.saveDialog(editor, view);
       },
     });
+
+    this.addSettingTab(new PerplexityDialogSaverSettingTab(this.app, this));
+  }
+
+  async loadSettings(): Promise<void> {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(this.settings);
   }
 
   private async saveDialog(editor: Editor, view: MarkdownView): Promise<void> {
@@ -33,7 +57,9 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
 
     const activeFolderPath = activeFile.parent ? activeFile.parent.path : "";
     const searchesFolderPath = normalizePath(
-      activeFolderPath ? `${activeFolderPath}/ai-searches` : "ai-searches"
+      activeFolderPath
+        ? `${activeFolderPath}/${this.settings.searchesFolder}`
+        : this.settings.searchesFolder
     );
 
     const folderExists = app.vault.getAbstractFileByPath(searchesFolderPath);
@@ -53,28 +79,19 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
 
     await app.fileManager.processFrontMatter(newFile, (fm: Record<string, unknown>) => {
       const tags = Array.isArray(fm.tags) ? (fm.tags as string[]) : [];
-      if (!tags.includes("ai-generated")) {
-        tags.push("ai-generated");
+      if (!tags.includes(this.settings.generatedTag)) {
+        tags.push(this.settings.generatedTag);
       }
       fm.tags = tags;
     });
 
-    // 1. Refocus the editor to ensure it's active and clean
     view.editor.focus();
-
-    // 2. Grab the true cursor coordinates now that the modal is closed
     const cursor = editor.getCursor();
-
-    // 3. Generate the link
     const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path);
-    
-    // 4. Insert the link inline with no extra spaces or newlines
     editor.replaceRange(linkText, cursor);
-
-    // 5. Explicitly place the cursor at the end of the newly added link text
     editor.setCursor({
       line: cursor.line,
-      ch: cursor.ch + linkText.length
+      ch: cursor.ch + linkText.length,
     });
 
     new Notice(`Saved dialog to ${newNotePath}`);
@@ -103,7 +120,6 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
             resolve(value.length > 0 ? value : null);
           };
 
-          // FIXED: Prevent key event bubbling to stop Enter/Escape from bleeding into the editor
           input.addEventListener("keydown", (e: KeyboardEvent) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -140,5 +156,48 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
 
       new FilenameModal(app).open();
     });
+  }
+}
+
+class PerplexityDialogSaverSettingTab extends PluginSettingTab {
+  plugin: PerplexityDialogSaverPlugin;
+
+  constructor(app: App, plugin: PerplexityDialogSaverPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Perplexity Dialog Saver Settings" });
+
+    new Setting(containerEl)
+      .setName("AI save folder")
+      .setDesc(
+        "The name of the folder where perplexity notes are stored (relative to the active note)."
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("ai-searches")
+          .setValue(this.plugin.settings.searchesFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.searchesFolder = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Generated tag")
+      .setDesc("The tag inserted into the note's frontmatter.")
+      .addText((text) =>
+        text
+          .setPlaceholder("ai-generated")
+          .setValue(this.plugin.settings.generatedTag)
+          .onChange(async (value) => {
+            this.plugin.settings.generatedTag = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }
