@@ -12,6 +12,12 @@ flowchart TD
     C --> D["Step 4: Press hotkey<br/>in Obsidian"]
     D --> E["Step 5: Type filename"]
     E --> F["Step 6: Note created in<br/>ai-searches/<br/>tagged + linked"]
+
+    %% Define the smaller font style
+    classDef smallFont font-size:14px;
+    
+    %% Assign the style to all nodes at once
+    class A,B,C,D,E,F smallFont;
 ```
 
 This works by pairing a small browser helper with this plugin — the browser
