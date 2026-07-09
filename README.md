@@ -1,21 +1,3 @@
-Good enough — here's the recommended repo location for the Tampermonkey script, followed by the complete README with the workflow diagram embedded.
-## Where to put the Tampermonkey script
-```
-perplexity-dialog-saver/
-├── main.ts
-├── manifest.json
-├── package.json
-├── tsconfig.json
-├── README.md
-├── docs/
-│   └── workflow-diagram.png
-└── browser-userscript/
-    └── perplexity-obsidian-exporter.user.js
-```
-
-A dedicated `browser-userscript/` folder at the repo root is the clearest signal — anyone browsing the repo on GitHub immediately sees it's a sibling component, not a hidden implementation detail, and the README can link to it with a simple relative path.
-## README.md
-```markdown
 # Perplexity Dialog Saver
 
 Ask Perplexity a research question, then save the entire conversation into your
