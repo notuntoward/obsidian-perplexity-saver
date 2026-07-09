@@ -34,7 +34,7 @@ script (2 minutes) and this plugin.
 1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 2. Install the
    [Complexity](https://github.com/pnd280/complexity) Chrome extension, which
-   adds Markdown export support to Perplexity's UI.
+   adds full multi-turn dialog export to Perplexity's UI.
 3. Open Tampermonkey's dashboard, click "Create a new script," and replace the
    contents with
    [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js)
