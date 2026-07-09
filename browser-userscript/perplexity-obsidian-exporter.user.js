@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (via Complexity)
 // @namespace    scott-otterson-obsidian-export
-// @version      5.5
+// @version      7.0
 // @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link
 // @match        https://www.perplexity.ai/*
 // @grant        GM_setClipboard
@@ -22,7 +22,7 @@
   }
 
   function findPopoverContent() {
-    return [...document.querySelectorAll('[data-scope="popover"][data-part="content"]')].find(
+    return [...document.querySelectorAll('[data-scope=\"popover\"][data-part=\"content\"]')].find(
       (el) => el.getBoundingClientRect().width > 0 && /choose format/i.test(el.textContent)
     );
   }
@@ -83,7 +83,6 @@
     document.body.click();
   }
 
-  // Extracted to be accessible by theme change observers
   function applyNativeThemeStyles(btn) {
     if (!btn) return;
 
@@ -92,22 +91,54 @@
                    window.matchMedia('(prefers-color-scheme: dark)').matches;
 
     if (isDark) {
-      // Dark Mode: Low-profile translucency matching Perplexity's secondary utility icons
-      btn.style.background = "rgba(255, 255, 255, 0.07)";
-      btn.style.borderColor = "rgba(255, 255, 255, 0.05)";
-      btn.style.color = "rgba(255, 255, 255, 0.6)";
-      btn.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.2)";
+      btn.style.background = "rgba(30, 30, 30, 0.75)";
+      btn.style.borderColor = "rgba(255, 255, 255, 0.12)";
+      btn.style.color = "rgba(255, 255, 255, 0.75)";
+      btn.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.4)";
     } else {
-      // Light Mode: Clean, muted profile
-      btn.style.background = "rgba(0, 0, 0, 0.05)";
-      btn.style.borderColor = "rgba(0, 0, 0, 0.02)";
-      btn.style.color = "rgba(0, 0, 0, 0.5)";
-      btn.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.05)";
+      btn.style.background = "rgba(255, 255, 255, 0.85)";
+      btn.style.borderColor = "rgba(0, 0, 0, 0.08)";
+      btn.style.color = "rgba(0, 0, 0, 0.65)";
+      btn.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.08)";
+    }
+  }
+
+  // Live coordinate tracker matching the button perfectly to the thread column
+  function updateButtonPosition() {
+    const btn = document.getElementById("pplx-obsidian-export-btn");
+    if (!btn) return;
+
+    // Target the main chat input container box via the textarea parent chain
+    const inputTextArea = document.querySelector('textarea');
+    const inputContainer = inputTextArea ? inputTextArea.closest('div[class*="border"]') || inputTextArea.parentElement : null;
+
+    if (inputContainer) {
+      const rect = inputContainer.getBoundingClientRect();
+
+      // Calculate layout safety margins
+      const desiredLeft = rect.right + 16;
+      const maxAllowedLeft = window.innerWidth - 60; // Emergency window edge padding
+
+      // Lock to screen boundary if the window gets too small, otherwise stay alongside the thread
+      if (desiredLeft > maxAllowedLeft) {
+        btn.style.left = 'auto';
+        btn.style.right = '24px';
+      } else {
+        btn.style.right = 'auto';
+        btn.style.left = `${desiredLeft}px`;
+      }
+    } else {
+      // Clean fallback if no input box is rendered on screen yet
+      btn.style.left = 'auto';
+      btn.style.right = '24px';
     }
   }
 
   function injectButton() {
-    if (document.getElementById("pplx-obsidian-export-btn")) return;
+    if (document.getElementById("pplx-obsidian-export-btn")) {
+      updateButtonPosition();
+      return;
+    }
 
     const btn = document.createElement("button");
     btn.id = "pplx-obsidian-export-btn";
@@ -119,29 +150,25 @@
       </svg>
     `;
 
-    // Positioned vertically higher (bottom: 120px) to clear the expanding text box
     btn.style.cssText = `
       position: fixed;
       bottom: 120px;
-      right: 24px;
       z-index: 99999;
-      width: 40px;
-      height: 40px;
+      width: 44px;
+      height: 44px;
       display: flex;
       align-items: center;
       justify-content: center;
       border: 1px solid transparent;
       border-radius: 50%;
       cursor: pointer;
-      backdrop-filter: blur(4px);
-      -webkit-backdrop-filter: blur(4px);
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.2s;
     `;
 
-    // Apply baseline layout styles initially
     applyNativeThemeStyles(btn);
 
-    // Hover interactions bring out the vivid Obsidian branding
     btn.onmouseenter = () => {
       btn.style.background = "#7F6DF2";
       btn.style.color = "#FFFFFF";
@@ -159,20 +186,28 @@
     btn.title = "Export Thread to Obsidian (Markdown)";
 
     document.body.appendChild(btn);
+    updateButtonPosition();
   }
 
-  // 1. Existing observer to inject the button if navigating via single-page app routing
-  const domObserver = new MutationObserver(() => injectButton());
+  // 1. Observe changes to the DOM layout to keep tracking accurate
+  const domObserver = new MutationObserver(() => {
+    injectButton();
+    updateButtonPosition();
+  });
   domObserver.observe(document.body, { childList: true, subtree: true });
   injectButton();
 
-  // 2. Listen for OS-level theme changes
+  // 2. Continuous structural layout resize tracking (handles window snaps and expansions seamlessly)
+  const layoutObserver = new ResizeObserver(() => updateButtonPosition());
+  layoutObserver.observe(document.body);
+  window.addEventListener('resize', updateButtonPosition);
+
+  // 3. Theme change observers
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
     const btn = document.getElementById("pplx-obsidian-export-btn");
     if (btn) applyNativeThemeStyles(btn);
   });
 
-  // 3. Listen for Perplexity changing the class on <html> or <body> (site-specific theme toggle)
   const themeClassObserver = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       if (mutation.attributeName === 'class') {
