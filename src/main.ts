@@ -1,30 +1,30 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, normalizePath, PluginSettingTab, Setting, TFile } from "obsidian";
 
-interface PerplexityDialogSaverSettings {
+interface PerplexitySaverSettings {
   searchesFolder: string;
   generatedTag: string;
 }
 
-const DEFAULT_SETTINGS: PerplexityDialogSaverSettings = {
+const DEFAULT_SETTINGS: PerplexitySaverSettings = {
   searchesFolder: "ai-searches",
   generatedTag: "ai-generated",
 };
 
-export default class PerplexityDialogSaverPlugin extends Plugin {
-  settings: PerplexityDialogSaverSettings;
+export default class PerplexitySaverPlugin extends Plugin {
+  settings: PerplexitySaverSettings;
 
   async onload(): Promise<void> {
     await this.loadSettings();
 
     this.addCommand({
-      id: "save-perplexity-dialog",
-      name: "Save Perplexity Dialog",
+      id: "save-perplexity-note",
+      name: "Save Perplexity Note",
       editorCallback: async (editor: Editor, view: MarkdownView) => {
-        await this.saveDialog(editor, view);
+        await this.saveNote(editor, view);
       },
     });
 
-    this.addSettingTab(new PerplexityDialogSaverSettingTab(this.app, this));
+    this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
   }
 
   async loadSettings(): Promise<void> {
@@ -35,7 +35,7 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async saveDialog(editor: Editor, view: MarkdownView): Promise<void> {
+  private async saveNote(editor: Editor, view: MarkdownView): Promise<void> {
     const app = this.app;
 
     const activeFile = view.file;
@@ -94,7 +94,7 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
       ch: cursor.ch + linkText.length,
     });
 
-    new Notice(`Saved dialog to ${newNotePath}`);
+    new Notice(`Saved note to ${newNotePath}`);
   }
 
   private promptForFilename(): Promise<string | null> {
@@ -159,10 +159,10 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
   }
 }
 
-class PerplexityDialogSaverSettingTab extends PluginSettingTab {
-  plugin: PerplexityDialogSaverPlugin;
+class PerplexitySaverSettingTab extends PluginSettingTab {
+  plugin: PerplexitySaverPlugin;
 
-  constructor(app: App, plugin: PerplexityDialogSaverPlugin) {
+  constructor(app: App, plugin: PerplexitySaverPlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -170,7 +170,7 @@ class PerplexityDialogSaverSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Perplexity Dialog Saver Settings" });
+    containerEl.createEl("h2", { text: "Perplexity Saver Settings" });
 
     new Setting(containerEl)
       .setName("AI save folder")

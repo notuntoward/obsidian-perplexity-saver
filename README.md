@@ -1,4 +1,4 @@
-# Perplexity Dialog Saver
+# Perplexity Saver
 
 Ask Perplexity a research question, then save the entire conversation into your
 vault with one click and one keystroke — automatically filed into a linked,
@@ -47,8 +47,8 @@ script (2 minutes) and this plugin.
 1. Download or build this plugin (see "Building from source" below).
 2. Copy the plugin folder into `<your vault>/.obsidian/plugins/`.
 3. In Obsidian, go to Settings → Community plugins, disable Restricted mode if
-   needed, refresh the plugin list, and enable "Perplexity Dialog Saver."
-4. Go to Settings → Hotkeys, search "Save Perplexity Dialog," and assign a
+    needed, refresh the plugin list, and enable "Perplexity Saver."
+4. Go to Settings → Hotkeys, search "Save Perplexity Note," and assign a
    hotkey (e.g. Ctrl+Shift+V).
 
 ## Full workflow
@@ -57,8 +57,8 @@ script (2 minutes) and this plugin.
 2. **(Browser)** Click the "📋 Copy for Obsidian" button. This copies a
    Markdown version of the conversation, with a link back to the original
    Perplexity thread, to your clipboard.
-3. **(Obsidian)** Place your cursor in the note you're writing, where you want
-   a link to the saved dialog to appear.
+ 3. **(Obsidian)** Place your cursor in the note you're writing, where you want
+    a link to the saved note to appear.
 4. **(Obsidian)** Press your assigned hotkey.
 5. **(Obsidian)** Type a filename when prompted, and press Enter.
 
@@ -77,7 +77,7 @@ npm run build
 ```
 
 This produces `main.js`. Copy `manifest.json` and the built `main.js` into
-`<your vault>/.obsidian/plugins/perplexity-dialog-saver/`.
+`<your vault>/.obsidian/plugins/perplexity-saver/`.
 
 ## Troubleshooting
 
