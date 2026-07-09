@@ -59,9 +59,23 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
       fm.tags = tags;
     });
 
-    const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path);
+    // 1. Refocus the editor to ensure it's active and clean
+    view.editor.focus();
+
+    // 2. Grab the true cursor coordinates now that the modal is closed
     const cursor = editor.getCursor();
-    editor.replaceRange(`\n${linkText}\n`, cursor);
+
+    // 3. Generate the link
+    const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path);
+    
+    // 4. Insert the link inline with no extra spaces or newlines
+    editor.replaceRange(linkText, cursor);
+
+    // 5. Explicitly place the cursor at the end of the newly added link text
+    editor.setCursor({
+      line: cursor.line,
+      ch: cursor.ch + linkText.length
+    });
 
     new Notice(`Saved dialog to ${newNotePath}`);
   }
@@ -89,9 +103,16 @@ export default class PerplexityDialogSaverPlugin extends Plugin {
             resolve(value.length > 0 ? value : null);
           };
 
+          // FIXED: Prevent key event bubbling to stop Enter/Escape from bleeding into the editor
           input.addEventListener("keydown", (e: KeyboardEvent) => {
-            if (e.key === "Enter") submit();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.stopPropagation();
+              submit();
+            }
             if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
               this.close();
               resolve(null);
             }
