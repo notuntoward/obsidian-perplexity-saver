@@ -14,7 +14,7 @@ flowchart TD
     E --> F["Step 6: Note created in<br/>ai-searches/<br/>tagged + linked"]
 
     %% Define the smaller font style
-    classDef smallFont font-size:14px;
+    classDef smallFont font-size:13px;
     
     %% Assign the style to all nodes at once
     class A,B,C,D,E,F smallFont;
