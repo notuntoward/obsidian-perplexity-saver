@@ -22,7 +22,7 @@
 set -euo pipefail
 
 OWNER="notuntoward"
-REPO="obsidian-plugin-template"
+REPO="obsidian-perplexity-saver"
 BRANCH="master"
 
 # GitHub REST API endpoint for branch protection (legacy)
