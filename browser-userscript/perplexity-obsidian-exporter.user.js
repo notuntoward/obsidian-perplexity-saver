@@ -2,7 +2,7 @@
 // @name         Perplexity → Obsidian Markdown Exporter (via Complexity)
 // @namespace    scott-otterson-obsidian-export
 // @version      7.5
-// @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link
+// @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link.  This intended to be used as a tampermonkey script.
 // @match        https://www.perplexity.ai/*
 // @grant        GM_setClipboard
 // @grant        GM_notification
@@ -103,36 +103,30 @@
     }
   }
 
-  // Live coordinate tracker matching the button perfectly to the thread column
-  function updateButtonPosition() {
-    const btn = document.getElementById("pplx-obsidian-export-btn");
-    if (!btn) return;
+function updateButtonPosition() {
+  const btn = document.getElementById("pplx-obsidian-export-btn");
+  if (!btn) return;
 
-    // Target the main chat input container box via the textarea parent chain
-    const inputTextArea = document.querySelector('textarea');
-    const inputContainer = inputTextArea ? inputTextArea.closest('div[class*="border"]') || inputTextArea.parentElement : null;
+  const BTN_WIDTH = 44;
+  const MARGIN = 12;
 
-    if (inputContainer) {
-      const rect = inputContainer.getBoundingClientRect();
+  const inputEl = document.getElementById('ask-input');
+  const referenceEl = inputEl?.closest('form') || inputEl?.parentElement?.parentElement;
 
-      // Calculate layout safety margins
-      const desiredLeft = rect.right + 16;
-      const maxAllowedLeft = window.innerWidth - 60; // Emergency window edge padding
-
-      // Lock to screen boundary if the window gets too small, otherwise stay alongside the thread
-      if (desiredLeft > maxAllowedLeft) {
-        btn.style.left = 'auto';
-        btn.style.right = '24px';
-      } else {
-        btn.style.right = 'auto';
-        btn.style.left = `${desiredLeft}px`;
-      }
-    } else {
-      // Clean fallback if no input box is rendered on screen yet
-      btn.style.left = 'auto';
-      btn.style.right = '24px';
-    }
+  if (!referenceEl) {
+    btn.style.right = '24px';
+    btn.style.left = 'auto';
+    return;
   }
+
+  const rect = referenceEl.getBoundingClientRect();
+  const desiredLeft = rect.right + MARGIN;
+  const maxLeft = window.innerWidth - BTN_WIDTH - MARGIN;
+  const finalLeft = Math.min(desiredLeft, maxLeft);
+
+  btn.style.right = 'auto';
+  btn.style.left = `${finalLeft}px`;
+}
 
   function injectButton() {
     if (document.getElementById("pplx-obsidian-export-btn")) {
