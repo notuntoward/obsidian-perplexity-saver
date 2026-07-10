@@ -103,30 +103,30 @@
     }
   }
 
-function updateButtonPosition() {
-  const btn = document.getElementById("pplx-obsidian-export-btn");
-  if (!btn) return;
+  function updateButtonPosition() {
+    const btn = document.getElementById("pplx-obsidian-export-btn");
+    if (!btn) return;
 
-  const BTN_WIDTH = 44;
-  const MARGIN = 12;
+    const BTN_WIDTH = 44;
+    const MARGIN = 12;
 
-  const inputEl = document.getElementById('ask-input');
-  const referenceEl = inputEl?.closest('form') || inputEl?.parentElement?.parentElement;
+    const inputEl = document.getElementById('ask-input');
+    const referenceEl = inputEl?.closest('form') || inputEl?.parentElement?.parentElement;
 
-  if (!referenceEl) {
-    btn.style.right = '24px';
-    btn.style.left = 'auto';
-    return;
+    if (!referenceEl) {
+      btn.style.right = '24px';
+      btn.style.left = 'auto';
+      return;
+    }
+
+    const rect = referenceEl.getBoundingClientRect();
+    const desiredLeft = rect.right + MARGIN;
+    const maxLeft = window.innerWidth - BTN_WIDTH - MARGIN;
+    const finalLeft = Math.min(desiredLeft, maxLeft);
+
+    btn.style.right = 'auto';
+    btn.style.left = `${finalLeft}px`;
   }
-
-  const rect = referenceEl.getBoundingClientRect();
-  const desiredLeft = rect.right + MARGIN;
-  const maxLeft = window.innerWidth - BTN_WIDTH - MARGIN;
-  const finalLeft = Math.min(desiredLeft, maxLeft);
-
-  btn.style.right = 'auto';
-  btn.style.left = `${finalLeft}px`;
-}
 
   function injectButton() {
     if (document.getElementById("pplx-obsidian-export-btn")) {
