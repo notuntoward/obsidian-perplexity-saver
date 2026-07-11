@@ -1,0 +1,14 @@
+.perplexity-saver-filename-input {
+	width: 100%;
+}
+
+.perplexity-saver-modal-buttons {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--size-4-2);
+	margin-top: var(--size-4-3);
+}
+
+.perplexity-saver-confirm-button {
+	order: 2;
+}

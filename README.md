@@ -101,6 +101,3 @@ This produces `main.js`. Copy `manifest.json` and the built `main.js` into
 - **Hotkey does nothing in Obsidian:** Confirm your cursor is inside an open
   note (the command requires an active editor), and check Settings → Hotkeys
   for a conflict with another plugin.
-```
-
-The diagram shown above uses a horizontal flow: Perplexity question → browser copy button → clipboard → Obsidian hotkey → filename prompt → final tagged, linked note — matching the six-step sequence described in the workflow section.

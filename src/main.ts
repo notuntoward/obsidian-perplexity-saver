@@ -107,11 +107,13 @@ export default class PerplexitySaverPlugin extends Plugin {
         }
 
         onOpen(): void {
+          this.setTitle("Filename");
           const { contentEl } = this;
-          contentEl.createEl("h2", { text: "Filename" });
 
-          const input = contentEl.createEl("input", { type: "text" });
-          input.style.width = "100%";
+          const input = contentEl.createEl("input", {
+            cls: "perplexity-saver-filename-input",
+            type: "text",
+          });
           input.focus();
 
           const submit = () => {
@@ -134,12 +136,14 @@ export default class PerplexitySaverPlugin extends Plugin {
             }
           });
 
-          const buttonRow = contentEl.createEl("div");
-          buttonRow.style.marginTop = "12px";
-          buttonRow.style.textAlign = "right";
+          const buttonRow = contentEl.createEl("div", {
+            cls: "perplexity-saver-modal-buttons",
+          });
 
-          const okButton = buttonRow.createEl("button", { text: "Ok" });
-          okButton.style.marginLeft = "8px";
+          const okButton = buttonRow.createEl("button", {
+            cls: "mod-cta perplexity-saver-confirm-button",
+            text: "OK",
+          });
           okButton.addEventListener("click", submit);
 
           const cancelButton = buttonRow.createEl("button", { text: "Cancel" });
@@ -170,7 +174,6 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Perplexity Saver Settings" });
 
     new Setting(containerEl)
       .setName("AI save folder")
