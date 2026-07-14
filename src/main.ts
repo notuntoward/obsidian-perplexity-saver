@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 
 interface InlineInputData {
   pos: number;
+  from: number;
+  to: number;
   clipboardContent: string;
   activeFile: TFile;
   editorView: EditorView;
@@ -67,32 +69,37 @@ export default class PerplexitySaverPlugin extends Plugin {
     const hasSelection = selection.from !== selection.to;
 
     let content: string;
+    let from: number;
+    let to: number;
+
     if (hasSelection) {
       content = cm6View.state.doc.sliceString(selection.from, selection.to);
-    } else {
-      content = await navigator.clipboard.readText();
-      if (!content) {
-        new Notice("Clipboard is empty. Copy content from Perplexity first.");
-        return;
-      }
-    }
-
-    const pos = selection.from;
-
-    if (hasSelection) {
+      from = selection.from;
+      to = selection.to;
       cm6View.dispatch({
-        changes: { from: selection.from, to: selection.to, insert: "" },
+        changes: { from, to, insert: "" },
         effects: startPerplexityInput.of({
-          pos,
+          pos: from,
+          from,
+          to: from,
           clipboardContent: content,
           activeFile: activeFile,
           editorView: cm6View,
         }),
       });
     } else {
+      content = await navigator.clipboard.readText();
+      if (!content) {
+        new Notice("Clipboard is empty. Copy content from Perplexity first.");
+        return;
+      }
+      from = selection.from;
+      to = selection.from;
       cm6View.dispatch({
         effects: startPerplexityInput.of({
-          pos,
+          pos: from,
+          from,
+          to,
           clipboardContent: content,
           activeFile: activeFile,
           editorView: cm6View,
@@ -159,7 +166,7 @@ class InlineInputWidget extends WidgetType {
   }
 
   private async handleSubmit(filename: string): Promise<void> {
-    const { clipboardContent, activeFile, editorView, pos } = this.data;
+    const { clipboardContent, activeFile, editorView, from, to } = this.data;
 
     const result = await createPerplexityNote({
       app: this.plugin.app,
@@ -176,7 +183,7 @@ class InlineInputWidget extends WidgetType {
     }
 
     editorView.dispatch({
-      changes: { from: pos, to: pos, insert: result.linkText },
+      changes: { from, to, insert: result.linkText },
       effects: clearPerplexityInput.of(null),
     });
 
