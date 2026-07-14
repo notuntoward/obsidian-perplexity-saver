@@ -11,13 +11,13 @@ manual file creation, no frontmatter editing.
 
 ```mermaid
 flowchart TD
-    A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click browser Obsidian button<br/>(Tampermonkey)"]
-    B --> C["Step 3: Clipboard now has<br/>Link + Markdown"]
-    C --> D["Step 4: Press hotkey<br/>in Obsidian"]
+    A["Ask Perplexity<br/>a question"] --> B["Click browser Obsidian button<br/>(Tampermonkey)"]
+    B --> C["Clipboard now has<br/>Link + Markdown"]
+    C --> D["Press hotkey<br/>in Obsidian"]
     D --> E{"Text selected<br/>in note?"}
-    E -->|No| F["Step 5a: Inline input is blank<br/>Type a filename"]
-    E -->|Yes| G["Step 5b: Inline input prefilled<br/>with selection as filename"]
-    F --> H["Step 6: Note created in<br/>ai-searches/<br/>from clipboard, tagged + linked"]
+    E -->|No| F["Inline input is blank<br/>Type a filename"]
+    E -->|Yes| G["Inline input prefilled<br/>with selection as filename"]
+    F --> H["Note created in<br/>ai-searches/<br/>from clipboard, tagged + linked"]
     G --> H
 
     %% Define the smaller font style
