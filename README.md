@@ -14,14 +14,17 @@ flowchart TD
     A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click 'Copy for<br/>Obsidian' button<br/>(Tampermonkey)"]
     B --> C["Step 3: Clipboard now has<br/>Link + Markdown"]
     C --> D["Step 4: Press hotkey<br/>in Obsidian"]
-    D --> E["Step 5: Type filename<br/>in inline input"]
-    E --> F["Step 6: Note created in<br/>ai-searches/<br/>tagged + linked"]
+    D --> E{"Text selected<br/>in note?"}
+    E -->|No| F["Step 5a: Inline input is blank<br/>Type a filename"]
+    E -->|Yes| G["Step 5b: Inline input prefilled<br/>with selection as filename"]
+    F --> H["Step 6: Note created in<br/>ai-searches/<br/>from clipboard, tagged + linked"]
+    G --> H
 
     %% Define the smaller font style
     classDef smallFont font-size:13px;
     
     %% Assign the style to all nodes at once
-    class A,B,C,D,E,F smallFont;
+    class A,B,C,D,E,F,G,H smallFont;
 ```
 
 This works by pairing a small browser helper with this plugin — the browser
@@ -71,19 +74,23 @@ script (2 minutes) and this plugin.
 6. **(Obsidian)** Press Enter. The input is replaced with a link to the newly
    created note.
 
-The plugin then automatically creates a subfolder (default: `ai-searches`) in
-the same folder as your current note (if it doesn't already exist). Then it saves
-the clipboard content into a new note there, identifying it as written by AI with 
-a tag (default: `ai-generated`), and inserts a link to it at your cursor position.
+The note **content** always comes from the clipboard (the Perplexity
+conversation you copied). The plugin automatically creates a subfolder (default:
+`ai-searches`) in the same folder as your current note (if it doesn't already
+exist), saves the clipboard content into a new note there, tags it (default:
+`ai-generated`), and inserts a link to it at your cursor position.
 
-### Alternative: Using selected text
+### Using selected text as the filename
 
-If you have text selected in your note when you run the command, the plugin will
-use the selected text as the note content instead of reading from the clipboard.
-The selected text is replaced with the inline input field, and when you press
-Enter, it's replaced with a link to the newly created note. This is useful when
-you've already pasted or typed content in your note and want to save it as a
-separate file.
+If you have text selected in your note when you run the command, the plugin
+uses the selected text as a suggested filename: the selection is deleted and the
+inline input is pre-filled with it (auto-selected, so you can type over it
+immediately). The note content still comes from the clipboard, not from the
+selection. This is handy when you want the new note's name to match nearby text
+in your current note.
+
+Selecting text is purely a filename convenience — it never changes what gets
+saved into the note body.
 
 ## Settings
 

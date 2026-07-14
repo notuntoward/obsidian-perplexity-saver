@@ -17,7 +17,8 @@ interface InlineInputData {
   pos: number;
   from: number;
   to: number;
-  clipboardContent: string;
+  noteContent: string;
+  defaultFilename: string;
   activeFile: TFile;
   editorView: EditorView;
 }
@@ -65,43 +66,40 @@ export default class PerplexitySaverPlugin extends Plugin {
       return;
     }
 
+    const noteContent = await navigator.clipboard.readText();
+    if (!noteContent) {
+      new Notice("Clipboard is empty. Copy content from Perplexity first.");
+      return;
+    }
+
     const selection = cm6View.state.selection.main;
     const hasSelection = selection.from !== selection.to;
 
-    let content: string;
-    let from: number;
-    let to: number;
-
     if (hasSelection) {
-      content = cm6View.state.doc.sliceString(selection.from, selection.to);
-      from = selection.from;
-      to = selection.to;
+      const defaultFilename = cm6View.state.doc.sliceString(selection.from, selection.to);
+      const pos = selection.from;
       cm6View.dispatch({
-        changes: { from, to, insert: "" },
+        changes: { from: selection.from, to: selection.to, insert: "" },
         effects: startPerplexityInput.of({
-          pos: from,
-          from,
-          to: from,
-          clipboardContent: content,
-          activeFile: activeFile,
+          pos,
+          from: pos,
+          to: pos,
+          noteContent,
+          defaultFilename,
+          activeFile,
           editorView: cm6View,
         }),
       });
     } else {
-      content = await navigator.clipboard.readText();
-      if (!content) {
-        new Notice("Clipboard is empty. Copy content from Perplexity first.");
-        return;
-      }
-      from = selection.from;
-      to = selection.from;
+      const pos = selection.from;
       cm6View.dispatch({
         effects: startPerplexityInput.of({
-          pos: from,
-          from,
-          to,
-          clipboardContent: content,
-          activeFile: activeFile,
+          pos,
+          from: pos,
+          to: pos,
+          noteContent,
+          defaultFilename: "",
+          activeFile,
           editorView: cm6View,
         }),
       });
@@ -128,6 +126,7 @@ class InlineInputWidget extends WidgetType {
     const input = document.createElement("input");
     input.type = "text";
     input.placeholder = "Enter filename...";
+    input.value = this.data.defaultFilename;
     input.className = "perplexity-inline-input";
     input.style.marginLeft = "4px";
     input.style.marginRight = "4px";
@@ -137,7 +136,10 @@ class InlineInputWidget extends WidgetType {
     input.style.padding = "2px 6px";
     input.style.minWidth = "200px";
 
-    window.setTimeout(() => input.focus(), 10);
+    window.setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 10);
 
     input.addEventListener("keydown", async (e: KeyboardEvent) => {
       if (e.key === "Enter") {
@@ -166,12 +168,12 @@ class InlineInputWidget extends WidgetType {
   }
 
   private async handleSubmit(filename: string): Promise<void> {
-    const { clipboardContent, activeFile, editorView, from, to } = this.data;
+    const { noteContent, activeFile, editorView, from, to } = this.data;
 
     const result = await createPerplexityNote({
       app: this.plugin.app,
       activeFile,
-      clipboardContent,
+      clipboardContent: noteContent,
       filename,
       searchesFolder: this.plugin.settings.searchesFolder,
       generatedTag: this.plugin.settings.generatedTag,
