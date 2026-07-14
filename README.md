@@ -14,7 +14,7 @@ flowchart TD
     A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click 'Copy for<br/>Obsidian' button<br/>(Tampermonkey)"]
     B --> C["Step 3: Clipboard now has<br/>Link + Markdown"]
     C --> D["Step 4: Press hotkey<br/>in Obsidian"]
-    D --> E["Step 5: Type filename"]
+    D --> E["Step 5: Type filename<br/>in inline input"]
     E --> F["Step 6: Note created in<br/>ai-searches/<br/>tagged + linked"]
 
     %% Define the smaller font style
@@ -61,10 +61,15 @@ script (2 minutes) and this plugin.
 2. **(Browser)** Click the "📋 Copy for Obsidian" button. This copies a
    Markdown version of the conversation, with a link back to the original
    Perplexity thread, to your clipboard.
- 3. **(Obsidian)** Place your cursor in the note you're writing, where you want
-    a link to the saved note to appear.
-4. **(Obsidian)** Press your assigned hotkey.
-5. **(Obsidian)** Type a filename when prompted, and press Enter.
+3. **(Obsidian)** Place your cursor in the note you're writing, where you want
+   a link to the saved note to appear.
+4. **(Obsidian)** Press your assigned hotkey. An inline input field appears at
+   your cursor position.
+5. **(Obsidian)** Type a filename in the inline input. You can click elsewhere
+   in the note to copy text, then return to the input to paste it — the input
+   stays open and doesn't block interaction with the rest of the editor.
+6. **(Obsidian)** Press Enter. The input is replaced with a link to the newly
+   created note.
 
 The plugin then automatically creates a subfolder (default: `ai-searches`) in
 the same folder as your current note (if it doesn't already exist). Then it saves

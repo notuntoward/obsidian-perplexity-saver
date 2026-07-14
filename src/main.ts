@@ -1,4 +1,7 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, normalizePath, PluginSettingTab, Setting, TFile } from "obsidian";
+import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, TFile } from "obsidian";
+import { StateField, StateEffect } from "@codemirror/state";
+import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
+import { createPerplexityNote } from "./note-creator";
 
 interface PerplexitySaverSettings {
   searchesFolder: string;
@@ -10,11 +13,23 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
   generatedTag: "ai-generated",
 };
 
+interface InlineInputData {
+  pos: number;
+  clipboardContent: string;
+  activeFile: TFile;
+  editorView: EditorView;
+}
+
+const startPerplexityInput = StateEffect.define<InlineInputData>();
+const clearPerplexityInput = StateEffect.define<null>();
+
 export default class PerplexitySaverPlugin extends Plugin {
   settings: PerplexitySaverSettings;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+
+    this.registerEditorExtension(perplexityInputStateField(this));
 
     this.addCommand({
       id: "save-perplexity-note",
@@ -36,8 +51,6 @@ export default class PerplexitySaverPlugin extends Plugin {
   }
 
   private async saveNote(editor: Editor, view: MarkdownView): Promise<void> {
-    const app = this.app;
-
     const activeFile = view.file;
     if (!activeFile) {
       new Notice("No active file found.");
@@ -46,121 +59,136 @@ export default class PerplexitySaverPlugin extends Plugin {
 
     const clipboardText = await navigator.clipboard.readText();
     if (!clipboardText) {
-      new Notice("Clipboard is empty.");
+      new Notice("Clipboard is empty. Copy content from Perplexity first.");
       return;
     }
 
-    const filename = await this.promptForFilename();
-    if (!filename) {
+    const cm6View = (editor as any).cm as EditorView;
+    if (!cm6View) {
+      new Notice("Could not access editor.");
       return;
     }
 
-    const activeFolderPath = activeFile.parent ? activeFile.parent.path : "";
-    const searchesFolderPath = normalizePath(
-      activeFolderPath
-        ? `${activeFolderPath}/${this.settings.searchesFolder}`
-        : this.settings.searchesFolder
-    );
+    const currentPos = cm6View.state.selection.main.head;
 
-    const folderExists = app.vault.getAbstractFileByPath(searchesFolderPath);
-    if (!folderExists) {
-      await app.vault.createFolder(searchesFolderPath);
-    }
-
-    const newNotePath = normalizePath(`${searchesFolderPath}/${filename}.md`);
-
-    const existingFile = app.vault.getAbstractFileByPath(newNotePath);
-    if (existingFile) {
-      new Notice("A note with that name already exists. Pick a different name.");
-      return;
-    }
-
-    const newFile: TFile = await app.vault.create(newNotePath, clipboardText);
-
-    await app.fileManager.processFrontMatter(newFile, (fm: Record<string, unknown>) => {
-      const tags = Array.isArray(fm.tags) ? (fm.tags as string[]) : [];
-      if (!tags.includes(this.settings.generatedTag)) {
-        tags.push(this.settings.generatedTag);
-      }
-      fm.tags = tags;
-    });
-
-    view.editor.focus();
-    const cursor = editor.getCursor();
-    const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path);
-    editor.replaceRange(linkText, cursor);
-    editor.setCursor({
-      line: cursor.line,
-      ch: cursor.ch + linkText.length,
-    });
-
-    new Notice(`Saved note to ${newNotePath}`);
-  }
-
-  private promptForFilename(): Promise<string | null> {
-    return new Promise((resolve) => {
-      const app = this.app;
-
-      class FilenameModal extends Modal {
-        constructor(app: App) {
-          super(app);
-        }
-
-        onOpen(): void {
-          this.setTitle("Filename");
-          const { contentEl } = this;
-
-          const input = contentEl.createEl("input", {
-            cls: "perplexity-saver-filename-input",
-            type: "text",
-          });
-          input.focus();
-
-          const submit = () => {
-            const value = input.value.trim();
-            this.close();
-            resolve(value.length > 0 ? value : null);
-          };
-
-          input.addEventListener("keydown", (e: KeyboardEvent) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              e.stopPropagation();
-              submit();
-            }
-            if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              this.close();
-              resolve(null);
-            }
-          });
-
-          const buttonRow = contentEl.createEl("div", {
-            cls: "perplexity-saver-modal-buttons",
-          });
-
-          const okButton = buttonRow.createEl("button", {
-            cls: "mod-cta perplexity-saver-confirm-button",
-            text: "OK",
-          });
-          okButton.addEventListener("click", submit);
-
-          const cancelButton = buttonRow.createEl("button", { text: "Cancel" });
-          cancelButton.addEventListener("click", () => {
-            this.close();
-            resolve(null);
-          });
-        }
-
-        onClose(): void {
-          this.contentEl.empty();
-        }
-      }
-
-      new FilenameModal(app).open();
+    cm6View.dispatch({
+      effects: startPerplexityInput.of({
+        pos: currentPos,
+        clipboardContent: clipboardText,
+        activeFile: activeFile,
+        editorView: cm6View,
+      }),
     });
   }
+}
+
+class InlineInputWidget extends WidgetType {
+  constructor(
+    private plugin: PerplexitySaverPlugin,
+    private data: InlineInputData
+  ) {
+    super();
+  }
+
+  eq(other: InlineInputWidget): boolean {
+    return other.data.pos === this.data.pos;
+  }
+
+  toDOM(): HTMLElement {
+    const wrap = document.createElement("span");
+    wrap.className = "perplexity-inline-wrap";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "Enter filename...";
+    input.className = "perplexity-inline-input";
+    input.style.marginLeft = "4px";
+    input.style.marginRight = "4px";
+    input.style.border = "none";
+    input.style.borderBottom = "1px solid var(--text-accent)";
+    input.style.background = "var(--background-primary-alt)";
+    input.style.padding = "2px 6px";
+    input.style.minWidth = "200px";
+
+    window.setTimeout(() => input.focus(), 10);
+
+    input.addEventListener("keydown", async (e: KeyboardEvent) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        const filename = input.value.trim();
+        if (filename) {
+          await this.handleSubmit(filename);
+        }
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.data.editorView.dispatch({
+          effects: clearPerplexityInput.of(null),
+        });
+        this.data.editorView.focus();
+      }
+    });
+
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  ignoreEvent(): boolean {
+    return true;
+  }
+
+  private async handleSubmit(filename: string): Promise<void> {
+    const { clipboardContent, activeFile, editorView, pos } = this.data;
+
+    const result = await createPerplexityNote({
+      app: this.plugin.app,
+      activeFile,
+      clipboardContent,
+      filename,
+      searchesFolder: this.plugin.settings.searchesFolder,
+      generatedTag: this.plugin.settings.generatedTag,
+    });
+
+    if (!result.success) {
+      new Notice(result.error);
+      return;
+    }
+
+    editorView.dispatch({
+      changes: { from: pos, to: pos, insert: result.linkText },
+      effects: clearPerplexityInput.of(null),
+    });
+
+    editorView.focus();
+    new Notice(`Saved note to ${result.newNotePath}`);
+  }
+}
+
+function perplexityInputStateField(plugin: PerplexitySaverPlugin) {
+  return StateField.define<DecorationSet>({
+    create() {
+      return Decoration.none;
+    },
+    update(value, tr) {
+      value = value.map(tr.changes);
+
+      for (const effect of tr.effects) {
+        if (effect.is(startPerplexityInput)) {
+          const deco = Decoration.widget({
+            widget: new InlineInputWidget(plugin, effect.value),
+            side: 1,
+          });
+          return Decoration.set([deco.range(effect.value.pos)]);
+        }
+        if (effect.is(clearPerplexityInput)) {
+          return Decoration.none;
+        }
+      }
+      return value;
+    },
+    provide: (f) => EditorView.decorations.from(f),
+  });
 }
 
 class PerplexitySaverSettingTab extends PluginSettingTab {

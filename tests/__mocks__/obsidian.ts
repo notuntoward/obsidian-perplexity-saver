@@ -20,6 +20,11 @@ export class Plugin {
 	registerInterval(_id: number): number {
 		return _id;
 	}
+	registerEditorExtension(_extension: any): void {}
+	async loadData(): Promise<any> {
+		return {};
+	}
+	async saveData(_data: any): Promise<void> {}
 }
 
 export class PluginSettingTab {
@@ -88,4 +93,18 @@ export class Component {
 	onload(): void {}
 	unload(): void {}
 	onunload(): void {}
+}
+
+export class TFile {
+	path: string;
+	parent: { path: string } | null;
+
+	constructor(path: string, parentPath: string | null = null) {
+		this.path = path;
+		this.parent = parentPath ? { path: parentPath } : null;
+	}
+}
+
+export function normalizePath(path: string): string {
+	return path.replace(/\\/g, "/").replace(/\/+/g, "/");
 }
