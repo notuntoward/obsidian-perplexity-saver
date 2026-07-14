@@ -57,28 +57,48 @@ export default class PerplexitySaverPlugin extends Plugin {
       return;
     }
 
-    const clipboardText = await navigator.clipboard.readText();
-    if (!clipboardText) {
-      new Notice("Clipboard is empty. Copy content from Perplexity first.");
-      return;
-    }
-
     const cm6View = (editor as any).cm as EditorView;
     if (!cm6View) {
       new Notice("Could not access editor.");
       return;
     }
 
-    const currentPos = cm6View.state.selection.main.head;
+    const selection = cm6View.state.selection.main;
+    const hasSelection = selection.from !== selection.to;
 
-    cm6View.dispatch({
-      effects: startPerplexityInput.of({
-        pos: currentPos,
-        clipboardContent: clipboardText,
-        activeFile: activeFile,
-        editorView: cm6View,
-      }),
-    });
+    let content: string;
+    if (hasSelection) {
+      content = cm6View.state.doc.sliceString(selection.from, selection.to);
+    } else {
+      content = await navigator.clipboard.readText();
+      if (!content) {
+        new Notice("Clipboard is empty. Copy content from Perplexity first.");
+        return;
+      }
+    }
+
+    const pos = selection.from;
+
+    if (hasSelection) {
+      cm6View.dispatch({
+        changes: { from: selection.from, to: selection.to, insert: "" },
+        effects: startPerplexityInput.of({
+          pos,
+          clipboardContent: content,
+          activeFile: activeFile,
+          editorView: cm6View,
+        }),
+      });
+    } else {
+      cm6View.dispatch({
+        effects: startPerplexityInput.of({
+          pos,
+          clipboardContent: content,
+          activeFile: activeFile,
+          editorView: cm6View,
+        }),
+      });
+    }
   }
 }
 

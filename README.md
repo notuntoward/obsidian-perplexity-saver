@@ -76,6 +76,15 @@ the same folder as your current note (if it doesn't already exist). Then it save
 the clipboard content into a new note there, identifying it as written by AI with 
 a tag (default: `ai-generated`), and inserts a link to it at your cursor position.
 
+### Alternative: Using selected text
+
+If you have text selected in your note when you run the command, the plugin will
+use the selected text as the note content instead of reading from the clipboard.
+The selected text is replaced with the inline input field, and when you press
+Enter, it's replaced with a link to the newly created note. This is useful when
+you've already pasted or typed content in your note and want to save it as a
+separate file.
+
 ## Settings
 
 - **AI save folder** (default: `ai-searches`) — The name of the subfolder where
