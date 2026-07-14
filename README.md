@@ -11,7 +11,7 @@ manual file creation, no frontmatter editing.
 
 ```mermaid
 flowchart TD
-    A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click 'Copy for<br/>Obsidian' button<br/>(Tampermonkey)"]
+    A["Step 1: Ask Perplexity<br/>a question"] --> B["Step 2: Click browser Obsidian button<br/>(Tampermonkey)"]
     B --> C["Step 3: Clipboard now has<br/>Link + Markdown"]
     C --> D["Step 4: Press hotkey<br/>in Obsidian"]
     D --> E{"Text selected<br/>in note?"}
