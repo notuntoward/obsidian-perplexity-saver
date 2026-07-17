@@ -46,7 +46,12 @@ script (2 minutes) and this plugin.
    contents with
    [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js)
    from this repo. Save it.
-4. Visit perplexity.ai — you should see a small "📋 Copy for Obsidian" button
+4. In Chrome, go to `chrome://extensions` → **Tampermonkey** → **Details**:
+   - Set **Site access** to **On all sites** (or explicitly allow
+     `https://www.perplexity.ai`).
+   - Turn on **Allow user scripts**.
+   - Confirm Tampermonkey itself is enabled.
+5. Visit perplexity.ai — you should see a small "📋 Copy for Obsidian" button
    appear in the bottom-right corner of the page.
 
 ### B. Obsidian plugin setup
@@ -113,6 +118,38 @@ This produces `main.js`. Copy `manifest.json` and the built `main.js` into
 `<your vault>/.obsidian/plugins/perplexity-saver/`.
 
 ## Troubleshooting
+
+### First checks
+
+If the button does not appear on Perplexity, check these before anything else:
+
+1. Open a Perplexity tab, click the Tampermonkey extension icon, and make sure
+   this script is shown as active/running.
+2. Go to `chrome://extensions` → **Tampermonkey** → **Details**:
+   - Confirm Tampermonkey is enabled.
+   - Set **Site access** to **On all sites** (or explicitly permit
+     `https://www.perplexity.ai`).
+   - Turn on **Allow user scripts**.
+3. In the Tampermonkey Dashboard, make sure the script's enable toggle is on,
+   then reload Perplexity with a full reload: `Ctrl+Shift+R`.
+
+A Chrome update can reset these permissions. If site access is set to **On
+click**, the script cannot inject the button automatically.
+
+### Confirm the script is running
+
+Open the browser's developer tools (`F12`) and switch to the **Console** tab.
+When you reload Perplexity you should see a line like:
+
+```
+[PPLX Obsidian exporter] userscript started https://www.perplexity.ai/...
+```
+
+If the line does not appear, the script is not being injected at all — go back
+to the First checks section above. If the line appears but the button is still
+missing, look for a red error in the Console and report it.
+
+### Other common issues
 
 - **Nothing happens when I click "Copy for Obsidian":** Make sure the
   Complexity extension is installed and enabled, and that you're on a

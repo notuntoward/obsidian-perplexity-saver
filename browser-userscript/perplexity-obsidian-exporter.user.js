@@ -4,6 +4,7 @@
 // @version      7.5
 // @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link.  This intended to be used as a tampermonkey script.
 // @match        https://www.perplexity.ai/*
+// @match        https://perplexity.ai/*
 // @grant        GM_setClipboard
 // @grant        GM_notification
 // @run-at       document-idle
@@ -11,6 +12,7 @@
 
 (function () {
   "use strict";
+  console.log("[PPLX Obsidian exporter] userscript started", location.href);
 
   function findExportTrigger() {
     const paths = [...document.querySelectorAll('svg[viewBox="0 0 24 24"] path[d^="M14 3v4a1 1 0 0 0 1 1h4"]')];
@@ -186,35 +188,48 @@
     updateButtonPosition();
   }
 
-  // 1. Observe changes to the DOM layout to keep tracking accurate
-  const domObserver = new MutationObserver(() => {
+  function start() {
+    const domObserver = new MutationObserver(() => {
+      injectButton();
+      updateButtonPosition();
+    });
+
+    domObserver.observe(document.body, { childList: true, subtree: true });
+
     injectButton();
-    updateButtonPosition();
-  });
-  domObserver.observe(document.body, { childList: true, subtree: true });
-  injectButton();
 
-  // 2. Continuous structural layout resize tracking (handles window snaps and expansions seamlessly)
-  const layoutObserver = new ResizeObserver(() => updateButtonPosition());
-  layoutObserver.observe(document.body);
-  window.addEventListener('resize', updateButtonPosition);
+    const layoutObserver = new ResizeObserver(updateButtonPosition);
+    layoutObserver.observe(document.body);
 
-  // 3. Theme change observers
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    const btn = document.getElementById("pplx-obsidian-export-btn");
-    if (btn) applyNativeThemeStyles(btn);
-  });
+    window.addEventListener("resize", updateButtonPosition);
 
-  const themeClassObserver = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      if (mutation.attributeName === 'class') {
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+      const btn = document.getElementById("pplx-obsidian-export-btn");
+      if (btn) applyNativeThemeStyles(btn);
+    });
+
+    const themeClassObserver = new MutationObserver((mutations) => {
+      if (mutations.some(m => m.attributeName === "class")) {
         const btn = document.getElementById("pplx-obsidian-export-btn");
         if (btn) applyNativeThemeStyles(btn);
       }
-    }
-  });
+    });
 
-  themeClassObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-  themeClassObserver.observe(document.body, { attributes: true, attributeFilter: ['class'] });
+    themeClassObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class"]
+    });
+
+    themeClassObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["class"]
+    });
+  }
+
+  if (document.body) {
+    start();
+  } else {
+    window.addEventListener("DOMContentLoaded", start, { once: true });
+  }
 
 })();
