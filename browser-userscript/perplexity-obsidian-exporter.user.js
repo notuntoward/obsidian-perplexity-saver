@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (via Complexity)
 // @namespace    scott-otterson-obsidian-export
-// @version      7.5
+// @version      7.6
 // @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link.  This intended to be used as a tampermonkey script.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -29,6 +29,15 @@
     );
   }
 
+  // Unlike findPopoverContent(), this doesn't require "choose format" text,
+  // so it also catches a stuck/leftover popover wrapper that a previous run
+  // left open but emptied (e.g. after an interrupted or non-standard close).
+  function anyPopoverOpen() {
+    return [...document.querySelectorAll('[data-scope="popover"]')].some(
+      (el) => el.getBoundingClientRect().width > 0
+    );
+  }
+
   function findButtonByText(root, pattern) {
     return [...root.querySelectorAll("button")].find((b) => pattern.test(b.textContent.trim()));
   }
@@ -37,7 +46,67 @@
     return `[Perplexity](${url})\n${rawMd.trim()}\n`;
   }
 
+  // Polls for the popover instead of relying on one fixed delay, since
+  // Complexity's popover render/animation time can vary.
+  async function waitForPopover(timeoutMs = 2000, intervalMs = 75) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const popover = findPopoverContent();
+      if (popover) return popover;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return null;
+  }
+
+  // Diagnostic helper: when the expected popover can't be found, dump every
+  // visible element that looks popover/dialog-like so the selector can be
+  // fixed against Complexity's actual current markup. Open DevTools console
+  // (F12) before clicking the export button to see this output.
+  function logPopoverDebugInfo() {
+    const candidates = [...document.querySelectorAll(
+      '[data-scope="popover"], [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]'
+    )].filter((el) => el.getBoundingClientRect().width > 0);
+
+    console.log(`[PPLX Obsidian exporter] popover debug: ${candidates.length} candidate element(s) visible`);
+    candidates.forEach((el, i) => {
+      console.log(
+        `[PPLX Obsidian exporter] candidate #${i}`,
+        {
+          tag: el.tagName,
+          dataScope: el.getAttribute("data-scope"),
+          dataPart: el.getAttribute("data-part"),
+          role: el.getAttribute("role"),
+          textPreview: el.textContent.trim().slice(0, 200),
+          el,
+        }
+      );
+    });
+    if (candidates.length === 0) {
+      console.log("[PPLX Obsidian exporter] no popover/dialog-like elements found in the DOM at all.");
+    }
+  }
+
+  // Complexity's export menu is a Zag.js/Ark-UI style popover
+  // (data-scope="popover"). Those components close on a real Escape
+  // keypress or an outside pointerdown, not on a synthetic click(). Using
+  // document.body.click() to dismiss it can leave the popover's internal
+  // open state (and its positioning wrapper) stuck, which then shows up as
+  // a stray empty box and makes the trigger stop working until a full page
+  // reload. Dispatch a real Escape keydown instead so the component's own
+  // dismiss logic runs.
+  async function closePopover() {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    await new Promise((r) => setTimeout(r, 100));
+  }
+
   async function exportFullThread() {
+    // Self-heal: if a previous run left the popover open/stuck (even an
+    // emptied/leftover one with no "choose format" text), close it first
+    // instead of requiring the user to reload the page.
+    if (anyPopoverOpen()) {
+      await closePopover();
+    }
+
     const trigger = findExportTrigger();
     if (!trigger) {
       alert("Couldn't find the export icon. Complexity's UI may have changed.");
@@ -45,10 +114,13 @@
     }
     trigger.click();
 
-    await new Promise((r) => setTimeout(r, 300));
-    const popover = findPopoverContent();
+    const popover = await waitForPopover();
     if (!popover) {
-      alert('Popover with "Choose format" not found after clicking the icon.');
+      logPopoverDebugInfo();
+      alert(
+        'Popover with "Choose format" not found after clicking the icon. ' +
+        "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
+      );
       return;
     }
 
@@ -74,6 +146,11 @@
       return;
     }
 
+    console.log(
+      `[PPLX Obsidian exporter] clipboard content from Complexity's Copy button is ${rawMd.length} chars`,
+      { rawMd }
+    );
+
     const finalMd = wrapMarkdown(rawMd, window.location.href);
     GM_setClipboard(finalMd, "text");
     GM_notification({
@@ -82,7 +159,7 @@
       timeout: 2000,
     });
 
-    document.body.click();
+    await closePopover();
   }
 
   function applyNativeThemeStyles(btn) {
