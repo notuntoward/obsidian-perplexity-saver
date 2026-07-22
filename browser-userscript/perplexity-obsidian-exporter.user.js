@@ -42,8 +42,30 @@
     return [...root.querySelectorAll("button")].find((b) => pattern.test(b.textContent.trim()));
   }
 
+  function formatTimestamp(d) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    let tz = "";
+    try {
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZoneName: "short",
+      }).formatToParts(d);
+      const tzPart = parts.find((p) => p.type === "timeZoneName");
+      if (tzPart) tz = ` ${tzPart.value}`;
+    } catch (_) {
+      const offsetMin = -d.getTimezoneOffset();
+      const sign = offsetMin >= 0 ? "+" : "-";
+      const oh = Math.floor(Math.abs(offsetMin) / 60);
+      const om = Math.abs(offsetMin) % 60;
+      tz = ` UTC${sign}${pad(oh)}:${pad(om)}`;
+    }
+    return `${date} ${time}${tz}`;
+  }
+
   function wrapMarkdown(rawMd, url) {
-    return `[Perplexity](${url})\n${rawMd.trim()}\n`;
+    const ts = formatTimestamp(new Date());
+    return `[Perplexity](${url}) · *${ts}*\n${rawMd.trim()}\n`;
   }
 
   // Polls for the popover instead of relying on one fixed delay, since
