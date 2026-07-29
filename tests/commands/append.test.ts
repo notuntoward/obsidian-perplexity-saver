@@ -45,11 +45,9 @@ describe("appendDialogFromClipboard", () => {
 	it("appends a new turn pair after the highest existing turn id", async () => {
 		const existing = `# Dialog
 
-## First question ^turn-1-prompt
+## First question ^turn-1-prompt ^turn-1-ai
 
 first question
-
-### AI response (turn 1) ^turn-1-ai
 
 first answer[^s1]
 
@@ -67,11 +65,15 @@ first answer[^s1]
 		expect(result.turnsAppended).toBe(2);
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
-		// New turn headings: level-2 prompt headline and level-3 AI label.
-		// The prompt text "second question" produces the headline "second question"
-		// (lowercase, since the lead method preserves the original case).
-		expect(written).toMatch(/## second question \^turn-2-prompt/);
-		expect(written).toMatch(/### AI response \(turn 2\) \^turn-2-ai/);
+		// New turn heading: the level-2 prompt headline carries the single
+		// `^turn-N` block ID, followed by an open > [!Prompt]- callout
+		// containing the prompt body. The prompt text "second question"
+		// produces the headline "second question" (lowercase, since the
+		// lead method preserves the original case).
+		expect(written).toMatch(/## second question \^turn-2$/m);
+		expect(written).toMatch(/> \[!Prompt\]\+\n> second question/);
+		// No AI heading of its own — the prompt heading above is the turn's only heading.
+		expect(written).not.toMatch(/### AI response/);
 		expect(written).toContain("second question");
 		expect(written).toContain("second answer[^s2]");
 		// Existing turn 1 content is untouched.
@@ -82,11 +84,9 @@ first answer[^s1]
 	it("grows an existing source's ownership list when the appended turn re-cites the same URL", async () => {
 		const existing = `# Dialog
 
-## First question ^turn-1-prompt
+## First question ^turn-1-prompt ^turn-1-ai
 
 first question
-
-### AI response (turn 1) ^turn-1-ai
 
 first answer[^s1]
 
@@ -117,11 +117,9 @@ first answer[^s1]
 	it("mints a genuinely new source and reports it in newSources", async () => {
 		const existing = `# Dialog
 
-## First question ^turn-1-prompt
+## First question ^turn-1-prompt ^turn-1-ai
 
 first question
-
-### AI response (turn 1) ^turn-1-ai
 
 first answer[^s1]
 

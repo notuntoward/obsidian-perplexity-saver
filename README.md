@@ -89,21 +89,21 @@ tags: [ai-generated]
 
 **Source:** [perplexity](https://www.perplexity.ai/search/...)
 
-## How do I configure foo mode? ^turn-1-prompt
+ ## How do I configure foo mode? ^turn-1
 
-user's first question, with any leading "#" stripped
-
-### AI response (turn 1) ^turn-1-ai
+> [!Prompt]+
+> How do I configure foo mode?
+> 
+> Explain.
 
 first AI response, with a trailing sources list removed
 
-## Does it work with baz? ^turn-2-prompt
+## Does it work with baz? ^turn-2
 
-> Does it work with baz?
-
-Explain.
-
-### AI response (turn 2) ^turn-2-ai
+> [!Prompt]+
+> > Does it work with baz?
+>
+> Explain.
 
 follow-up response
 
@@ -116,14 +116,16 @@ follow-up response
 
 Key conventions:
 
-- **Each turn has two headings.** The first is a level-2 **summary
-  heading** derived from the prompt text (see "Headlines" below), with
-  the permanent `^turn-N-prompt` block ID. The second is a level-3
-  `### AI response (turn N)` heading with the permanent `^turn-N-ai`
-  block ID. A prompt and the AI response immediately following it
-  share one logical turn number; the next pair gets turn 2, and so on.
-  The block IDs are what makes the pairing machine-readable, and the
-  number is what makes the outline pane readable.
+- **Each turn has exactly one prompt marker** — a closed Obsidian
+  `> [!Prompt]+` callout carrying the single `^turn-N` block ID on its
+  heading line. The prompt body is folded inside the callout (each line
+  prefixed with `> `) so the whole question collapses into a single
+  clickable block. A prompt and the AI response immediately following
+  it share one logical turn number; the next pair gets turn 2, and so
+  on. A standalone AI response (no preceding prompt) still gets its own
+  callout labeled `AI response (turn N)`. The block ID is what makes
+  pairing machine-readable, and the number is what makes the outline
+  pane readable.
 - **All citations from all turns go into a single `# Sources` section
   at the end.** Inline `[1]` markers in the AI response are rewritten
   to the note's own footnote IDs (`[^s1]`, `[^s2]`, etc.) so they
@@ -138,9 +140,9 @@ Key conventions:
   duplicated in frontmatter as `ai-source-vendor` and `ai-source-url`
   for programmatic access.
 - **AI response body headings are demoted so the topmost lands at level
-  4** (one level below the `### AI response` heading at level 3).
-  This preserves the original heading hierarchy in the response
-  without ever colliding with the structural turn headings.
+  3** (one level below the level-2 prompt heading). This preserves the
+  original heading hierarchy in the response without ever colliding
+  with the structural turn marker.
 
 # Headlines
 
@@ -203,9 +205,9 @@ What the command does:
 - Parses the new clipboard content the same way an import does (vendor
   auto-detected: Perplexity or Gemini).
 - Numbers the new turns starting at **one past the highest existing turn
-  number** in the note. If the note ends with `### AI response (turn 2)
-  ^turn-2-ai`, the appended turns become a level-2 summary heading
-  `^turn-3-prompt` and a level-3 `### AI response (turn 3) ^turn-3-ai`.
+  number** in the note. If the note ends with a callout carrying
+  `^turn-2`, the appended turn becomes a new `## ... ^turn-3` prompt
+  marker followed by the new prompt and AI body.
 - Splices the new turns into the note body, just before the `# Sources`
   heading (or at the end of the file if there's no Sources section yet).
 - **Regenerates the entire `# Sources` block**, not just appends to it.
@@ -220,9 +222,9 @@ What the command does:
 A status notice reports what happened:
 `Appended 2 turn(s) and 1 new source(s).`
 
-If the note has no `^turn-N-*` anchors (i.e. it was not created by this
+If the note has no `^turn-N` anchors (i.e. it was not created by this
 plugin, or you hand-edited all turn headings away), the command refuses
-with: "This note has no ^turn-N-* anchors. Use 'Import AI dialog from
+with: "This note has no ^turn-N anchors. Use 'Import AI dialog from
 clipboard' on a new note instead." Run the import command on a new
 note first.
 
@@ -230,12 +232,11 @@ note first.
 
 Each source line records which turn(s) introduced or cited it
 (`(turn 1)` or `(turns 1, 3)`). If you edit a note and delete a
-summary heading `## ... ^turn-1-prompt` together with its
-`### AI response (turn 1) ^turn-1-ai` pair — for example, to remove an
-embarrassing early prompt or compress a noisy stretch of the dialog —
-the source(s) that only that turn referenced become orphaned. They
-still sit in `# Sources` with a `(turn 1)` annotation pointing at a
-heading that no longer exists.
+summary heading `## ... ^turn-1` together with its prompt callout —
+for example, to remove an embarrassing early prompt or compress a noisy
+stretch of the dialog — the source(s) that only that turn referenced
+become orphaned. They still sit in `# Sources` with a `(turn 1)`
+annotation pointing at a heading that no longer exists.
 
 To clean them up:
 
@@ -295,11 +296,14 @@ After you confirm, a notice reports the result:
   heading and to collapse any run of 2+ blank lines to one. Produces a
   denser, more uniform file. Turn this off if you prefer extra visual
   breathing room.
+- **Collapse prompt callouts** (default: on) — When on, each user prompt
+  starts as a collapsed `> [!Prompt]+` callout. Turn it off to leave
+  prompts expanded (`> [!Prompt]-`).
 
 ## Prompt heading
 
 These three settings, grouped under the **Prompt heading** header in
-the settings tab, control the level-2 summary heading above each user
+the settings tab, control the level-2 prompt callout above each user
 prompt. See the [Headlines](#headlines) section above for the full
 description of what they do.
 

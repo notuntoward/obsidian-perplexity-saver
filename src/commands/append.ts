@@ -81,12 +81,18 @@ function countSourceLines(sourcesText: string): number {
  * Pull out the rendered turn blocks starting at turn `startId` from a
  * freshly rendered body. The body is produced from parsing ONLY the new
  * clipboard content, so it contains nothing but the new turns (and
- * optionally their sources); the chunk to splice in is everything from the
- * first new turn heading up to the `# Sources` heading, or end of string
- * if there were no citations.
+ * optionally their sources); the chunk to splice in is everything from
+ * the first new turn marker up to the `# Sources` heading, or end of
+ * string if there were no citations.
+ *
+ * The new turn structure has a level-2 heading carrying the computed
+ * headline and the single `^turn-N` block ID, followed by a closed
+ * `> [!Prompt]+` callout containing the prompt body, then the AI body
+ * (no heading of its own). The boundary is the next level-2 heading
+ * with a different turn ID, or the `# Sources` heading.
  */
 function extractTurnsBlock(body: string, startId: number): string {
-	const startRe = new RegExp(`^## .*?\\^turn-${startId}-(?:prompt|ai)$`, "m");
+	const startRe = new RegExp(`^## .*\\^turn-${startId}(?!\\d)`, "m");
 	const startMatch = body.match(startRe);
 	if (!startMatch || startMatch.index === undefined) return "";
 

@@ -57,38 +57,41 @@ describe("uniform note format from Perplexity export", () => {
 		expect(body).not.toContain("# Citations:");
 
 		// Bug 1: a prompt and its AI response are one logical turn and share
-		// the same turn number. The prompt heading is a level-2 summary
-		// derived from the prompt text; the AI heading is a level-3 stable
-		// label "AI response (turn N)". The second prompt contains a <q>
-		// excerpt which is extracted as a blockquote, and the remaining
-		// prompt text becomes the headline.
-		expect(body).toMatch(/## How do I configure foo mode\? \^turn-1-prompt/);
-		expect(body).toMatch(/### AI response \(turn 1\) \^turn-1-ai/);
-		expect(body).toMatch(/## Does it work with baz\? Explain\. \^turn-2-prompt/);
-		expect(body).toMatch(/### AI response \(turn 2\) \^turn-2-ai/);
+		// the same turn number. The prompt marker is a level-2 heading
+		// carrying the single `^turn-N` block ID, followed by a closed
+		// `> [!Prompt]+` callout containing the prompt body. The AI body
+		// follows directly below with no AI heading of its own.
+		expect(body).toMatch(/## How do I configure foo mode\? \^turn-1/);
+		expect(body).toMatch(/## Does it work with baz\? Explain\. \^turn-2/);
+		expect(body).not.toMatch(/### AI response/);
 
 		// Bug 3: the prompt's embedded "# " heading marker is stripped from
-		// the prompt body so it is plain paragraph text under its level-2
-		// summary heading, never its own headline. (The level-2 summary
-		// heading itself is expected and is not what this test guards.)
+		// the prompt body so it is plain paragraph text inside the callout,
+		// never its own headline.
 		const bodyLines = body.split("\n");
-		const promptHeadingIndex = bodyLines.findIndex((l) => l.startsWith("## How do I configure foo mode?"));
-		const promptBody = bodyLines.slice(promptHeadingIndex + 1).join("\n");
-		expect(promptBody).toContain("How do I configure foo mode?");
-		expect(promptBody).not.toMatch(/^#{1,6}[ \t]+How do I configure foo mode\?/m);
+		const headingIndex = bodyLines.findIndex((l) =>
+			l.startsWith("## How do I configure foo mode?")
+		);
+		const calloutContent = bodyLines.slice(headingIndex + 1).join("\n");
+		expect(calloutContent).toContain("> [!Prompt]+");
+		expect(calloutContent).toContain("> How do I configure foo mode?");
+		expect(calloutContent).not.toMatch(/^#{1,6}[ \t]+How do I configure foo mode\?/m);
 
 		// Bug 4: the <q>...</q> excerpt becomes a blockquote above the rest
 		// of the prompt, in the order it appeared, with the tags removed.
 		// The headline includes both the quote text and the rest of the
 		// prompt (the lead method picks the first sentence which spans both).
-		expect(body).toMatch(/## Does it work with baz\? Explain\. \^turn-2-prompt\n> Does it work with baz\?\n\nExplain\./);
+		expect(body).toMatch(
+			/## Does it work with baz\? Explain\. \^turn-2\n\n> \[!Prompt\]\+\n> > Does it work with baz\?\n>\n> Explain\./
+		);
 		expect(body).not.toContain("<q>");
 		expect(body).not.toContain("</q>");
 
-		// AI response headings are demoted to exactly one level below ### AI.
-		expect(body).toContain("#### Setup Steps");
-		expect(body).toContain("#### Implementation Notes");
-		expect(body).not.toMatch(/^##### Setup Steps/m);
+		// AI body headings are demoted to start at level 3 (one level below
+		// the level-2 prompt heading).
+		expect(body).toContain("### Setup Steps");
+		expect(body).toContain("### Implementation Notes");
+		expect(body).not.toMatch(/^#### Setup Steps/m);
 
 		// Bug 5: every occurrence of a repeated citation number converts,
 		// not just the first. [1][1][2] in "Setup Steps" must all convert.
@@ -104,7 +107,7 @@ describe("uniform note format from Perplexity export", () => {
 		// Inline source link at the top of the note, clickable in editor and
 		// reading view. Appears as the first content line after # Dialog.
 		expect(body).toMatch(
-			/# Dialog\n\*\*Source:\*\* \[perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\)\n## /
+			/# Dialog\n\n\*\*Source:\*\* \[perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\)\n## /
 		);
 	});
 });
@@ -120,7 +123,7 @@ describe("inline source link", () => {
 		const dialogHeadingIndex = body.indexOf("# Dialog");
 		const linkIndex = body.indexOf("**Source:**");
 		expect(linkIndex).toBeGreaterThan(dialogHeadingIndex);
-		// The first turn heading is the level-2 prompt summary heading.
+		// The first turn marker is the level-2 heading (starts with "## ").
 		expect(linkIndex).toBeLessThan(body.search(/^## /m));
 	});
 
@@ -185,23 +188,25 @@ The best NFL quarterback of all time is most commonly considered **Tom Brady**: 
 
 		const { body } = buildNoteBody(dialog);
 
-		// The prompt heading (level 2) appears BEFORE the AI response heading
-		// (level 3) for each turn. The previous bug had these in the wrong
-		// order: the AI heading came first and the prompt text was demoted
-		// inside the AI body.
-		const promptIdx = body.indexOf("^turn-1-prompt");
-		const aiIdx = body.indexOf("^turn-1-ai");
-		expect(promptIdx).toBeGreaterThan(0);
-		expect(aiIdx).toBeGreaterThan(promptIdx);
+		// The prompt heading (level 2) carries the `^turn-N` anchor and appears
+		// as the last thing on its line. The AI response for a paired turn
+		// follows directly below with no heading of its own. The previous
+		// bug had the prompt and AI in the wrong order or the prompt text
+		// demoted inside the AI body.
+		const turn1Idx = body.indexOf("^turn-1");
+		const turn2Idx = body.indexOf("^turn-2");
+		expect(turn1Idx).toBeGreaterThan(0);
+		expect(turn2Idx).toBeGreaterThan(turn1Idx);
 
 		// The prompt text is rendered as plain paragraph text (heading marker
-		// stripped), not as its own heading in the body.
+		// stripped), not as its own heading in the body. The prompt body
+		// follows in a closed callout below the heading.
 		expect(body).toContain("When was the biggest forest fire");
-		// The summary heading (level 2) carries the prompt text as its label.
-		expect(body).toMatch(/## When was the biggest forest fire[^\n]*\^turn-1-prompt/);
-		// The prompt body (the line right after the summary heading) has no
-		// leading "# " — it is plain paragraph text.
-		expect(body).toMatch(/## When was the biggest forest fire[^\n]*\nWhen was the biggest forest fire/);
+		expect(body).toMatch(/> \[!Prompt\]\+/);
+		expect(body).toMatch(/> When was the biggest forest fire/);
+	// The prompt body (the line immediately after the callout title) has no
+	// leading "# " — it is plain paragraph text inside the callout.
+	expect(body).toMatch(/> When was the biggest forest fire in WA state\?/);
 
 		// The response body does NOT contain the prompt as a heading.
 		expect(body).not.toContain("#### When was the biggest forest fire");

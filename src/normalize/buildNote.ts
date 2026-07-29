@@ -1,6 +1,6 @@
 import { DialogFile, DialogTurn } from "../parsers/types";
 import { renderSourceLine, parseSourceLine, SourceLinkState } from "../zotero/sourceLinkState";
-import { renderTurn, assignTurnIds, aiHeadingLabel } from "./turns";
+import { renderTurn, assignTurnIds } from "./turns";
 import { HeadlineOptions, headlineForPrompt } from "./headlines";
 
 interface SourceEntry {
@@ -52,12 +52,14 @@ export function buildNoteBody(
 		startTurnId?: number;
 		existingSourceText?: string;
 		collapseBlankLines?: boolean;
+		collapsePromptCallouts?: boolean;
 		headlineOptions?: HeadlineOptions;
 	} = {}
 ): { body: string; sourceLines: string[] } {
 	const startTurnId = options.startTurnId ?? 1;
 	const existingSourceText = options.existingSourceText ?? "";
 	const collapseBlankLines = options.collapseBlankLines ?? true;
+	const collapsePromptCallouts = options.collapsePromptCallouts ?? true;
 	const headlineOptions: HeadlineOptions = options.headlineOptions ?? { method: "lead" };
 
 	// url -> full source entry, seeded with whatever the existing # Sources
@@ -85,11 +87,31 @@ export function buildNoteBody(
 
 	dialog.turns.forEach((turn, i) => {
 		const turnId = turnIds[i];
-		const bodyText = rewriteCitationsForTurn(turn, turnId, sourcesByUrl, () => `s${sourceCounter++}`);
-		// For a prompt turn the heading is the computed headline; for an AI
-		// turn it is a stable label so the outline pane reads uniformly.
-		const headingText = turn.role === "prompt" ? promptHeadingText(turn.rawText, turnId, headlineOptions) : aiHeadingLabel(turnId);
-		turnBlocks.push(renderTurn(turn.role, bodyText, turnId, headingText));
+		const mintNextSourceId = () => {
+			const id = "s" + sourceCounter;
+			sourceCounter++;
+			return id;
+		};
+		const bodyText = rewriteCitationsForTurn(turn, turnId, sourcesByUrl, mintNextSourceId);
+		// The prompt heading is the turn's only heading and carries both
+		// anchor IDs. A paired AI turn (one that immediately follows a
+		// prompt with the same turnId) has no heading of its own — the
+		// prompt heading above serves the turn. A standalone AI turn (no
+		// preceding prompt) still needs a heading, so it gets a stable
+		// fallback label (not derived from the AI's response text, which
+		// would leak citation markers and internal headings into the
+		// outline pane).
+		const isPairedAI =
+			turn.role === "ai" && i > 0 && dialog.turns[i - 1].role === "prompt" && turnIds[i - 1] === turnId;
+		if (isPairedAI) {
+			turnBlocks.push(renderTurn(turn.role, bodyText, turnId, "", { includeHeading: false }));
+		} else {
+			const headingText =
+				turn.role === "prompt"
+					? promptHeadingText(turn.rawText, turnId, headlineOptions)
+					: `AI response (turn ${turnId})`;
+			turnBlocks.push(renderTurn(turn.role, bodyText, turnId, headingText, { calloutCollapsed: collapsePromptCallouts }));
+		}
 	});
 
 	// Sources section below — kept as before.
@@ -136,9 +158,10 @@ function renderSourceLink(vendor: DialogFile["sourceVendor"], url: string): stri
  *     before a heading, so a heading is always the start of a line with
  *     a single blank line above it (or nothing, if it's the very first
  *     non-empty line);
- *   - removes the trailing blank lines that follow a heading's text, so
- *     the heading is visually attached to its own body rather than
- *     floating;
+ *   - collapses 2+ consecutive blank lines that follow a heading into
+ *     a single blank line, so the heading is visually attached to its
+ *     own body (but the body is still separated by exactly one blank
+ *     line, not zero);
  *   - collapses any run of 2+ consecutive blank lines to one, eliminating
  *     accidental double-spacing from paste or merge operations.
  * Used only when the user has the "collapse blank lines" setting on.
@@ -146,8 +169,8 @@ function renderSourceLink(vendor: DialogFile["sourceVendor"], url: string): stri
 export function collapseWhitespace(body: string): string {
 	return body
 		.replace(/^[ \t]*\n+/, "") // strip leading blank lines
-		.replace(/[ \t]*\n[ \t]*\n+(?=#{1,6}\s)/g, "\n")
-		.replace(/(#{1,6}[^\n]*)\n[ \t]*\n+/g, "$1\n")
+		.replace(/[ \t]*\n[ \t]*\n+(?=#{1,6}\s)/g, "\n") // blank lines before a heading -> 0
+		.replace(/(#{1,6}[^\n]*)\n[ \t]*\n+/g, "$1\n\n") // blank lines after a heading -> exactly 1
 		.replace(/\n{3,}/g, "\n\n");
 }
 

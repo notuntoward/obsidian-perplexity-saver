@@ -1,54 +1,72 @@
 import { DialogTurn, NoteRole } from "../parsers/types";
 
 /**
- * Display label for the AI-response heading on a turn. The prompt
- * heading is the computed headline (varies per turn); the AI heading
- * is a stable label so the outline pane reads "AI response (turn N)"
- * regardless of content.
- */
-const AI_HEADING_LABEL = (turnId: number) => `AI response (turn ${turnId})`;
-
-/**
- * Render one turn as a markdown block. The new turn structure has TWO
- * headings per turn:
+ * Render one turn as a markdown block. Each turn has ONE heading (the
+ * prompt heading at level 2), not two. The prompt heading carries a
+ * single block ID `^turn-N` on the same line, so it serves as the
+ * turn's only anchor. Using a single ID (rather than two like
+ * `^turn-N-prompt ^turn-N-ai`) avoids Obsidian wrapping the second
+ * `^` anchor onto its own visual line in the editor.
  *
  *   - For a prompt turn: a level-2 summary heading (the headline derived
- *     from the prompt text) carrying the permanent `^turn-N-prompt` block
- *     ID, followed by the prompt body. Any leading "# " heading markers
- *     in the prompt are stripped first so the prompt is always plain
- *     paragraph text under its heading, never its own headline.
- *   - For an AI turn: a level-3 "AI response (turn N)" heading carrying
- *     the permanent `^turn-N-ai` block ID, followed by the AI body. The
- *     body is heading-demoted so the topmost heading sits at level 4,
- *     one below the AI response heading, never colliding with it.
+ *     from the prompt text) carrying the `^turn-N` block ID, followed by
+ *     a closed `> [!Prompt]+` callout containing the prompt body. Any
+ *     leading "# " heading markers in the prompt are stripped first so
+ *     the prompt is always plain paragraph text inside the callout, never
+ *     its own headline.
+ *   - For an AI turn: just the AI body, no heading. The body is heading-
+ *     demoted so the topmost heading sits at level 3, one level below
+ *     the level-2 prompt heading, and never collides with it.
  *
- * The block IDs `^turn-N-prompt` and `^turn-N-ai` are the stable
- * machine-readable anchor for everything else (prune, append, getSurvivingTurnIds,
- * getNextTurnIndex) and must not change; the only thing changing is the
- * heading text and the level hierarchy.
+ * The block ID `^turn-N` is the stable machine-readable anchor for
+ * everything else (prune, append, getSurvivingTurnIds, getNextTurnIndex).
  */
 export function renderTurn(
 	role: NoteRole,
 	rawText: string,
 	turnId: number,
-	headingText: string
+	headingText: string,
+	options?: { includeHeading?: boolean; calloutCollapsed?: boolean }
 ): string {
-	const anchor = `^turn-${turnId}-${role}`;
-	if (role === "prompt") {
-		const body = stripHeadingMarkers(rawText);
-		return `## ${headingText} ${anchor}\n\n${body}\n`;
+	const calloutSuffix = options?.calloutCollapsed !== false ? "+" : "-";
+	const includeHeading = options?.includeHeading ?? true;
+	if (!includeHeading) {
+		// AI turn that is part of a prompt+ai pair: no heading of its own.
+		// The prompt heading above serves as the turn's anchor. The
+		// body is heading-demoted so the topmost heading sits at level 3,
+		// one below the level-2 prompt heading.
+		const body = demoteHeadingsBelow(rawText, 3);
+		return `${body}\n`;
 	}
-	const body = demoteHeadingsBelow(rawText, 4);
-	return `### ${AI_HEADING_LABEL(turnId)} ${anchor}\n\n${body}\n`;
-}
-
-/**
- * The display label used for an AI-response heading at the given turn
- * number. Exposed so the caller (buildNoteBody) can pre-compute the
- * heading text for an AI turn without re-deriving it.
- */
-export function aiHeadingLabel(turnId: number): string {
-	return AI_HEADING_LABEL(turnId);
+	// Every other turn (all prompt turns, and standalone AI turns that
+	// have no preceding prompt) gets TWO structural elements:
+	//   1. A level-2 heading carrying the computed headline text and the
+	//      single `^turn-N` block ID. This is the thing that shows up in
+	//      the outline pane and is the machine-readable anchor for the
+	//      turn.
+	//   2. A closed Obsidian callout (`> [!Prompt]+`) containing the
+	//      prompt body (for a normal prompt turn) or a fallback label
+	//      (for a standalone AI turn). Closed by default so the
+	//      prompt text collapses into a single clickable block.
+	// The AI body for a paired turn follows directly below, with no
+	// heading of its own.
+	const heading = `## ${headingText} ^turn-${turnId}`;
+	if (role === "prompt") {
+		// Fold the prompt body into a closed callout as additional
+		// `> ` lines so it collapses by default.
+		const strippedBody = stripHeadingMarkers(rawText);
+		const foldedBody = strippedBody
+			.split("\n")
+			.map((line) => (line.length > 0 ? `> ${line}` : ">"))
+			.join("\n");
+		return `${heading}\n\n> [!Prompt]${calloutSuffix}\n${foldedBody}\n`;
+	}
+	// Standalone AI turn: heading with the fallback label, followed by
+	// a closed callout (empty body since the AI body comes after).
+	// The AI body is heading-demoted so its topmost heading sits at
+	// level 3.
+	const body = demoteHeadingsBelow(rawText, 3);
+	return `${heading}\n\n> [!Prompt]${calloutSuffix}\n\n${body}\n`;
 }
 
 /**
@@ -69,9 +87,9 @@ export function stripHeadingMarkers(text: string): string {
  * (capped at level 6). If `text` has no headings, it is returned
  * unchanged.
  *
- * Used for AI turns with targetMinLevel=4, so the topmost heading in
- * the response lands one level below the `### AI response` structural
- * heading (which sits at level 3) and never collides with it.
+ * Used for AI turns with targetMinLevel=3, so the topmost heading in
+ * the response lands one level below the `## prompt` structural heading
+ * (which sits at level 2) and never collides with it.
  */
 export function demoteHeadingsBelow(text: string, targetMinLevel: number): string {
 	const headingRe = /^(#{1,6})(\s+)/gm;
@@ -120,11 +138,13 @@ export function assignTurnIds(turns: DialogTurn[], startTurnId: number): number[
 
 /**
  * Find the next available turn ID by scanning the file for the highest
- * existing `^turn-N-role` anchor. Self-correcting against manual edits
+ * existing `^turn-N` anchor. Self-correcting against manual edits
  * (e.g. a user deleting a middle turn does not desync the counter).
+ * For backward compatibility, also matches the old `^turn-N-prompt` and
+ * `^turn-N-ai` formats — both yield the same turn number.
  */
 export function getNextTurnIndex(noteText: string): number {
-	const re = /\^turn-(\d+)-(?:prompt|ai)/g;
+	const re = /\^turn-(\d+)/g;
 	let max = 0;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(noteText)) !== null) {
@@ -136,12 +156,12 @@ export function getNextTurnIndex(noteText: string): number {
 
 /**
  * Scan the body and return the set of turn IDs that still have at least
- * one `^turn-N-*` anchor present. Used by the prune command to decide
+ * one `^turn-N` anchor present. Used by the prune command to decide
  * which source lines are orphaned.
  */
 export function getSurvivingTurnIds(noteText: string): Set<number> {
 	const ids = new Set<number>();
-	const re = /\^turn-(\d+)-(?:prompt|ai)/g;
+	const re = /\^turn-(\d+)/g;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(noteText)) !== null) {
 		ids.add(parseInt(m[1], 10));

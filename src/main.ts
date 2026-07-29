@@ -17,6 +17,12 @@ interface PerplexitySaverSettings {
 	 */
 	collapseBlankLines: boolean;
 	/**
+	 * When on (the default), prompt callouts are rendered as collapsed
+	 * by default (`> [!Prompt]+`). When off, they are rendered as
+	 * expanded by default (`> [!Prompt]-`).
+	 */
+	collapsePromptCallouts: boolean;
+	/**
 	 * Algorithm for the summary heading above each user prompt in a saved
 	 * note. "lead" uses the first sentence (fast, no deps); "tf-idf" ranks
 	 * every sentence by TF-IDF with a lead-position prior and picks the
@@ -37,6 +43,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	searchesFolder: "ai-searches",
 	generatedTag: "ai-generated",
 	collapseBlankLines: true,
+	collapsePromptCallouts: true,
 	headlineMethod: "lead",
 	headlineMaxChars: 100,
 	headlineLeadBias: 0.20,
@@ -223,6 +230,7 @@ class InlineInputWidget extends WidgetType {
 			searchesFolder: this.plugin.settings.searchesFolder,
 			generatedTag: this.plugin.settings.generatedTag,
 			collapseBlankLines: this.plugin.settings.collapseBlankLines,
+			collapsePromptCallouts: this.plugin.settings.collapsePromptCallouts,
 			headlineOptions: this.plugin.headlineOptions(),
 		});
 
@@ -315,6 +323,20 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.collapseBlankLines)
 					.onChange(async (value) => {
 						this.plugin.settings.collapseBlankLines = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Collapse prompt callouts")
+			.setDesc(
+				"When on, prompt callouts start collapsed (`> [!Prompt]+`). When off, they start expanded (`> [!Prompt]-`)."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.collapsePromptCallouts)
+					.onChange(async (value) => {
+						this.plugin.settings.collapsePromptCallouts = value;
 						await this.plugin.saveSettings();
 					})
 			);

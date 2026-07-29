@@ -10,35 +10,48 @@ import {
 import { DialogTurn } from "../../src/parsers/types";
 
 describe("renderTurn", () => {
-	it("renders a prompt turn with a level-2 headline heading and block ID", () => {
+	it("renders a prompt turn as a level-2 heading plus a closed callout containing the prompt body", () => {
 		const out = renderTurn("prompt", "Hello there", 1, "A greeting");
-		expect(out).toContain("## A greeting ^turn-1-prompt");
-		expect(out).toContain("Hello there");
+		// The level-2 heading carries the single `^turn-N` block ID and
+		// the computed headline. A single ID (not two) avoids Obsidian
+		// wrapping the second `^` anchor onto its own visual line.
+		expect(out).toContain("## A greeting ^turn-1");
+		// The prompt body is folded inside a closed `> [!Prompt]+` callout
+		// so it collapses by default.
+		expect(out).toMatch(/> \[!Prompt\]\+\n> Hello there/);
 	});
 
-	it("renders an AI turn with a level-3 AI response heading and block ID", () => {
-		const out = renderTurn("ai", "Greetings", 1, "ignored");
-		expect(out).toContain("### AI response (turn 1) ^turn-1-ai");
+	it("renders an AI turn with no heading of its own when includeHeading is false (the prompt heading above is the turn's only heading)", () => {
+		const out = renderTurn("ai", "Greetings", 1, "ignored", { includeHeading: false });
+		expect(out).not.toMatch(/^#{1,6}\s/m); // no heading line at all
 		expect(out).toContain("Greetings");
+		// The AI heading is gone; the prompt heading above is the turn's
+		// only visible heading and carries both anchor IDs.
+		expect(out).not.toContain("AI response");
 	});
 
-	it("demotes headings in AI turn bodies so the topmost lands at level 4", () => {
-		const out = renderTurn("ai", "## A heading\n\ntext", 1, "ignored");
-		// The AI response heading is at level 3, so response headings should start at level 4.
-		expect(out).toContain("#### A heading");
+	it("demotes headings in AI turn bodies so the topmost lands at level 3", () => {
+		const out = renderTurn("ai", "## A heading\n\ntext", 1, "ignored", { includeHeading: false });
+		// The prompt heading is at level 2, so response headings should start at level 3.
+		expect(out).toContain("### A heading");
 		expect(out).not.toMatch(/^## A heading/m);
 	});
 
-	it("demotes an h3 to h3 (no shift needed if already deep enough)", () => {
-		const out = renderTurn("ai", "### Already deep\n\ntext", 1, "ignored");
-		// Level 3 -> target 4: 1 level demoted => 4
-		expect(out).toContain("#### Already deep");
+	it("demotes an h2 to h3 (one level shift to reach the target)", () => {
+		const out = renderTurn("ai", "## Already there\n\ntext", 1, "ignored", { includeHeading: false });
+		expect(out).toContain("### Already there");
+	});
+
+	it("leaves a deep h5 alone (no shift needed, already below the target)", () => {
+		const out = renderTurn("ai", "##### Already deep\n\ntext", 1, "ignored", { includeHeading: false });
+		// minLevel=5 >= targetMinLevel=3, so offset=0 and headings are unchanged.
+		expect(out).toContain("##### Already deep");
 	});
 
 	it("caps heading shift at level 6", () => {
-		const out = renderTurn("ai", "## x\n\n###### y\n\ntext", 1, "ignored");
-		// Going from 2 -> 4 (2 levels), and 6 stays 6 (capped at max 6).
-		expect(out).toContain("#### x");
+		const out = renderTurn("ai", "## x\n\n###### y\n\ntext", 1, "ignored", { includeHeading: false });
+		// Going from 2 -> 3 (1 level), and 6 stays 6 (capped at max 6).
+		expect(out).toContain("### x");
 		expect(out).toContain("###### y");
 	});
 
@@ -118,15 +131,15 @@ describe("getNextTurnIndex", () => {
 		expect(getNextTurnIndex("no turns here")).toBe(1);
 	});
 
-	it("returns max+1 across both roles", () => {
-		const text = `### AI response (turn 1) ^turn-1-ai\n\n## Headline one (turn 2) ^turn-2-prompt\n\n### AI response (turn 5) ^turn-5-ai`;
+	it("returns max+1 across all turns, whether the anchor uses the new ^turn-N or old ^turn-N-prompt format", () => {
+		const text = `## Headline one (turn 1) ^turn-1\n\n> [!Prompt]- Headline two (turn 2) ^turn-2\n\n## Headline five (turn 5) ^turn-5-prompt ^turn-5-ai`;
 		expect(getNextTurnIndex(text)).toBe(6);
 	});
 });
 
 describe("getSurvivingTurnIds", () => {
 	it("returns the set of all present turn ids", () => {
-		const text = `### AI response (turn 2) ^turn-2-ai\n\n### AI response (turn 4) ^turn-4-ai\n\n## Headline five (turn 5) ^turn-5-prompt`;
+		const text = `## Headline (turn 2) ^turn-2\n\n## Headline (turn 4) ^turn-4-prompt ^turn-4-ai\n\n## Headline (turn 5) ^turn-5`;
 		const ids = getSurvivingTurnIds(text);
 		expect([...ids].sort()).toEqual([2, 4, 5]);
 	});

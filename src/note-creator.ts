@@ -13,6 +13,7 @@ interface CreateNoteParams {
 	searchesFolder: string;
 	generatedTag: string;
 	collapseBlankLines: boolean;
+	collapsePromptCallouts?: boolean;
 	headlineOptions: HeadlineOptions;
 }
 
@@ -40,7 +41,7 @@ export type CreateNoteResult = CreateNoteSuccess | CreateNoteError;
 export async function createPerplexityNote(
 	params: CreateNoteParams
 ): Promise<CreateNoteResult> {
-	const { app, activeFile, clipboardContent, filename, searchesFolder, generatedTag, collapseBlankLines, headlineOptions } = params;
+	const { app, activeFile, clipboardContent, filename, searchesFolder, generatedTag, collapseBlankLines, collapsePromptCallouts = true, headlineOptions } = params;
 
 	const sanitized = sanitizeFilename(filename);
 	if (!sanitized) {
@@ -50,7 +51,7 @@ export async function createPerplexityNote(
 	// Defensively strip any pre-existing frontmatter the clipboard carries.
 	const { body: stripped, existingFrontmatter } = stripLeadingFrontmatterIfPresent(clipboardContent);
 	const dialog = detectAndParse(stripped);
-	const { body } = buildNoteBody(dialog, { collapseBlankLines, headlineOptions });
+	const { body } = buildNoteBody(dialog, { collapseBlankLines, collapsePromptCallouts, headlineOptions });
 
 	const activeFolderPath = activeFile.parent ? activeFile.parent.path : "";
 	const folderPath = normalizePath(
