@@ -139,3 +139,71 @@ describe("inline source link", () => {
 		expect(body).not.toContain("**Source:**");
 	});
 });
+
+describe("stock Perplexity exports where the response has no level-2 headings", () => {
+	// Regression: a real Perplexity export where the user's question is a
+	// level-1 heading and the response is a single paragraph with no ## headings
+	// at all. The parser must still split prompt from response, and the
+	// renderer must place the prompt heading (level 2) BEFORE the AI response
+	// heading (level 3). Previously the prompt turn was dropped entirely and
+	// the prompt text was demoted inside the AI body.
+	it("splits prompt from response when the body starts with a level-1 heading and the response has no ## headings", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/d4ac5d72-ef0e-4338-84a1-ce92ae7beba5) · *2026-07-27 10:18 PDT*
+# When was the biggest forest fire in WA state?
+
+The **Carlton Complex Fire** was Washington's biggest **single wildfire** on record. It began on **July 14, 2014**, when lightning ignited several fires in north-central Washington's Methow Valley; they merged and ultimately burned about **256,108 acres** (roughly 400 square miles).[1][2]
+
+# Citations:
+[1] [Carlton Complex Fire](https://en.wikipedia.org/wiki/Carlton_Complex_Fire)
+[2] [Megafire | Window | Western Washington University](https://window.wwu.edu/megafire)
+---
+# Name two famous ballet dancers and the best quarter back of all time
+
+Two famous ballet dancers are **Anna Pavlova**, celebrated for *The Dying Swan*, and **Misty Copeland**, a trailblazing principal dancer with American Ballet Theatre.[3]
+
+The best NFL quarterback of all time is most commonly considered **Tom Brady**: he won seven Super Bowls and is the NFL's career leader in passing yards.[4][5]
+
+# Citations:
+[3] [Famous Ballet Dancers Who Shaped the Art Form](https://www.southerncaliforniaballet.org/articles/famous-ballet-dancers-who-shaped-the-art-form)
+[4] [Top 25 quarterbacks of all time: Patriots' Tom Brady leads list](https://www.nfl.com/news/top-25-quarterbacks-of-all-time-patriots-tom-brady-leads-list-0ap3000001035041)
+[5] [NFL All-Time Pass Yards Leaders](http://www.espn.com/nfl/history/leaders/_/stat/passyds)`;
+		const dialog = detectAndParse(raw);
+		// Two sections separated by ---, each producing a prompt+ai pair.
+		expect(dialog.turns).toHaveLength(4);
+
+		// Prompt turns have the user's question as their raw text.
+		expect(dialog.turns[0].role).toBe("prompt");
+		expect(dialog.turns[0].rawText).toContain("When was the biggest forest fire");
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toContain("Name two famous ballet dancers");
+
+		// AI turns have the response body (no heading demotion at the parser).
+		expect(dialog.turns[1].role).toBe("ai");
+		expect(dialog.turns[1].rawText).toContain("Carlton Complex Fire");
+		expect(dialog.turns[3].role).toBe("ai");
+		expect(dialog.turns[3].rawText).toContain("Anna Pavlova");
+
+		const { body } = buildNoteBody(dialog);
+
+		// The prompt heading (level 2) appears BEFORE the AI response heading
+		// (level 3) for each turn. The previous bug had these in the wrong
+		// order: the AI heading came first and the prompt text was demoted
+		// inside the AI body.
+		const promptIdx = body.indexOf("^turn-1-prompt");
+		const aiIdx = body.indexOf("^turn-1-ai");
+		expect(promptIdx).toBeGreaterThan(0);
+		expect(aiIdx).toBeGreaterThan(promptIdx);
+
+		// The prompt text is rendered as plain paragraph text (heading marker
+		// stripped), not as its own heading in the body.
+		expect(body).toContain("When was the biggest forest fire");
+		// The summary heading (level 2) carries the prompt text as its label.
+		expect(body).toMatch(/## When was the biggest forest fire[^\n]*\^turn-1-prompt/);
+		// The prompt body (the line right after the summary heading) has no
+		// leading "# " — it is plain paragraph text.
+		expect(body).toMatch(/## When was the biggest forest fire[^\n]*\nWhen was the biggest forest fire/);
+
+		// The response body does NOT contain the prompt as a heading.
+		expect(body).not.toContain("#### When was the biggest forest fire");
+	});
+});

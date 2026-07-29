@@ -192,13 +192,21 @@ function splitStockSection(section: string): {
 		bodyText = bodyText.slice(0, bodyText.indexOf(dividerMatch[0])).trim();
 	}
 
-	// Heuristic for stock Perplexity: if the body contains a level-2 response
-	// heading, the first paragraph is the user prompt and everything after the
-	// first blank line is the AI response. Otherwise the whole body is the
-	// response (e.g. a pasted response with no prompt).
+	// Heuristic for stock Perplexity: split prompt from response at the
+	// first blank line. The trigger is either:
+	//   - the body STARTS with a level-1 (# ) heading (Perplexity echoes
+	//     the user's typed question as a level-1 heading; everything
+	//     after the first blank line is the AI response), OR
+	//   - a level-2 (## ) or higher response heading is present in the
+	//     body (the response uses its own heading hierarchy; the
+	//     paragraph immediately before the first such heading is the
+	//     prompt).
+	// If neither is present, the whole body is treated as the response
+	// (e.g. a pasted response with no prompt and no headings).
+	const startsWithH1 = /^#\s+\S/m.test(bodyText);
 	const hasResponseHeading = /^##\s+\S/m.test(bodyText);
 	const firstBlankMatch = bodyText.match(/\n\s*\n/);
-	if (hasResponseHeading && firstBlankMatch && firstBlankMatch.index !== undefined) {
+	if ((startsWithH1 || hasResponseHeading) && firstBlankMatch && firstBlankMatch.index !== undefined) {
 		const promptText = bodyText.slice(0, firstBlankMatch.index).trim();
 		const responseText = bodyText.slice(firstBlankMatch.index + firstBlankMatch[0].length).trim();
 		return { promptText, responseText, sourceListText };
