@@ -108,3 +108,30 @@ export class TFile {
 export function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/");
 }
+
+// Minimal YAML subset parser used by normalize/frontmatter.ts. Handles
+// the limited frontmatter shapes that pasted AI dialogs might carry
+// (key: value lines, no nested objects). Sufficient for the strip-leading
+// fence helper; not a full YAML implementation.
+export function parseYaml(input: string): unknown {
+	const result: Record<string, unknown> = {};
+	for (const line of input.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) continue;
+		const m = trimmed.match(/^([A-Za-z0-9_\-]+):\s*(.*)$/);
+		if (!m) continue;
+		const key = m[1];
+		let value: unknown = m[2].trim();
+		// Drop surrounding quotes if present.
+		if (typeof value === "string" && /^["'].*["']$/.test(value as string)) {
+			value = (value as string).slice(1, -1);
+		}
+		// Simple list form: [a, b, c]
+		if (typeof value === "string" && (value as string).startsWith("[") && (value as string).endsWith("]")) {
+			const inner = (value as string).slice(1, -1).trim();
+			value = inner.length === 0 ? [] : inner.split(",").map((s) => s.trim());
+		}
+		result[key] = value;
+	}
+	return result;
+}

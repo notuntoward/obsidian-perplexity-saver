@@ -12,3 +12,19 @@
 .perplexity-saver-confirm-button {
 	order: 2;
 }
+
+/* Grayed-out setting row, used by the "Heading lead bias" input when
+   the "Prompt heading method" is set to "Lead sentence" (which has no
+   use for the lead-bias parameter). The `is-disabled` class is toggled
+   in code on the setting's container element, mirroring the pattern
+   used by the obsidian-visible-cursor plugin. */
+.setting-item.is-disabled {
+	opacity: 0.5;
+	pointer-events: none;
+}
+
+.setting-item.is-disabled input,
+.setting-item.is-disabled select,
+.setting-item.is-disabled button {
+	cursor: not-allowed;
+}

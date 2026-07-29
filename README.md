@@ -38,10 +38,10 @@ Whole dialogs are capturable when you install the obsidian web clipper browser p
 
 # Full workflow
 
-1. **(Browser)** Ask your question(s) in Perplexity as normal.
-2. **(Browser)** Click the "📋 Copy for Obsidian" button. This copies a
-   Markdown version of the conversation, with a link back to the original
-   Perplexity thread, to your clipboard.
+1. **(Browser)** Ask your question(s) in Perplexity or Gemini as normal.
+2. **(Browser)** Copy the conversation to your clipboard (Perplexity: click
+   the "📋 Copy for Obsidian" button; Gemini: open the Obsidian Web
+   Clipper, set destination to Clipboard, and click Copy).
 3. **(Obsidian)** Place your cursor in the note you're writing, where you want
    a link to the saved note to appear.
 4. **(Obsidian)** Press your assigned hotkey. An inline input field appears at
@@ -52,11 +52,12 @@ Whole dialogs are capturable when you install the obsidian web clipper browser p
 6. **(Obsidian)** Press Enter. The input is replaced with a link to the newly
    created note.
 
-The note **content** always comes from the clipboard (the Perplexity
-conversation you copied). The plugin automatically creates a subfolder (default:
+The note **content** always comes from the clipboard (the AI conversation
+you copied). The plugin automatically creates a subfolder (default:
 `ai-searches`) in the same folder as your current note (if it doesn't already
-exist), saves the clipboard content into a new note there, tags it (default:
-`ai-generated`), and inserts a link to it at your cursor position.
+exist), saves the normalized clipboard content into a new note there, tags
+it (default: `ai-generated`), and inserts a link to it at your cursor
+position.
 
 ## Using selected text as the filename
 
@@ -70,13 +71,252 @@ in your current note.
 Selecting text is purely a filename convenience — it never changes what gets
 saved into the note body.
 
+# The uniform note format
+
+Every saved note uses the same markdown structure regardless of whether
+the clipboard came from Perplexity or Gemini, so a single Obsidian query,
+outline pane, or search works across all your AI dialogs.
+
+```markdown
+---
+ai-dialog-format: v1
+ai-source-vendor: perplexity
+ai-source-url: https://www.perplexity.ai/search/...
+tags: [ai-generated]
+---
+
+# Dialog
+
+**Source:** [perplexity](https://www.perplexity.ai/search/...)
+
+## How do I configure foo mode? ^turn-1-prompt
+
+user's first question, with any leading "#" stripped
+
+### AI response (turn 1) ^turn-1-ai
+
+first AI response, with a trailing sources list removed
+
+## Does it work with baz? ^turn-2-prompt
+
+> Does it work with baz?
+
+Explain.
+
+### AI response (turn 2) ^turn-2-ai
+
+follow-up response
+
+# Sources
+
+[^s1]: [Page title](https://url) (turn 1) <!-- src-url: https://url -->
+[^s2]: [Page title](https://url) (turn 2) <!-- src-url: https://url -->
+[^s3]: [Page title](https://url) (turns 1, 2) <!-- src-url: https://url -->
+```
+
+Key conventions:
+
+- **Each turn has two headings.** The first is a level-2 **summary
+  heading** derived from the prompt text (see "Headlines" below), with
+  the permanent `^turn-N-prompt` block ID. The second is a level-3
+  `### AI response (turn N)` heading with the permanent `^turn-N-ai`
+  block ID. A prompt and the AI response immediately following it
+  share one logical turn number; the next pair gets turn 2, and so on.
+  The block IDs are what makes the pairing machine-readable, and the
+  number is what makes the outline pane readable.
+- **All citations from all turns go into a single `# Sources` section
+  at the end.** Inline `[1]` markers in the AI response are rewritten
+  to the note's own footnote IDs (`[^s1]`, `[^s2]`, etc.) so they
+  click through to the entry. The same URL cited in two different turns
+  is one source line with `(turns 1, 3)`, not two duplicate lines.
+- **Each source line carries an invisible `<!-- src-url: ... -->` comment
+  holding the original URL.** This is the stable key a future Zotero
+  relinker uses to match an entry across notes, regardless of how the
+  visible link above has been edited.
+- **The inline `**Source:** [perplexity](url)` line at the top is
+  clickable from both the editor and reading view.** It is also
+  duplicated in frontmatter as `ai-source-vendor` and `ai-source-url`
+  for programmatic access.
+- **AI response body headings are demoted so the topmost lands at level
+  4** (one level below the `### AI response` heading at level 3).
+  This preserves the original heading hierarchy in the response
+  without ever colliding with the structural turn headings.
+
+# Headlines
+
+Above each user prompt turn, the plugin inserts a level-2 summary
+heading derived from the prompt text. This makes the Obsidian
+outline pane show what each turn was about at a glance, rather
+than a wall of identical "Prompt (turn N)" labels. Two selectable
+algorithms are available (Settings → Headline method):
+
+## Method 1: Lead sentence (default)
+
+Uses `Intl.Segmenter` to split the prompt into sentences, then
+adds sentences one at a time until adding another would exceed
+`Headline max characters` (default 100). If the first sentence
+is too long, it is truncated cleanly at a word boundary with an
+ellipsis. No external dependencies; fast and deterministic.
+
+## Method 2: TF-IDF ranked sentence
+
+Tokenizes every sentence, drops stopwords, scores each by
+TF-IDF with a configurable lead-position prior, and picks the
+highest-scoring sentence. The `stopword` package is used for
+scoring only; the returned headline is an original sentence
+(not a stop-word-stripped keyword phrase), so it remains
+grammatical. Two tunings (grayed out unless Method 2 is
+selected):
+
+- **Headline lead bias** (default 0.20): amount to favor
+  sentences near the beginning. 0 disables the positional
+  prior entirely; 0.20 is a gentle nudge toward the lead;
+  0.30+ makes lead extraction dominate; 0.5+ effectively
+  always picks the first sentence. This setting is grayed
+  out in the settings tab unless "TF-IDF ranked sentence" is
+  selected as the prompt heading method.
+- **Headline max characters** (default 100): maximum length of
+  the summary heading, including a possible ellipsis. 90–120
+  is suitable for note titles and sidebar lists. At 60 or less
+  the method is necessarily a truncator rather than a robust
+  summarizer.
+
+If both algorithms return an empty string (e.g. the prompt is
+too short to yield a meaningful sentence), the plugin falls back
+to a safe default of `Prompt (turn N)` so the heading is never
+blank.
+
+# Appending to a dialog
+
+Long conversations come back in pieces. To continue a dialog:
+
+1. **(Browser)** Continue the same thread in Perplexity or Gemini. Copy the
+   new turn(s) to your clipboard the same way as for an import.
+2. **(Obsidian)** Open the note you want to extend. Place your cursor anywhere
+   in the note (it doesn't matter where — the command operates on the
+   whole file).
+3. **(Obsidian)** Run the **"Append AI dialog from clipboard to this note"**
+   command (assign a hotkey in Settings → Hotkeys to make this fast).
+
+What the command does:
+
+- Parses the new clipboard content the same way an import does (vendor
+  auto-detected: Perplexity or Gemini).
+- Numbers the new turns starting at **one past the highest existing turn
+  number** in the note. If the note ends with `### AI response (turn 2)
+  ^turn-2-ai`, the appended turns become a level-2 summary heading
+  `^turn-3-prompt` and a level-3 `### AI response (turn 3) ^turn-3-ai`.
+- Splices the new turns into the note body, just before the `# Sources`
+  heading (or at the end of the file if there's no Sources section yet).
+- **Regenerates the entire `# Sources` block**, not just appends to it.
+  This is required: if a new turn cites a URL that was already in
+  `# Sources`, the existing entry's ownership list grows in place
+  (e.g. `(turn 1)` becomes `(turns 1, 3)`), and a fresh source is
+  minted only for genuinely new URLs. A pure tail-append could not
+  preserve this.
+- If the new clipboard has no turns the parser can recognize, the
+  command fails with a notice and the file is not touched.
+
+A status notice reports what happened:
+`Appended 2 turn(s) and 1 new source(s).`
+
+If the note has no `^turn-N-*` anchors (i.e. it was not created by this
+plugin, or you hand-edited all turn headings away), the command refuses
+with: "This note has no ^turn-N-* anchors. Use 'Import AI dialog from
+clipboard' on a new note instead." Run the import command on a new
+note first.
+
+# Pruning orphaned sources
+
+Each source line records which turn(s) introduced or cited it
+(`(turn 1)` or `(turns 1, 3)`). If you edit a note and delete a
+summary heading `## ... ^turn-1-prompt` together with its
+`### AI response (turn 1) ^turn-1-ai` pair — for example, to remove an
+embarrassing early prompt or compress a noisy stretch of the dialog —
+the source(s) that only that turn referenced become orphaned. They
+still sit in `# Sources` with a `(turn 1)` annotation pointing at a
+heading that no longer exists.
+
+To clean them up:
+
+1. **(Obsidian)** Open the note. Place your cursor anywhere in the note.
+2. **(Obsidian)** Run the **"Prune orphaned sources in this dialog
+   note"** command.
+
+A confirmation modal appears (see below) listing every source line that
+references at least one deleted turn. Confirm with the button at the
+bottom, or cancel.
+
+## The two cases the modal distinguishes
+
+The modal separates the action into two categories, so you can see at
+a glance what will happen to each source before you commit:
+
+### 1. Full removal — "will be removed"
+
+The source's only citing turn was the one you deleted. The entire
+source line is deleted from `# Sources`. Example wording:
+> [^s2] [Help with PDF++ and text selection highlighting](https://...)
+> - will be removed (only cited from turn 2, now deleted)
+
+### 2. Partial adjustment — "will be kept, dropping its reference to deleted turn N"
+
+The source was cited from multiple turns, and only one of those turns
+was deleted. The line **stays** in `# Sources` (it is still cited by a
+surviving turn, so the note's narrative still depends on it), but the
+ownership annotation loses the dead turn. Example wording:
+> [^s3] [BookBrowse Research & NEA Survey](https://...) -
+> will be kept, dropping its reference to deleted turn 2
+> (still cited from turn 1)
+
+The button label reflects the mix:
+- "Remove N source(s)" if everything is being deleted.
+- "Adjust N source(s)" if everything is being kept but losing a turn
+  reference.
+- "Update N source(s) (X removed, Y adjusted)" if both are happening.
+
+The command never runs without your confirmation. The modal also
+distinguishes:
+- **No orphans** — shows "No orphaned sources found. Nothing to
+  remove." with only a Close button. Nothing happens to the file.
+
+After you confirm, a notice reports the result:
+`Removed 3 source(s), adjusted 2 other(s).`
+
 # Settings
 
-- **AI save folder** (default: `ai-searches`) — The name of the subfolder where
-  saved Perplexity notes are stored. It is automatically created in the same folder
-  as the currently active note.
-- **AI generated tag** (default: `ai-generated`) — The tag pushed into the frontmatter
-  tags property of every saved AI note.
+- **AI save folder** (default: `ai-searches`) — The name of the subfolder
+  where saved AI notes are stored. It is automatically created in the same
+  folder as the currently active note.
+- **AI generated tag** (default: `ai-generated`) — The tag pushed into the
+  frontmatter `tags` property of every saved AI note.
+- **Collapse blank lines** (default: on) — When on, the note body is
+  post-processed to remove blank lines immediately before and after every
+  heading and to collapse any run of 2+ blank lines to one. Produces a
+  denser, more uniform file. Turn this off if you prefer extra visual
+  breathing room.
+
+## Prompt heading
+
+These three settings, grouped under the **Prompt heading** header in
+the settings tab, control the level-2 summary heading above each user
+prompt. See the [Headlines](#headlines) section above for the full
+description of what they do.
+
+- **Heading max characters** (default: 100) — Maximum length of the
+  summary heading, including a possible ellipsis. 90–120 is suitable
+  for note titles and sidebar lists. Used by both methods; always
+  active.
+- **Prompt heading method** (default: Lead sentence) — Algorithm for
+  the summary heading. "Lead sentence" is the simple, fast default
+  with no extra dependencies. "TF-IDF ranked sentence" requires the
+  `stopword` package and is best for prompts where the most distinctive
+  sentence is not the first one.
+- **Heading lead bias** (default: 0.20) — TF-IDF only. Amount to favor
+  sentences near the beginning. 0 disables the positional prior
+  entirely; 0.20 is a gentle nudge toward the lead; 0.30+ makes lead
+  extraction dominate. Grayed out unless "TF-IDF ranked sentence" is
+  selected above, since it has no effect on the lead method.
 
 # Setup
 

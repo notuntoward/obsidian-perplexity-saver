@@ -44,6 +44,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+			headlineOptions: { method: "lead" },
 		});
 
 		expect(mockApp.vault.createFolder).toHaveBeenCalled();
@@ -60,6 +62,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(mockApp.vault.createFolder).not.toHaveBeenCalled();
@@ -77,6 +81,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(result.success).toBe(false);
@@ -85,19 +91,23 @@ describe("createPerplexityNote", () => {
 		}
 	});
 
-	it("creates file with clipboard content", async () => {
+	it("creates file with normalized body content", async () => {
 		const result = await createPerplexityNote({
 			app: mockApp,
 			activeFile: mockActiveFile,
-			clipboardContent: "my clipboard content",
+			clipboardContent: "**You**\n\nmy question\n\n**AI answer**\n\nmy clipboard content",
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
+		// The clipboard is now run through the normalizer, so the written
+		// body is the uniform format, not the raw clipboard text.
 		expect(mockApp.vault.create).toHaveBeenCalledWith(
 			expect.stringContaining("test.md"),
-			"my clipboard content"
+			expect.stringContaining("my clipboard content")
 		);
 		expect(result.success).toBe(true);
 	});
@@ -106,15 +116,17 @@ describe("createPerplexityNote", () => {
 		await createPerplexityNote({
 			app: mockApp,
 			activeFile: mockActiveFile,
-			clipboardContent: "content",
+			clipboardContent: "**You**\n\nq\n\n**AI answer**\n\na",
 			filename: "test:name",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(mockApp.vault.create).toHaveBeenCalledWith(
 			expect.stringContaining("testname.md"),
-			"content"
+			expect.any(String)
 		);
 	});
 
@@ -126,6 +138,8 @@ describe("createPerplexityNote", () => {
 			filename: "///",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(result.success).toBe(false);
@@ -142,6 +156,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(navigator.clipboard.writeText).toHaveBeenCalledWith("");
@@ -161,6 +177,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(capturedFm.tags).toContain("ai-generated");
@@ -180,6 +198,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect((capturedFm.tags as string[]).filter((t) => t === "ai-generated")).toHaveLength(1);
@@ -193,6 +213,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(mockApp.fileManager.generateMarkdownLink).toHaveBeenCalled();
@@ -208,16 +230,18 @@ describe("createPerplexityNote", () => {
 		const result = await createPerplexityNote({
 			app: mockApp,
 			activeFile: mockActiveFile,
-			clipboardContent: "content",
+			clipboardContent: "**You**\n\nq\n\n**AI answer**\n\na",
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(result.success).toBe(true);
 		expect(mockApp.vault.create).toHaveBeenCalledWith(
 			expect.stringContaining("ai-searches/test.md"),
-			"content"
+			expect.any(String)
 		);
 	});
 
@@ -225,16 +249,18 @@ describe("createPerplexityNote", () => {
 		const result = await createPerplexityNote({
 			app: mockApp,
 			activeFile: mockActiveFile,
-			clipboardContent: "content",
+			clipboardContent: "**You**\n\nq\n\n**AI answer**\n\na",
 			filename: "test",
 			searchesFolder: "custom-folder",
 			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(result.success).toBe(true);
 		expect(mockApp.vault.create).toHaveBeenCalledWith(
 			expect.stringContaining("custom-folder/test.md"),
-			"content"
+			expect.any(String)
 		);
 	});
 
@@ -252,6 +278,8 @@ describe("createPerplexityNote", () => {
 			filename: "test",
 			searchesFolder: "ai-searches",
 			generatedTag: "custom-tag",
+			collapseBlankLines: true,
+		headlineOptions: { method: "lead" },
 		});
 
 		expect(capturedFm.tags).toContain("custom-tag");
