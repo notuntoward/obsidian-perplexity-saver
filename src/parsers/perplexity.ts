@@ -11,8 +11,10 @@ const CITENUM_RE = /\[(\d+)\]/g;
  *   [1] [Title](https://example.com)
  *   [1] https://example.com
  *   [1] [Title](https://example.com "anchor")
+ *   1. [Title](https://example.com)
+ *   [1]: https://example.com
  */
-const SOURCE_LIST_LINE_RE = /^\[(\d+)\]\s+(?:\[(.*?)\]\()?(https?:\/\/\S+?)\)?(?:\s+["'(].*?["')])?\s*$/;
+const SOURCE_LIST_LINE_RE = /^[#*>-]?\s*(?:\[(\d+)\]|(\d+)\.)\s*:?\s*(?:\[(.*?)\]\()?(https?:\/\/\S+?)\)?(?:\s+["'(].*?["')])?\s*$/;
 
 /** Divider that appears between the response and the source list in some exports. */
 const PERPLEXITY_DIVIDER_RE = /<div style="text-align: ?center">.*?<\/div>/i;
@@ -176,8 +178,13 @@ function splitStockSection(section: string): {
 	let { body: bodyText } = stripMetadataLine(section);
 	let sourceListText = "";
 
-	// Split off the trailing # Citations: block, if present.
-	const citationsMatch = bodyText.match(/\n#\s*Citations:\s*\n|^#\s*Citations:\s*\n/);
+	// Split off the trailing # Citations: or # Sources: block, if present.
+	// Accepts heading levels # to ###, bold **Citations:** or **Sources:**, and optional colons/whitespace.
+	const citationsMatch = bodyText.match(
+		/\n(?:\#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)|^>(?:\#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)/i
+	) || bodyText.match(
+		/\n\s*(?:Citations?|Sources?)\s*:\s*(?:\n|$)|^\s*(?:Citations?|Sources?)\s*:\s*(?:\n|$)/i
+	);
 	if (citationsMatch) {
 		sourceListText = bodyText.slice(citationsMatch.index! + citationsMatch[0].length).trim();
 		bodyText = bodyText.slice(0, citationsMatch.index!).trim();
@@ -222,7 +229,12 @@ function extractCitations(responseText: string, sourceListText: string): ParsedC
 		const lineRe = new RegExp(SOURCE_LIST_LINE_RE.source, "gm");
 		let m: RegExpExecArray | null;
 		while ((m = lineRe.exec(sourceListText)) !== null) {
-			urlByNum.set(m[1], { url: m[3], title: m[2] || undefined });
+			const num = m[1] || m[2];
+			const title = m[3] || undefined;
+			const url = m[4];
+			if (num && url) {
+				urlByNum.set(num, { url, title });
+			}
 		}
 	}
 
@@ -239,6 +251,15 @@ function extractCitations(responseText: string, sourceListText: string): ParsedC
 			citations.push({ origNum: num, url: entry.url, title: entry.title });
 		}
 	}
+
+	// Fallback: if the response body had no inline bracket references [1], [2], etc.,
+	// but a # Citations: block was present with sources, preserve all of those sources.
+	if (citations.length === 0 && urlByNum.size > 0) {
+		for (const [num, entry] of urlByNum.entries()) {
+			citations.push({ origNum: num, url: entry.url, title: entry.title });
+		}
+	}
+
 	return citations;
 }
 
@@ -246,7 +267,7 @@ function extractCitations(responseText: string, sourceListText: string): ParsedC
 export function isPerplexityContent(text: string): boolean {
 	return (
 		/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\//m.test(text) ||
-		/^#\s*Citations?:\s*$/m.test(text) ||
+		/^(?:\#{1,3}|\*\*|\s*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\s*)$/im.test(text) ||
 		/<div style="text-align: ?center">/i.test(text) ||
 		/\*\*You\*\*/.test(text)
 	);

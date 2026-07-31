@@ -95,14 +95,14 @@ describe("uniform note format from Perplexity export", () => {
 
 		// Bug 5: every occurrence of a repeated citation number converts,
 		// not just the first. [1][1][2] in "Setup Steps" must all convert.
-		expect(body).toContain("Open the settings panel and toggle the option.[^s1][^s1][^s2]");
+		expect(body).toContain("Open the settings panel and toggle the option.[[#^src-1|1]][[#^src-1|1]][[#^src-2|2]]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
 
 		// Bug 2: the source cited from both turn 1 and turn 2 records both
 		// owning turns, not just whichever one happened to introduce it.
 		expect(sourceLines).toHaveLength(2);
-		expect(sourceLines[0]).toContain("[^s1]: [One](https://one.com/) (turns 1, 2) <!-- src-url: https://one.com/ -->");
-		expect(sourceLines[1]).toContain("[^s2]: [Two](https://two.com/) (turn 1) <!-- src-url: https://two.com/ -->");
+		expect(sourceLines[0]).toContain("^src-1 [One](https://one.com/) (turns 1, 2) <!-- src-url: https://one.com/ -->");
+		expect(sourceLines[1]).toContain("^src-2 [Two](https://two.com/) (turn 1) <!-- src-url: https://two.com/ -->");
 
 		// Inline source link at the top of the note, clickable in editor and
 		// reading view. Appears as the first content line after # Dialog.

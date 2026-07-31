@@ -49,11 +49,11 @@ describe("appendDialogFromClipboard", () => {
 
 first question
 
-first answer[^s1]
+first answer[[#^src-1|1]]
 
 # Sources
 
-[^s1]: [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
+^src-1 [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
 `;
 		mockApp.vault.read.mockResolvedValue(existing);
 		(navigator.clipboard.readText as any).mockResolvedValue(
@@ -65,20 +65,13 @@ first answer[^s1]
 		expect(result.turnsAppended).toBe(2);
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
-		// New turn heading: the level-2 prompt headline carries the single
-		// `^turn-N` block ID, followed by an open > [!Prompt]- callout
-		// containing the prompt body. The prompt text "second question"
-		// produces the headline "second question" (lowercase, since the
-		// lead method preserves the original case).
 		expect(written).toMatch(/## second question \^turn-2$/m);
 		expect(written).toMatch(/> \[!Prompt\]\+\n> second question/);
-		// No AI heading of its own — the prompt heading above is the turn's only heading.
 		expect(written).not.toMatch(/### AI response/);
 		expect(written).toContain("second question");
-		expect(written).toContain("second answer[^s2]");
-		// Existing turn 1 content is untouched.
+		expect(written).toContain("second answer[[#^src-2|2]]");
 		expect(written).toContain("first question");
-		expect(written).toContain("first answer[^s1]");
+		expect(written).toContain("first answer[[#^src-1|1]]");
 	});
 
 	it("grows an existing source's ownership list when the appended turn re-cites the same URL", async () => {
@@ -88,11 +81,11 @@ first answer[^s1]
 
 first question
 
-first answer[^s1]
+first answer[[#^src-1|1]]
 
 # Sources
 
-[^s1]: [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
+^src-1 [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
 `;
 		mockApp.vault.read.mockResolvedValue(existing);
 		(navigator.clipboard.readText as any).mockResolvedValue(
@@ -103,14 +96,11 @@ first answer[^s1]
 		expect(result.success).toBe(true);
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
-		// The re-cited source must be updated in place with both owning
-		// turns, not duplicated as a second source line for the same URL.
 		expect(written).toContain(
-			"[^s1]: [A](https://a.com/) (turns 1, 2) <!-- src-url: https://a.com/ -->"
+			"^src-1 [A](https://a.com/) (turns 1, 2) <!-- src-url: https://a.com/ -->"
 		);
 		expect((written.match(/src-url: https:\/\/a\.com\//g) ?? []).length).toBe(1);
-		expect(written).toContain("same source again[^s1]");
-		// No new source was minted for a URL that already existed.
+		expect(written).toContain("same source again[[#^src-1|1]]");
 		expect(result.newSources).toBe(0);
 	});
 
@@ -121,11 +111,11 @@ first answer[^s1]
 
 first question
 
-first answer[^s1]
+first answer[[#^src-1|1]]
 
 # Sources
 
-[^s1]: [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
+^src-1 [A](https://a.com/) (turn 1) <!-- src-url: https://a.com/ -->
 `;
 		mockApp.vault.read.mockResolvedValue(existing);
 		(navigator.clipboard.readText as any).mockResolvedValue(
@@ -137,7 +127,7 @@ first answer[^s1]
 		expect(result.newSources).toBe(1);
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
-		expect(written).toContain("[^s1]: [A](https://a.com/) (turn 1)");
-		expect(written).toContain("[^s2]");
+		expect(written).toContain("^src-1 [A](https://a.com/) (turn 1)");
+		expect(written).toContain("[[#^src-2|2]]");
 	});
 });

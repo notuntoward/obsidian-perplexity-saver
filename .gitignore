@@ -13,6 +13,7 @@ node_modules
 .vscode/
 .idea/
 *.iml
+graphify-out/
 
 # macOS
 .DS_Store

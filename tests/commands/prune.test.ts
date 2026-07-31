@@ -17,9 +17,9 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
-[^s2]: [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
-[^s3]: [C](https://c/) (turn 3) <!-- src-url: https://c/ -->
+ ^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
+ ^src-2 [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
+ ^src-3 [C](https://c/) (turn 3) <!-- src-url: https://c/ -->
 `;
 		const prunable = findPrunableSources(note);
 		expect(prunable).toHaveLength(1);
@@ -36,7 +36,7 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
+^src-1: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
 `;
 		expect(findPrunableSources(note)).toEqual([]);
 	});
@@ -48,7 +48,7 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
+ ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
 `;
 		const prunable = findPrunableSources(note);
 		expect(prunable).toHaveLength(1);
@@ -67,7 +67,7 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
+ ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
 `;
 		expect(findPrunableSources(note)).toEqual([]);
 	});
@@ -83,13 +83,13 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
-[^s2]: [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
+ ^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
+ ^src-2 [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
 `;
 		const prunable = findPrunableSources(note);
 		const updated = applyPrune(note, prunable);
-		expect(updated).toContain("[^s1]: [A](https://a/)");
-		expect(updated).not.toContain("[^s2]");
+		expect(updated).toContain("^src-1 [A](https://a/)");
+		expect(updated).not.toContain("^src-2");
 		expect(updated).toContain("### AI response (turn 1) ^turn-1-ai");
 	});
 
@@ -102,11 +102,11 @@ body
 
 # Sources
 
-[^s1]: [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
+ ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
 `;
 		const prunable = findPrunableSources(note);
 		const updated = applyPrune(note, prunable);
-		expect(updated).toContain("[^s1]: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->");
+		expect(updated).toContain("^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->");
 		expect(updated).not.toContain("turns 1, 2");
 	});
 

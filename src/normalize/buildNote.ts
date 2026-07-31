@@ -1,5 +1,5 @@
 import { DialogFile, DialogTurn } from "../parsers/types";
-import { renderSourceLine, parseSourceLine, SourceLinkState } from "../zotero/sourceLinkState";
+import { renderSourceLine, parseSourceLine, SourceLinkState, toBlockId } from "../zotero/sourceLinkState";
 import { renderTurn, assignTurnIds } from "./turns";
 import { HeadlineOptions, headlineForPrompt } from "./headlines";
 
@@ -25,8 +25,9 @@ interface SourceEntry {
  *     by the AI body, with the body heading-demoted so the topmost
  *     heading lands at level 4.
  *   - Citations on AI turns are rewritten from the vendor's original
- *     numbering (e.g. [1]) to the note's own footnote IDs ([^s1]), with
- *     every occurrence of a given number rewritten, not just the first.
+ *     numbering (e.g. [1]) to Obsidian block-linked citations
+ *     (e.g. [[#^src-1|1]]), with every occurrence of a given number
+ *     rewritten, not just the first.
  *   - Source lines are rendered via renderSourceLine (Part B) so the
  *     on-disk format is exactly what the future relinker expects.
  *   - A source cited by more than one turn (in this call, or reused from
@@ -175,11 +176,11 @@ export function collapseWhitespace(body: string): string {
 }
 
 /**
- * Rewrite an AI turn's citation markers (e.g. [1]) to the note's footnote
- * IDs (e.g. [^s3]), minting a new source entry the first time a URL is
- * seen and adding this turn's ID to an existing entry's ownership set on
- * every subsequent citation of the same URL (whether from an earlier turn
- * in this same call or from a prior append). Every occurrence of a given
+ * Rewrite an AI turn's citation markers (e.g. [1]) to Obsidian block-linked
+ * citations (e.g. [[#^src-1|1]]), minting a new source entry the first time
+ * a URL is seen and adding this turn's ID to an existing entry's ownership
+ * set on every subsequent citation of the same URL (whether from an earlier
+ * turn in this same call or from a prior append). Every occurrence of a given
  * citation number in the text is rewritten, not just the first.
  */
 function rewriteCitationsForTurn(
@@ -192,8 +193,6 @@ function rewriteCitationsForTurn(
 		return turn.rawText;
 	}
 
-	// Build a map from the vendor's original citation number to the note's
-	// footnote id, so all occurrences of [3] get rewritten to the same [^sN].
 	const numToId = new Map<string, string>();
 	for (const c of turn.citations) {
 		let entry = sourcesByUrl.get(c.url);
@@ -213,7 +212,9 @@ function rewriteCitationsForTurn(
 
 	return turn.rawText.replace(/\[(\d+)\]/g, (match, num) => {
 		const id = numToId.get(num);
-		return id ? `[^${id}]` : match;
+		if (!id) return match;
+		const sourceNum = id.replace(/^s/, "");
+		return `[[#^${toBlockId(id)}|${sourceNum}]]`;
 	});
 }
 

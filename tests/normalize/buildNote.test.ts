@@ -19,17 +19,13 @@ describe("buildNoteBody", () => {
 		const { body, sourceLines } = buildNoteBody(d);
 		expect(body).toContain("# Dialog");
 		expect(body).not.toContain("## Turns");
-		// Prompt marker is a level-2 heading carrying the single `^turn-N`
-		// block ID, followed by a closed `> [!Prompt]+` callout containing
-		// the prompt body. The AI body follows directly below, with no AI
-		// heading of its own. AI body headings are demoted to start at level 3.
 		expect(body).toMatch(/## What is the answer to this question\? \^turn-1/);
 		expect(body).toMatch(/> \[!Prompt\]\+/);
 		expect(body).not.toMatch(/### AI response/);
-		expect(body).toContain("The answer is here.[^s1]");
+		expect(body).toContain("The answer is here.[[#^src-1|1]]");
 		expect(body).toContain("# Sources");
 		expect(sourceLines).toHaveLength(1);
-		expect(sourceLines[0]).toContain("[^s1]: [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->");
+		expect(sourceLines[0]).toContain("^src-1 [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->");
 	});
 
 	it("converts every occurrence of a repeated citation number, not just the first", () => {
@@ -44,7 +40,7 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body } = buildNoteBody(d);
-		expect(body).toContain("first[^s1] second[^s1] third[^s2]");
+		expect(body).toContain("first[[#^src-1|1]] second[[#^src-1|1]] third[[#^src-2|2]]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
 	});
 
@@ -58,7 +54,7 @@ describe("buildNoteBody", () => {
 	});
 
 	it("reuses existing source IDs when the same URL appears in existingSourceText", () => {
-		const existingSources = "[^s4]: [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
+		const existingSources = " ^src-4 [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
 		const d = dialog([
 			{
 				role: "ai",
@@ -67,16 +63,13 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body, sourceLines } = buildNoteBody(d, { existingSourceText: existingSources });
-		// Citation [1] in body should be rewritten to s4, not minted a new id.
-		expect(body).toContain("answer[^s4]");
-		// The full sources list is regenerated: the existing entry is still
-		// present, now with this turn added to its ownership list.
+		expect(body).toContain("answer[[#^src-4|4]]");
 		expect(sourceLines).toHaveLength(1);
-		expect(sourceLines[0]).toContain("[^s4]: [Y](https://example.com/y) (turns 1, 3) <!-- src-url: https://example.com/y -->");
+		expect(sourceLines[0]).toContain("^src-4 [Y](https://example.com/y) (turns 1, 3) <!-- src-url: https://example.com/y -->");
 	});
 
 	it("mints a new id for a URL not present in existingSourceText", () => {
-		const existingSources = "[^s4]: [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
+		const existingSources = " ^src-4 [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
 		const d = dialog([
 			{
 				role: "ai",
@@ -85,11 +78,10 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body, sourceLines } = buildNoteBody(d, { existingSourceText: existingSources });
-		expect(body).toContain("answer[^s5]");
-		// Full regenerated list: existing s4 entry unchanged, plus new s5.
+		expect(body).toContain("answer[[#^src-5|5]]");
 		expect(sourceLines).toHaveLength(2);
-		expect(sourceLines[0]).toContain("[^s4]: [Y](https://example.com/y) (turn 3)");
-		expect(sourceLines[1]).toContain("[^s5]");
+		expect(sourceLines[0]).toContain("^src-4 [Y](https://example.com/y) (turn 3)");
+		expect(sourceLines[1]).toContain("^src-5");
 	});
 
 	it("records every turn that cites a URL, across turns within one call", () => {
@@ -100,8 +92,6 @@ describe("buildNoteBody", () => {
 		]);
 		const { sourceLines } = buildNoteBody(d);
 		expect(sourceLines).toHaveLength(1);
-		// First ai turn is a standalone turn 1 (no preceding prompt); the
-		// prompt+ai pair after it is turn 2.
 		expect(sourceLines[0]).toContain("(turns 1, 2)");
 	});
 
@@ -111,7 +101,7 @@ describe("buildNoteBody", () => {
 ## Headline (turn 3) ^turn-3
 
 # Sources
-[^s7]: [Q](https://example.com/q) (turn 2) <!-- src-url: https://example.com/q -->
+^src-7: [Q](https://example.com/q) (turn 2) <!-- src-url: https://example.com/q -->
 `;
 		const d = dialog([{ role: "prompt", rawText: "What is the next question?", citations: [] }]);
 		const { body } = buildNoteBody(d, {
@@ -131,7 +121,6 @@ describe("buildNoteBody", () => {
 	});
 
 	it("demotes embedded headings in AI response bodies to exactly one level below the prompt heading", () => {
-		// The prompt heading is at level 2, so response headings should start at level 3.
 		const d = dialog([
 			{ role: "ai", rawText: "## A heading\n\n### Subheading", citations: [] },
 		]);
@@ -149,22 +138,16 @@ describe("buildNoteBody", () => {
 		const { body } = buildNoteBody(d);
 		expect(body).toContain("What is the question?");
 		expect(body).not.toMatch(/^# What is the question\?/m);
-		// AI body headings are demoted to start at level 3 (one below the level-2 prompt heading).
 		expect(body).toContain("### A heading");
 	});
 });
 
 describe("collapseWhitespace", () => {
 	it("removes a blank line immediately before a heading", () => {
-		// Blank line before a heading is removed so the heading starts
-		// right after the previous content (no gap above).
 		expect(collapseWhitespace("body\n\n## Heading\n\nbody")).toBe("body\n## Heading\n\nbody");
 	});
 
 	it("collapses 2+ blank lines after a heading to exactly one blank line", () => {
-		// The heading is followed by exactly one blank line, not zero (the
-		// heading is still visually separated from its body) and not more
-		// (no accidental double-spacing).
 		expect(collapseWhitespace("## Heading\n\n\nbody")).toBe("## Heading\n\nbody");
 	});
 
@@ -192,25 +175,15 @@ describe("buildNoteBody — collapseBlankLines option", () => {
 
 	it("collapses by default (collapseBlankLines omitted)", () => {
 		const { body } = buildNoteBody(d);
-		// A standalone AI turn (no preceding prompt) gets a stable
-		// "AI response (turn N)" label, not a headline derived from the
-		// AI's response text (which would leak citation markers and
-		// internal headings into the outline pane). The heading is
-		// separate from the callout.
 		expect(body).toContain(
 			"# Dialog\n\n**Source:** [perplexity](https://www.perplexity.ai/search/x)\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
 		);
-		// No double blank lines anywhere.
 		expect(body).not.toMatch(/\n{3,}/);
 	});
 
 	it("preserves blank lines around headings when collapseBlankLines is false", () => {
 		const { body } = buildNoteBody(d, { collapseBlankLines: false });
-		// Blank line is between # Dialog and **Source:** (non-heading content
-		// after a heading). The # Dialog heading itself is attached to its
-		// following content with a single blank line.
 		expect(body).toContain("# Dialog\n\n**Source:**");
-		// The prompt heading has a blank line after it (between heading and callout).
 		expect(body).toMatch(/\n\n> \[!Prompt\]/);
 	});
 });
@@ -250,8 +223,8 @@ describe("extractSourcesSection", () => {
 
 # Sources
 
-[^s1]: [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->
+^src-1 [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->
 `;
-		expect(extractSourcesSection(text)).toContain("[^s1]: [X]");
+		expect(extractSourcesSection(text)).toContain("^src-1 [X]");
 	});
 });

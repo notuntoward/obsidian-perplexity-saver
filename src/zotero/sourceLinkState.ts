@@ -46,7 +46,7 @@ export interface ParsedSourceLine {
  *
  * @param id       footnote id, e.g. "s1"
  * @param state    the link's current state
- * @param turnIds  every turn number that cites this source (one or more)
+ * @param turnIds  every turn that cites this source (one or more)
  * @param rawUrl   the ORIGINAL url; preserved as a hidden HTML comment so a
  *                 later relink still has the matching key
  */
@@ -59,7 +59,7 @@ export function renderSourceLine(
 	const linkText = renderLinkText(state);
 	const sorted = [...new Set(turnIds)].sort((a, b) => a - b);
 	const turnLabel = sorted.length <= 1 ? `turn ${sorted[0]}` : `turns ${sorted.join(", ")}`;
-	return `[^${id}]: ${linkText} (${turnLabel}) <!-- src-url: ${rawUrl} -->`;
+	return `^${toBlockId(id)} ${linkText} (${turnLabel}) <!-- src-url: ${rawUrl} -->`;
 }
 
 function renderLinkText(state: SourceLinkState): string {
@@ -74,13 +74,29 @@ function renderLinkText(state: SourceLinkState): string {
 }
 
 /**
+ * Convert internal footnote id "s1" to Obsidian block-id "src-1".
+ */
+export function toBlockId(id: string): string {
+	const m = id.match(/^s(\d+)$/);
+	return m ? `src-${m[1]}` : id;
+}
+
+/**
+ * Convert Obsidian block-id "src-1" back to internal footnote id "s1".
+ */
+function fromBlockId(blockId: string): string {
+	const m = blockId.match(/^src-(\d+)$/);
+	return m ? `s${m[1]}` : blockId;
+}
+
+/**
  * Regex for parsing a rendered source line back into its parts.
- * Matches, in order: footnote id, link (one of three forms), turn number(s)
+ * Matches, in order: block id, link (one of three forms), turn number(s)
  * (either "turn N" or "turns N, M, ..."), and the trailing hidden src-url
  * comment.
  */
 const SOURCE_LINE_RE =
-	/^\[\^(?<id>s\d+)\]:\s*(?:\[\[(?<citekey>[^\]]+)\]\]|\[Zotero:\s*(?<zkey>[^\]]+)\]\(zotero:\/\/select\/library\/items\/(?<zotkey>[^)]+)\)|\[(?<title>[^\]]*)\]\((?<url>[^)]+)\)|<(?<bareUrl>[^>]+)>)\s*\(turns?\s+(?<turns>[\d,\s]+)\)\s*<!--\s*src-url:\s*(?<rawUrl>\S+)\s*-->\s*$/;
+	/^\^(?<id>src-\d+)\s+(?:\[\[(?<citekey>[^\]]+)\]\]|\[Zotero:\s*(?<zkey>[^\]]+)\]\(zotero:\/\/select\/library\/items\/(?<zotkey>[^)]+)\)|\[(?<title>[^\]]*)\]\((?<url>[^)]+)\)|<(?<bareUrl>[^>]+)>)\s*\(turns?\s+(?<turns>[\d,\s]+)\)\s*<!--\s*src-url:\s*(?<rawUrl>\S+)\s*-->\s*$/;
 
 /**
  * Parse a "# Sources" line back into a structured object. Returns null if
@@ -114,5 +130,5 @@ export function parseSourceLine(line: string): ParsedSourceLine | null {
 		return null;
 	}
 
-	return { id: g.id, state, turnIds, rawUrl };
+	return { id: fromBlockId(g.id), state, turnIds, rawUrl };
 }

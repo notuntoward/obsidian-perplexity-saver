@@ -109,9 +109,9 @@ follow-up response
 
 # Sources
 
-[^s1]: [Page title](https://url) (turn 1) <!-- src-url: https://url -->
-[^s2]: [Page title](https://url) (turn 2) <!-- src-url: https://url -->
-[^s3]: [Page title](https://url) (turns 1, 2) <!-- src-url: https://url -->
+^src-1 [Page title](https://url) (turn 1) <!-- src-url: https://url -->
+^src-2 [Page title](https://url) (turn 2) <!-- src-url: https://url -->
+^src-3 [Page title](https://url) (turns 1, 2) <!-- src-url: https://url -->
 ```
 
 Key conventions:
@@ -128,9 +128,10 @@ Key conventions:
   pane readable.
 - **All citations from all turns go into a single `# Sources` section
   at the end.** Inline `[1]` markers in the AI response are rewritten
-  to the note's own footnote IDs (`[^s1]`, `[^s2]`, etc.) so they
-  click through to the entry. The same URL cited in two different turns
-  is one source line with `(turns 1, 3)`, not two duplicate lines.
+  to block-linked citations (`[[#^src-1|1]]`, `[[#^src-2|2]]`, etc.)
+  that click through to the block-ID'd entry in the Sources section.
+  The same URL cited in two different turns is one source line with
+  `(turns 1, 3)`, not two duplicate lines.
 - **Each source line carries an invisible `<!-- src-url: ... -->` comment
   holding the original URL.** This is the stable key a future Zotero
   relinker uses to match an entry across notes, regardless of how the
@@ -257,7 +258,7 @@ a glance what will happen to each source before you commit:
 
 The source's only citing turn was the one you deleted. The entire
 source line is deleted from `# Sources`. Example wording:
-> [^s2] [Help with PDF++ and text selection highlighting](https://...)
+> [[#^src-2|2]] [Help with PDF++ and text selection highlighting](https://...)
 > - will be removed (only cited from turn 2, now deleted)
 
 ### 2. Partial adjustment — "will be kept, dropping its reference to deleted turn N"
@@ -266,7 +267,7 @@ The source was cited from multiple turns, and only one of those turns
 was deleted. The line **stays** in `# Sources` (it is still cited by a
 surviving turn, so the note's narrative still depends on it), but the
 ownership annotation loses the dead turn. Example wording:
-> [^s3] [BookBrowse Research & NEA Survey](https://...) -
+> [[#^src-3|3]] [BookBrowse Research & NEA Survey](https://...) -
 > will be kept, dropping its reference to deleted turn 2
 > (still cited from turn 1)
 
@@ -367,6 +368,25 @@ Install the official **Obsidian Web Clipper** from your browser’s extension st
 
 On any page, open the clipper, select **Settings** (gear), and set the destination/action to **Clipboard**. Then choose **Copy** to place the generated Markdown on your clipboard, ready to paste anywhere, but don't paste, use this plugin to save the dialog instead.
 
+## D. Optional
+
+### Hiding Block IDs
+
+You can hide the heading block IDs in live preview mode with this css snippet
+
+```css
+/* Hide block IDs in preview (will be visible in reading and source modes, and in prevview when you click on the heading) */
+.is-live-preview .cm-blockid {
+  opacity: 0;
+}
+.is-live-preview .cm-active .cm-blockid {
+  opacity: 1;
+}
+```
+
+### Easier Prompt Copying: Callout Copy Buttons
+
+Copying prompts from the prompt callout is simpler if you install the [Callout Copy Buttons Obsidian plugin](https://community.obsidian.md/plugins/callout-copy-buttons), which adds a copy button on the callout.
 
 # Building from source
 

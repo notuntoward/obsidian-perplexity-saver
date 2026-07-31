@@ -1,5 +1,5 @@
 import { App, Modal, Notice, TFile } from "obsidian";
-import { parseSourceLine, renderSourceLine, ParsedSourceLine } from "../zotero/sourceLinkState";
+import { parseSourceLine, renderSourceLine, ParsedSourceLine, toBlockId } from "../zotero/sourceLinkState";
 import { getSurvivingTurnIds } from "../normalize/turns";
 import { extractSourcesSection } from "../normalize/buildNote";
 
@@ -73,7 +73,7 @@ export class ConfirmPruneSourcesModal extends Modal {
 					: src.state.kind === "zotero-item"
 						? `[Zotero: ${src.state.citekey}]`
 						: `[[${src.state.citekey}]]`;
-			item.createEl("strong", { text: `[^${src.id}] ` });
+			item.createEl("strong", { text: `[[#^${toBlockId(src.id)}|${src.id.replace(/^s/, "")}]] ` });
 			const deadLabel = src.deadTurnIds.length === 1 ? `turn ${src.deadTurnIds[0]}` : `turns ${src.deadTurnIds.join(", ")}`;
 			const action =
 				src.survivingTurnIds.length === 0

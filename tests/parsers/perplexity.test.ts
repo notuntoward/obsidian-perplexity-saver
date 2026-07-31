@@ -223,6 +223,52 @@ Obsidian's API includes \`AbstractInputSuggest\` for autocomplete.[3]
 		expect(dialog.turns).toHaveLength(1);
 		expect(dialog.turns[0].citations).toHaveLength(0);
 	});
+
+	it("extracts citations from # Citations: block even if response body has no inline bracket references", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/123) · *2026-07-31*
+# Question?
+
+Response without inline bracket numbers.
+
+# Citations:  
+[1] [Source One](https://example.com/1)  
+[2] [Source Two](https://example.com/2)`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns[1].citations).toHaveLength(2);
+		expect(dialog.turns[1].citations[0]).toEqual({
+			origNum: "1",
+			url: "https://example.com/1",
+			title: "Source One",
+		});
+		expect(dialog.turns[1].citations[1]).toEqual({
+			origNum: "2",
+			url: "https://example.com/2",
+			title: "Source Two",
+		});
+	});
+
+	it("handles bulleted, numbered list, or colon-formatted source lines under ## Sources:", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/123) · *2026-07-31*
+# Question?
+
+Response text with citations[1] and [2].
+
+## Sources:
+- 1. [Source One](https://example.com/1)
+* [2]: https://example.com/2 "Anchor"`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns[1].citations).toHaveLength(2);
+		expect(dialog.turns[1].citations[0]).toEqual({
+			origNum: "1",
+			url: "https://example.com/1",
+			title: "Source One",
+		});
+		expect(dialog.turns[1].citations[1]).toEqual({
+			origNum: "2",
+			url: "https://example.com/2",
+			title: undefined,
+		});
+	});
 });
 
 describe("parsePerplexityDialog — sourceUrl extraction", () => {
