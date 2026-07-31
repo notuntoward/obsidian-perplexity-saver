@@ -388,6 +388,16 @@ You can hide the heading block IDs in live preview mode with this css snippet
 
 Copying prompts from the prompt callout is simpler if you install the [Callout Copy Buttons Obsidian plugin](https://community.obsidian.md/plugins/callout-copy-buttons), which adds a copy button on the callout.
 
+### Prompt to Enforce numerical citation references
+
+By default, Perplexity sometimes references sources with inconsistent text e.g. "...the 2019 de Cabo/Mattson NEJM review."  You can instruct it to instead use numerical references in its exports with a prompt like this:
+
+```
+In every response, whenever you name a source descriptively in the text (author names, publication year, journal/outlet, or study name), place its bracketed citation number immediately after that mention in the same sentence, rather than only at the end of a paragraph. Do this in addition to — not instead of — your normal per-sentence citation practice. Repeat the citation number every time the same source is mentioned again, even within the same section. This does not reduce the number of citations you provide; it only ensures descriptive mentions and their citation numbers are co-located, so the output converts cleanly to Obsidian-style footnotes without manual reformatting.
+```
+
+Paste it into perplexity preferences at: `Your Account Icon → All Settings → Personalization → Custom Instructions`
+
 # Building from source
 
 Requires [Node.js](https://nodejs.org).
