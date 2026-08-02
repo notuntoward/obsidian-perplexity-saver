@@ -316,7 +316,7 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Collapse blank lines")
 			.setDesc(
-				"Remove blank lines around headings and collapse any double blank lines to one. Produces a denser, more uniform file."
+				"Collapse any run of 2+ blank lines down to one, including around headings. Produces a denser, more uniform file while keeping one blank line between paragraphs and headings."
 			)
 			.addToggle((toggle) =>
 				toggle

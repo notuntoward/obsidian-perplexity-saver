@@ -107,7 +107,7 @@ describe("uniform note format from Perplexity export", () => {
 		// Inline source link at the top of the note, clickable in editor and
 		// reading view. Appears as the first content line after # Dialog.
 		expect(body).toMatch(
-			/# Dialog\n\n\*\*Source:\*\* \[perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\)\n## /
+			/# Dialog\n\n\*\*Source:\*\* \[perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\)\n\n## /
 		);
 	});
 });

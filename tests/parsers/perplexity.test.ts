@@ -298,3 +298,37 @@ Yes, you can.[1]
 		expect(dialog.sourceUrl).toBe("https://perplexity.ai/search/x");
 	});
 });
+
+describe("parsePerplexityDialog — question-only export (no AI response text)", () => {
+	it("treats a # question heading as the prompt when no response text follows", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/6eeee0a8) · *2026-08-02 15:15 PDT*
+# Tell me about google jules.  What does it do?  
+  
+  
+  
+# Citations:  
+[1] [Source One](https://example.com/1)
+[2] [Source Two](https://example.com/2)
+---  
+# Is there an extension for it in vscode?  
+  
+  
+  
+# Citations:  
+[1] [Source Three](https://example.com/3)`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.sourceVendor).toBe("perplexity");
+		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/6eeee0a8");
+		expect(dialog.turns).toHaveLength(2);
+
+		// First section: question heading is the prompt, no AI response.
+		expect(dialog.turns[0].role).toBe("prompt");
+		expect(dialog.turns[0].rawText).toContain("Tell me about google jules");
+		expect(dialog.turns[0].citations).toHaveLength(0);
+
+		// Second section: same pattern.
+		expect(dialog.turns[1].role).toBe("prompt");
+		expect(dialog.turns[1].rawText).toContain("Is there an extension for it in vscode");
+	});
+});

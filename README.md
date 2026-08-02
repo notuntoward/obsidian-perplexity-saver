@@ -293,10 +293,11 @@ After you confirm, a notice reports the result:
 - **AI generated tag** (default: `ai-generated`) — The tag pushed into the
   frontmatter `tags` property of every saved AI note.
 - **Collapse blank lines** (default: on) — When on, the note body is
-  post-processed to remove blank lines immediately before and after every
-  heading and to collapse any run of 2+ blank lines to one. Produces a
-  denser, more uniform file. Turn this off if you prefer extra visual
-  breathing room.
+  post-processed to collapse any run of 2+ blank lines down to a single
+  blank line, including around headings. Produces a denser, more uniform
+  file while keeping one blank line between paragraphs and headings so
+  Obsidian renders them correctly. Turn this off if you prefer extra
+  visual breathing room.
 - **Collapse prompt callouts** (default: on) — When on, each user prompt
   starts as a collapsed `> [!Prompt]+` callout. Turn it off to leave
   prompts expanded (`> [!Prompt]-`).

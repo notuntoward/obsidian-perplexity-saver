@@ -125,7 +125,7 @@ export function buildNoteBody(
 
 	const sections: string[] = ["# Dialog", ""];
 	if (dialog.sourceUrl) {
-		sections.push(renderSourceLink(dialog.sourceVendor, dialog.sourceUrl));
+		sections.push(renderSourceLink(dialog.sourceVendor, dialog.sourceUrl), "");
 	}
 	sections.push(...turnBlocks);
 	if (sourceLines.length > 0) {
@@ -155,22 +155,22 @@ function renderSourceLink(vendor: DialogFile["sourceVendor"], url: string): stri
  * Collapse blank lines around headings and any run of multiple blank
  * lines down to a single blank line, for users who prefer a denser,
  * more uniform file. The single-pass regex:
- *   - removes blank lines (and any leading whitespace) immediately
- *     before a heading, so a heading is always the start of a line with
- *     a single blank line above it (or nothing, if it's the very first
- *     non-empty line);
- *   - collapses 2+ consecutive blank lines that follow a heading into
- *     a single blank line, so the heading is visually attached to its
- *     own body (but the body is still separated by exactly one blank
- *     line, not zero);
- *   - collapses any run of 2+ consecutive blank lines to one, eliminating
- *     accidental double-spacing from paste or merge operations.
+ *   - collapses 2+ blank lines immediately before a heading down to
+ *     exactly one blank line, so every heading is separated from the
+ *     preceding paragraph by a single blank line (required for Obsidian
+ *     to render the heading correctly);
+ *   - collapses 2+ blank lines after a heading into exactly one blank
+ *     line, so the heading is visually attached to its own body without
+ *     floating in extra whitespace;
+ *   - collapses any run of 2+ consecutive blank lines everywhere else
+ *     to one, eliminating accidental double-spacing from paste or merge
+ *     operations.
  * Used only when the user has the "collapse blank lines" setting on.
  */
 export function collapseWhitespace(body: string): string {
 	return body
 		.replace(/^[ \t]*\n+/, "") // strip leading blank lines
-		.replace(/[ \t]*\n[ \t]*\n+(?=#{1,6}\s)/g, "\n") // blank lines before a heading -> 0
+		.replace(/[ \t]*\n[ \t]*\n+(?=#{1,6}\s)/g, "\n\n") // blank lines before a heading -> exactly 1
 		.replace(/(#{1,6}[^\n]*)\n[ \t]*\n+/g, "$1\n\n") // blank lines after a heading -> exactly 1
 		.replace(/\n{3,}/g, "\n\n");
 }

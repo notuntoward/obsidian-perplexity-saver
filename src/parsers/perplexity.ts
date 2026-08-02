@@ -219,6 +219,22 @@ function splitStockSection(section: string): {
 		return { promptText, responseText, sourceListText };
 	}
 
+	// Perplexity echoes the user's question as a level-1 (# ) heading. If
+	// there is no blank line to split on (i.e. no AI response text
+	// follows the question), treat the heading line as the prompt and
+	// everything after it (if any) as the response.
+	if (startsWithH1) {
+		const firstNewline = bodyText.indexOf("\n");
+		if (firstNewline === -1) {
+			return { promptText: bodyText, responseText: "", sourceListText };
+		}
+		return {
+			promptText: bodyText.slice(0, firstNewline).trim(),
+			responseText: bodyText.slice(firstNewline).trim(),
+			sourceListText,
+		};
+	}
+
 	return { promptText: "", responseText: bodyText, sourceListText };
 }
 

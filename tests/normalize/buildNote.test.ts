@@ -143,8 +143,12 @@ describe("buildNoteBody", () => {
 });
 
 describe("collapseWhitespace", () => {
-	it("removes a blank line immediately before a heading", () => {
-		expect(collapseWhitespace("body\n\n## Heading\n\nbody")).toBe("body\n## Heading\n\nbody");
+	it("preserves exactly one blank line before a heading (collapses 2+ to 1)", () => {
+		expect(collapseWhitespace("body\n\n## Heading\n\nbody")).toBe("body\n\n## Heading\n\nbody");
+	});
+
+	it("collapses 2+ blank lines before a heading to exactly one blank line", () => {
+		expect(collapseWhitespace("body\n\n\n## Heading\n\nbody")).toBe("body\n\n## Heading\n\nbody");
 	});
 
 	it("collapses 2+ blank lines after a heading to exactly one blank line", () => {
@@ -176,7 +180,7 @@ describe("buildNoteBody — collapseBlankLines option", () => {
 	it("collapses by default (collapseBlankLines omitted)", () => {
 		const { body } = buildNoteBody(d);
 		expect(body).toContain(
-			"# Dialog\n\n**Source:** [perplexity](https://www.perplexity.ai/search/x)\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
+			"# Dialog\n\n**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
 		);
 		expect(body).not.toMatch(/\n{3,}/);
 	});
