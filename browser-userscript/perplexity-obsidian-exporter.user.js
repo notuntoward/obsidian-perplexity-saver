@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Standard Interface)
 // @namespace    scott-otterson-obsidian-export
-// @version      8.0
+// @version      8.1
 // @description  Clicks standard Perplexity three-dots menu, selects "Export as Markdown", and writes metadata to clipboard so the Obsidian plugin can complete the import.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -179,7 +179,10 @@
   function simulateClick(element) {
     if (!element) return;
     console.log("[PPLX Obsidian exporter] Simulating full pointer and mouse sequence on element:", element);
-    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    // Dispatched pointer/mouse events (pointerdown, mousedown, pointerup, mouseup) ensure UI frameworks
+    // like Radix/React register the initial interaction state correctly.
+    // We omit the synthetic "click" from this array to prevent duplicate triggering when followed by native .click().
+    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup"];
     eventTypes.forEach((eventType) => {
       let ev;
       const init = {
@@ -196,6 +199,16 @@
       }
       element.dispatchEvent(ev);
     });
+    // Call the native .click() method to reliably trigger both React click handlers and standard
+    // browser default actions (such as starting file downloads) on native elements.
+    if (typeof element.click === "function") {
+      try {
+        console.log("[PPLX Obsidian exporter] Executing native element.click()...");
+        element.click();
+      } catch (err) {
+        console.warn("[PPLX Obsidian exporter] Native click() failed:", err);
+      }
+    }
   }
 
   async function waitForPopover(timeoutMs = 3000, intervalMs = 75) {
@@ -355,12 +368,14 @@
         console.warn("[PPLX Obsidian exporter] GM_notification failed:", err);
       }
 
-      await new Promise((r) => setTimeout(r, 500));
-      console.log("[PPLX Obsidian exporter] Closing popover...");
-      await closePopover();
+      // We do not manually call closePopover() here. Standard Perplexity dropdowns/drawers
+      // automatically close themselves on item selection. Sending a manual Escape key event
+      // immediately after clicking can cancel/abort the active file download/fetch in the browser.
+      await new Promise((r) => setTimeout(r, 1000));
       console.log("[PPLX Obsidian exporter] Export workflow successfully completed.");
     } finally {
       if (btn) {
+        console.log("[PPLX Obsidian exporter] Resetting export button state to enabled.");
         btn.disabled = false;
         btn.style.background = originalBackground;
         btn.style.opacity = "";
