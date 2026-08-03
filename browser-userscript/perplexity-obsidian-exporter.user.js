@@ -178,29 +178,21 @@
 
   function simulateClick(element) {
     if (!element) return;
-    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
-    eventTypes.forEach((eventType) => {
-      let ev;
-      if (eventType.startsWith("pointer") && typeof PointerEvent !== "undefined") {
-        ev = new PointerEvent(eventType, {
+    console.log("[PPLX Obsidian exporter] Invoking native click() on element:", element);
+    try {
+      element.click();
+    } catch (err) {
+      console.warn("[PPLX Obsidian exporter] Native click() failed, dispatching custom MouseEvent:", err);
+      try {
+        const ev = new MouseEvent("click", {
           bubbles: true,
           cancelable: true,
-          view: window,
-          button: 0,
-          buttons: 1,
-          isPrimary: true,
         });
-      } else {
-        ev = new MouseEvent(eventType, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          button: 0,
-          buttons: 1,
-        });
+        element.dispatchEvent(ev);
+      } catch (innerErr) {
+        console.error("[PPLX Obsidian exporter] Custom MouseEvent also failed:", innerErr);
       }
-      element.dispatchEvent(ev);
-    });
+    }
   }
 
   async function waitForPopover(timeoutMs = 3000, intervalMs = 75) {
