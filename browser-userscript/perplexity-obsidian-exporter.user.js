@@ -14,59 +14,80 @@
   "use strict";
   console.log("[PPLX Obsidian exporter] standard userscript started", location.href);
 
+  function isLikelyThreeDots(btn) {
+    const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+    if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis') || label.includes('action')) {
+      return true;
+    }
+    const text = btn.textContent.trim();
+    if (/^[^a-zA-Z0-9\s]{1,4}$/.test(text)) {
+      return true;
+    }
+    const svgs = btn.querySelectorAll('svg');
+    for (const svg of svgs) {
+      if (svg.querySelectorAll('circle').length >= 3) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function findThreeDotsTrigger() {
     const buttons = [...document.querySelectorAll('button')];
 
-    // Strategy 1: Check if it has an SVG that contains at least 3 circles (exact match)
-    for (const btn of buttons) {
-      const svgs = btn.querySelectorAll('svg');
-      for (const svg of svgs) {
-        if (svg.querySelectorAll('circle').length >= 3) {
+    // Strategy A: Find the "Share" button and look within its header group container
+    const shareBtn = buttons.find(btn => btn.textContent && /Share/i.test(btn.textContent));
+    if (shareBtn) {
+      let container = shareBtn.parentElement;
+      for (let i = 0; i < 3 && container; i++) {
+        if (container.querySelectorAll('button').length >= 3) {
+          break;
+        }
+        container = container.parentElement;
+      }
+
+      if (container) {
+        const headerButtons = [...container.querySelectorAll('button')];
+
+        // 1. Try to find a button in the header group that looks like a three-dots button
+        const likelyBtn = headerButtons.find(btn => btn !== shareBtn && isLikelyThreeDots(btn));
+        if (likelyBtn) {
           return {
-            element: btn,
-            strategy: "Exact match (SVG containing 3 circles)",
+            element: likelyBtn,
+            strategy: "Exact match (detected likely three-dots button in the Share header group)",
             exact: true
           };
         }
-      }
-    }
 
-    // Strategy 2: Find button next to "Share" button
-    const shareBtn = buttons.find(btn => btn.textContent && /Share/i.test(btn.textContent));
-    if (shareBtn) {
-      const parent = shareBtn.parentElement;
-      if (parent) {
-        const siblingButtons = [...parent.querySelectorAll('button')].filter(btn => btn !== shareBtn);
-        const iconButtons = siblingButtons.filter(btn => !btn.textContent.trim());
-        if (iconButtons.length > 0) {
-          iconButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+        // 2. If not found by attributes/text, sort by left position and pick the leftmost one
+        const otherButtons = headerButtons.filter(btn => btn !== shareBtn);
+        if (otherButtons.length > 0) {
+          otherButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
           return {
-            element: iconButtons[0],
-            strategy: "Approximate match (first icon button next to the 'Share' button)",
+            element: otherButtons[0],
+            strategy: "Approximate match (leftmost button in the Share header group)",
             exact: false
           };
         }
       }
     }
 
-    // Strategy 3: Look for any button with class/attributes containing 'more', 'options', 'menu', 'ellipsis'
-    for (const btn of buttons) {
-      const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
-      if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis')) {
-        return {
-          element: btn,
-          strategy: `Approximate match (button with label/title containing 'more/options/menu/ellipsis' [${label}])`,
-          exact: false
-        };
-      }
+    // Strategy B: Globally search for any likely three-dots button
+    const globalLikelyBtn = buttons.find(btn => isLikelyThreeDots(btn));
+    if (globalLikelyBtn) {
+      return {
+        element: globalLikelyBtn,
+        strategy: "Exact match (globally detected likely three-dots button by attributes/text/SVG)",
+        exact: true
+      };
     }
 
-    // Strategy 4: Fallback to any button with data-scope/data-part
+    // Strategy C: Global fallback to popover triggers
     for (const btn of buttons) {
       if (btn.getAttribute('data-scope') === 'popover' || btn.getAttribute('data-part') === 'trigger') {
         return {
           element: btn,
-          strategy: "Approximate match (button with popover trigger attributes)",
+          strategy: "Approximate match (global button with popover trigger attributes)",
           exact: false
         };
       }
