@@ -23,6 +23,10 @@
     if (/^[^a-zA-Z0-9\s]{1,4}$/.test(text)) {
       return true;
     }
+    const html = btn.innerHTML.toLowerCase();
+    if (html.includes('ellipsis') || html.includes('dots') || html.includes('more-horizontal') || html.includes('more-vertical')) {
+      return true;
+    }
     const svgs = btn.querySelectorAll('svg');
     for (const svg of svgs) {
       if (svg.querySelectorAll('circle').length >= 3) {
