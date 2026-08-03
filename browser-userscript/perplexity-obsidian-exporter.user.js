@@ -36,12 +36,32 @@
     return false;
   }
 
-  function findThreeDotsTrigger() {
-    const buttons = [...document.querySelectorAll('button')];
+  function isInsideTurn(btn) {
+    return btn.closest('div[class*="turn"], div[class*="message"], div[class*="bubble"], div[class*="answer"], div[class*="response"]') !== null;
+  }
 
-    // Strategy A: Find the "Share" button and look within its header group container
-    const shareBtn = buttons.find(btn => btn.textContent && /Share/i.test(btn.textContent));
+  function isInsideSidebar(btn) {
+    return btn.closest('aside, nav, [class*="sidebar"], [class*="nav"]') !== null;
+  }
+
+  function findThreeDotsTrigger() {
+    const buttons = [...document.querySelectorAll('button')].filter(btn => {
+      const rect = btn.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+
+    console.log(`[PPLX Obsidian exporter] Found ${buttons.length} visible buttons on page.`);
+
+    // Strategy A: Find the "Share" button first (which is in the same header group)
+    const shareBtn = buttons.find(btn => {
+      if (isInsideTurn(btn) || isInsideSidebar(btn)) return false;
+      const text = (btn.textContent || '').trim().toLowerCase();
+      const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+      return text.includes('share') || label.includes('share');
+    });
+
     if (shareBtn) {
+      console.log("[PPLX Obsidian exporter] Found Share button as anchor:", shareBtn);
       let container = shareBtn.parentElement;
       for (let i = 0; i < 3 && container; i++) {
         if (container.querySelectorAll('button').length >= 3) {
@@ -51,10 +71,11 @@
       }
 
       if (container) {
-        const headerButtons = [...container.querySelectorAll('button')];
+        const headerButtons = [...container.querySelectorAll('button')].filter(btn => btn !== shareBtn);
+        console.log(`[PPLX Obsidian exporter] Found ${headerButtons.length} other buttons in Share header group.`);
 
-        // 1. Try to find a button in the header group that looks like a three-dots button
-        const likelyBtn = headerButtons.find(btn => btn !== shareBtn && isLikelyThreeDots(btn));
+        // Find one that looks like three-dots
+        const likelyBtn = headerButtons.find(btn => isLikelyThreeDots(btn));
         if (likelyBtn) {
           return {
             element: likelyBtn,
@@ -62,39 +83,41 @@
             exact: true
           };
         }
-
-        // 2. If not found by attributes/text, sort by left position and pick the leftmost one
-        const otherButtons = headerButtons.filter(btn => btn !== shareBtn);
-        if (otherButtons.length > 0) {
-          otherButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-          return {
-            element: otherButtons[0],
-            strategy: "Approximate match (leftmost button in the Share header group)",
-            exact: false
-          };
-        }
       }
     }
 
-    // Strategy B: Globally search for any likely three-dots button
-    const globalLikelyBtn = buttons.find(btn => isLikelyThreeDots(btn));
-    if (globalLikelyBtn) {
+    // Strategy B: Filter out sidebar & turn buttons, and look for likely three-dots in the upper part of viewport
+    const mainHeaderCandidates = buttons.filter(btn => {
+      if (isInsideTurn(btn) || isInsideSidebar(btn)) return false;
+
+      const rect = btn.getBoundingClientRect();
+      const isInHeaderArea = rect.top >= 0 && rect.top <= 120;
+      const isOnRightSide = rect.right > (window.innerWidth / 2);
+
+      return isInHeaderArea && isOnRightSide && isLikelyThreeDots(btn);
+    });
+
+    if (mainHeaderCandidates.length > 0) {
+      console.log("[PPLX Obsidian exporter] Found main header candidates via Strategy B:", mainHeaderCandidates);
       return {
-        element: globalLikelyBtn,
-        strategy: "Exact match (globally detected likely three-dots button by attributes/text/SVG)",
+        element: mainHeaderCandidates[0],
+        strategy: "Exact match (detected likely three-dots button in upper-right viewport header area)",
         exact: true
       };
     }
 
-    // Strategy C: Global fallback to popover triggers
-    for (const btn of buttons) {
-      if (btn.getAttribute('data-scope') === 'popover' || btn.getAttribute('data-part') === 'trigger') {
-        return {
-          element: btn,
-          strategy: "Approximate match (global button with popover trigger attributes)",
-          exact: false
-        };
-      }
+    // Strategy C: Global search of likely three-dots button (excluding turns/sidebar)
+    const globalCandidates = buttons.filter(btn => {
+      return !isInsideTurn(btn) && !isInsideSidebar(btn) && isLikelyThreeDots(btn);
+    });
+
+    if (globalCandidates.length > 0) {
+      console.log("[PPLX Obsidian exporter] Found global candidates via Strategy C:", globalCandidates);
+      return {
+        element: globalCandidates[0],
+        strategy: "Exact match (globally detected likely three-dots button outside turns and sidebar)",
+        exact: true
+      };
     }
 
     return null;
@@ -196,11 +219,13 @@
 
   function logPopoverDebugInfo() {
     const candidates = [...document.querySelectorAll(
-      '[data-scope="popover"], [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper], div'
+      '[data-scope="popover"], [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper], .radix-popper-content-wrapper, div[class*="popover"], div[class*="menu"], div[class*="dialog"], div[class*="dropdown"]'
     )].filter((el) => el.getBoundingClientRect().width > 0);
 
-    console.log(`[PPLX Obsidian exporter] popover debug: ${candidates.length} candidate element(s) visible`);
-    candidates.forEach((el, i) => {
+    // Limit logged candidate count to 15 to avoid polluting user's console
+    const loggedCount = Math.min(candidates.length, 15);
+    console.log(`[PPLX Obsidian exporter] popover debug: ${candidates.length} candidate element(s) visible. Displaying top ${loggedCount}.`);
+    candidates.slice(0, loggedCount).forEach((el, i) => {
       console.log(
         `[PPLX Obsidian exporter] candidate #${i}`,
         {
@@ -209,7 +234,6 @@
           dataPart: el.getAttribute("data-part"),
           role: el.getAttribute("role"),
           textPreview: el.textContent.trim().slice(0, 200),
-          el,
         }
       );
     });
@@ -221,75 +245,127 @@
   }
 
   async function exportFullThread() {
-    if (anyPopoverOpen()) {
-      await closePopover();
+    console.log("[PPLX Obsidian exporter] Starting exportFullThread workflow...");
+    const btn = document.getElementById("pplx-obsidian-export-btn");
+    const originalBackground = btn ? btn.style.background : "";
+
+    if (btn) {
+      btn.disabled = true;
+      btn.style.background = "#7F6DF2";
+      btn.style.opacity = "0.7";
+      btn.style.cursor = "not-allowed";
     }
 
-    const match = findThreeDotsTrigger();
-    if (!match) {
-      alert("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
-      return;
-    }
+    try {
+      if (anyPopoverOpen()) {
+        console.log("[PPLX Obsidian exporter] Detected open popover, closing first...");
+        await closePopover();
+      }
 
-    if (!match.exact) {
-      GM_notification({
-        title: "Perplexity Saver: Approximate Match",
-        text: `Matched button approximately using: ${match.strategy}`,
-        timeout: 6000,
-      });
-
-      const confirmMsg = `Perplexity Saver Warning:\n\n` +
-                         `The three-dots menu icon was not matched exactly.\n` +
-                         `Approximate match used:\n"${match.strategy}"\n\n` +
-                         `Would you like to proceed with the export?`;
-      if (!confirm(confirmMsg)) {
-        console.log("[PPLX Obsidian exporter] Export cancelled by user due to approximate match confirmation refusal.");
+      console.log("[PPLX Obsidian exporter] Looking for three-dots menu trigger...");
+      const match = findThreeDotsTrigger();
+      if (!match) {
+        alert("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
         return;
       }
-    }
 
-    const trigger = match.element;
+      console.log("[PPLX Obsidian exporter] Found trigger:", match.strategy, match.element);
 
-    // Set clipboard metadata *before* starting the export to make it available to the watcher
-    const metadata = {
-      url: window.location.href,
-      timestamp: formatTimestamp(new Date()),
-      clickTime: Date.now()
-    };
-    const metadataStr = `__PPLX_EXPORT_METADATA__:${JSON.stringify(metadata)}`;
-    GM_setClipboard(metadataStr, "text");
+      if (!match.exact) {
+        try {
+          GM_notification({
+            title: "Perplexity Saver: Approximate Match",
+            text: `Matched button approximately using: ${match.strategy}`,
+            timeout: 6000,
+          });
+        } catch (err) {
+          console.warn("[PPLX Obsidian exporter] GM_notification failed:", err);
+        }
 
-    simulateClick(trigger);
+        const confirmMsg = `Perplexity Saver Warning:\n\n` +
+                           `The three-dots menu icon was not matched exactly.\n` +
+                           `Approximate match used:\n"${match.strategy}"\n\n` +
+                           `Would you like to proceed with the export?`;
+        if (!confirm(confirmMsg)) {
+          console.log("[PPLX Obsidian exporter] Export cancelled by user due to approximate match confirmation refusal.");
+          return;
+        }
+      }
 
-    // Try finding the export option directly on the document (very robust fallback)
-    let exportBtn = await waitForExportOption();
-    if (!exportBtn) {
-      // Fallback: wait for the standard popover container and then find the option inside it
-      const popover = await waitForPopover(1500);
-      if (popover) {
-        exportBtn = findExportAsMarkdownOption(popover);
+      const trigger = match.element;
+
+      // Set clipboard metadata *before* starting the export to make it available to the watcher
+      const metadata = {
+        url: window.location.href,
+        timestamp: formatTimestamp(new Date()),
+        clickTime: Date.now()
+      };
+      const metadataStr = `__PPLX_EXPORT_METADATA__:${JSON.stringify(metadata)}`;
+
+      console.log("[PPLX Obsidian exporter] Setting metadata into clipboard:", metadataStr);
+      try {
+        if (typeof GM_setClipboard !== "undefined") {
+          GM_setClipboard(metadataStr, "text");
+        } else {
+          await navigator.clipboard.writeText(metadataStr);
+        }
+        console.log("[PPLX Obsidian exporter] Clipboard metadata write completed successfully.");
+      } catch (err) {
+        console.error("[PPLX Obsidian exporter] Failed to write metadata to clipboard:", err);
+        alert("Perplexity Saver Error: Failed to write export metadata to clipboard. Please grant clipboard permissions.");
+        return;
+      }
+
+      console.log("[PPLX Obsidian exporter] Simulating click on three-dots trigger...");
+      simulateClick(trigger);
+
+      // Try finding the export option directly on the document (very robust fallback)
+      console.log("[PPLX Obsidian exporter] Waiting for 'Export as Markdown' option to appear...");
+      let exportBtn = await waitForExportOption();
+      if (!exportBtn) {
+        console.log("[PPLX Obsidian exporter] Option not found globally, waiting for popover container fallback...");
+        // Fallback: wait for the standard popover container and then find the option inside it
+        const popover = await waitForPopover(1500);
+        if (popover) {
+          exportBtn = findExportAsMarkdownOption(popover);
+        }
+      }
+
+      if (!exportBtn) {
+        console.warn("[PPLX Obsidian exporter] 'Export as Markdown' option not found.");
+        logPopoverDebugInfo();
+        alert(
+          'Popover menu option "Export as Markdown" not found after clicking the three-dots icon. ' +
+          "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
+        );
+        return;
+      }
+
+      console.log("[PPLX Obsidian exporter] Clicking 'Export as Markdown' button:", exportBtn);
+      simulateClick(exportBtn);
+
+      try {
+        GM_notification({
+          title: "Perplexity Saver",
+          text: "Exporting thread... check Obsidian for progress.",
+          timeout: 3000,
+        });
+      } catch (err) {
+        console.warn("[PPLX Obsidian exporter] GM_notification failed:", err);
+      }
+
+      await new Promise((r) => setTimeout(r, 500));
+      console.log("[PPLX Obsidian exporter] Closing popover...");
+      await closePopover();
+      console.log("[PPLX Obsidian exporter] Export workflow successfully completed.");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.style.background = originalBackground;
+        btn.style.opacity = "";
+        btn.style.cursor = "pointer";
       }
     }
-
-    if (!exportBtn) {
-      logPopoverDebugInfo();
-      alert(
-        'Popover menu option "Export as Markdown" not found after clicking the three-dots icon. ' +
-        "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
-      );
-      return;
-    }
-
-    simulateClick(exportBtn);
-
-    GM_notification({
-      title: "Perplexity Saver",
-      text: "Exporting thread... check Obsidian for progress.",
-      timeout: 3000,
-    });
-
-    await new Promise((r) => setTimeout(r, 500));
-    await closePopover();
   }
 
   function applyNativeThemeStyles(btn) {
@@ -388,7 +464,16 @@
       applyNativeThemeStyles(btn);
     };
 
-    btn.onclick = exportFullThread;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      console.log("[PPLX Obsidian exporter] Floating button clicked. Initiating export workflow...");
+      exportFullThread().catch((err) => {
+        console.error("[PPLX Obsidian exporter] exportFullThread error:", err);
+        alert("Perplexity Saver Error during export: " + err.toString());
+      });
+    }, true);
+
     btn.title = "Export Thread to Obsidian (Markdown)";
 
     document.body.appendChild(btn);
