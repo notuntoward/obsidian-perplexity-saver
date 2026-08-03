@@ -17,12 +17,16 @@
   function findThreeDotsTrigger() {
     const buttons = [...document.querySelectorAll('button')];
 
-    // Strategy 1: Check if it has an svg that contains at least 3 circles or horizontal ellipsis dots
+    // Strategy 1: Check if it has an SVG that contains at least 3 circles (exact match)
     for (const btn of buttons) {
       const svgs = btn.querySelectorAll('svg');
       for (const svg of svgs) {
-        if (svg.innerHTML.includes('circle') && svg.querySelectorAll('circle').length >= 3) {
-          return btn;
+        if (svg.querySelectorAll('circle').length >= 3) {
+          return {
+            element: btn,
+            strategy: "Exact match (SVG containing 3 circles)",
+            exact: true
+          };
         }
       }
     }
@@ -36,7 +40,11 @@
         const iconButtons = siblingButtons.filter(btn => !btn.textContent.trim());
         if (iconButtons.length > 0) {
           iconButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-          return iconButtons[0]; // Leftmost icon button (usually the three dots)
+          return {
+            element: iconButtons[0],
+            strategy: "Approximate match (first icon button next to the 'Share' button)",
+            exact: false
+          };
         }
       }
     }
@@ -45,14 +53,22 @@
     for (const btn of buttons) {
       const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
       if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis')) {
-        return btn;
+        return {
+          element: btn,
+          strategy: `Approximate match (button with label/title containing 'more/options/menu/ellipsis' [${label}])`,
+          exact: false
+        };
       }
     }
 
     // Strategy 4: Fallback to any button with data-scope/data-part
     for (const btn of buttons) {
       if (btn.getAttribute('data-scope') === 'popover' || btn.getAttribute('data-part') === 'trigger') {
-        return btn;
+        return {
+          element: btn,
+          strategy: "Approximate match (button with popover trigger attributes)",
+          exact: false
+        };
       }
     }
 
@@ -147,11 +163,30 @@
       await closePopover();
     }
 
-    const trigger = findThreeDotsTrigger();
-    if (!trigger) {
+    const match = findThreeDotsTrigger();
+    if (!match) {
       alert("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
       return;
     }
+
+    if (!match.exact) {
+      GM_notification({
+        title: "Perplexity Saver: Approximate Match",
+        text: `Matched button approximately using: ${match.strategy}`,
+        timeout: 6000,
+      });
+
+      const confirmMsg = `Perplexity Saver Warning:\n\n` +
+                         `The three-dots menu icon was not matched exactly.\n` +
+                         `Approximate match used:\n"${match.strategy}"\n\n` +
+                         `Would you like to proceed with the export?`;
+      if (!confirm(confirmMsg)) {
+        console.log("[PPLX Obsidian exporter] Export cancelled by user due to approximate match confirmation refusal.");
+        return;
+      }
+    }
+
+    const trigger = match.element;
 
     // Set clipboard metadata *before* starting the export to make it available to the watcher
     const metadata = {
