@@ -147,11 +147,48 @@
     return `${date} ${time}${tz}`;
   }
 
+  function simulateClick(element) {
+    if (!element) return;
+    const eventTypes = ["pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    eventTypes.forEach((eventType) => {
+      let ev;
+      if (eventType.startsWith("pointer") && typeof PointerEvent !== "undefined") {
+        ev = new PointerEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: 1,
+          isPrimary: true,
+        });
+      } else {
+        ev = new MouseEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          button: 0,
+          buttons: 1,
+        });
+      }
+      element.dispatchEvent(ev);
+    });
+  }
+
   async function waitForPopover(timeoutMs = 3000, intervalMs = 75) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const popover = findPopoverContent();
       if (popover) return popover;
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    return null;
+  }
+
+  async function waitForExportOption(timeoutMs = 3500, intervalMs = 75) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const opt = findExportAsMarkdownOption(document);
+      if (opt) return opt;
       await new Promise((r) => setTimeout(r, intervalMs));
     }
     return null;
@@ -222,25 +259,28 @@
     const metadataStr = `__PPLX_EXPORT_METADATA__:${JSON.stringify(metadata)}`;
     GM_setClipboard(metadataStr, "text");
 
-    trigger.click();
+    simulateClick(trigger);
 
-    const popover = await waitForPopover();
-    if (!popover) {
+    // Try finding the export option directly on the document (very robust fallback)
+    let exportBtn = await waitForExportOption();
+    if (!exportBtn) {
+      // Fallback: wait for the standard popover container and then find the option inside it
+      const popover = await waitForPopover(1500);
+      if (popover) {
+        exportBtn = findExportAsMarkdownOption(popover);
+      }
+    }
+
+    if (!exportBtn) {
       logPopoverDebugInfo();
       alert(
-        'Popover menu with "Export as Markdown" not found after clicking the three-dots icon. ' +
+        'Popover menu option "Export as Markdown" not found after clicking the three-dots icon. ' +
         "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
       );
       return;
     }
 
-    const exportBtn = findExportAsMarkdownOption(popover);
-    if (!exportBtn) {
-      alert('"Export as Markdown" option not found in the menu.');
-      return;
-    }
-
-    exportBtn.click();
+    simulateClick(exportBtn);
 
     GM_notification({
       title: "Perplexity Saver",
