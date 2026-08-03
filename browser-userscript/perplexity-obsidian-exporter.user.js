@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Perplexity → Obsidian Markdown Exporter (via Complexity)
+// @name         Perplexity → Obsidian Markdown Exporter (Standard Interface)
 // @namespace    scott-otterson-obsidian-export
-// @version      7.6
-// @description  Opens Complexity's export popover, ensures Markdown format, clicks Copy, wraps clipboard content with frontmatter tag + visible link.  This intended to be used as a tampermonkey script.
+// @version      8.0
+// @description  Clicks standard Perplexity three-dots menu, selects "Export as Markdown", and writes metadata to clipboard so the Obsidian plugin can complete the import.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
 // @grant        GM_setClipboard
@@ -12,34 +12,77 @@
 
 (function () {
   "use strict";
-  console.log("[PPLX Obsidian exporter] userscript started", location.href);
+  console.log("[PPLX Obsidian exporter] standard userscript started", location.href);
 
-  function findExportTrigger() {
-    const paths = [...document.querySelectorAll('svg[viewBox="0 0 24 24"] path[d^="M14 3v4a1 1 0 0 0 1 1h4"]')];
-    for (const p of paths) {
-      const btn = p.closest('button[data-scope="popover"][data-part="trigger"]');
-      if (btn) return btn;
+  function findThreeDotsTrigger() {
+    const buttons = [...document.querySelectorAll('button')];
+
+    // Strategy 1: Check if it has an svg that contains at least 3 circles or horizontal ellipsis dots
+    for (const btn of buttons) {
+      const svgs = btn.querySelectorAll('svg');
+      for (const svg of svgs) {
+        if (svg.innerHTML.includes('circle') && svg.querySelectorAll('circle').length >= 3) {
+          return btn;
+        }
+      }
     }
+
+    // Strategy 2: Find button next to "Share" button
+    const shareBtn = buttons.find(btn => btn.textContent && /Share/i.test(btn.textContent));
+    if (shareBtn) {
+      const parent = shareBtn.parentElement;
+      if (parent) {
+        const siblingButtons = [...parent.querySelectorAll('button')].filter(btn => btn !== shareBtn);
+        const iconButtons = siblingButtons.filter(btn => !btn.textContent.trim());
+        if (iconButtons.length > 0) {
+          iconButtons.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+          return iconButtons[0]; // Leftmost icon button (usually the three dots)
+        }
+      }
+    }
+
+    // Strategy 3: Look for any button with class/attributes containing 'more', 'options', 'menu', 'ellipsis'
+    for (const btn of buttons) {
+      const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+      if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis')) {
+        return btn;
+      }
+    }
+
+    // Strategy 4: Fallback to any button with data-scope/data-part
+    for (const btn of buttons) {
+      if (btn.getAttribute('data-scope') === 'popover' || btn.getAttribute('data-part') === 'trigger') {
+        return btn;
+      }
+    }
+
     return null;
   }
 
   function findPopoverContent() {
-    return [...document.querySelectorAll('[data-scope=\"popover\"][data-part=\"content\"]')].find(
-      (el) => el.getBoundingClientRect().width > 0 && /choose format/i.test(el.textContent)
-    );
+    const candidates = [...document.querySelectorAll(
+      '[data-scope="popover"], [role="menu"], [role="dialog"], [data-radix-popper-content-wrapper], .radix-popper-content-wrapper, div[style*="position: fixed"], div[style*="position: absolute"], div[class*="popover"], div[class*="menu"], div[class*="dialog"], div[class*="dropdown"]'
+    )];
+    let found = candidates.find(el => el.getBoundingClientRect().width > 0 && /Export as Markdown/i.test(el.textContent));
+    if (found) return found;
+
+    const allDivs = [...document.querySelectorAll('div, section')];
+    return allDivs.find(el => el.getBoundingClientRect().width > 0 && /Export as Markdown/i.test(el.textContent) && (window.getComputedStyle(el).position === 'fixed' || window.getComputedStyle(el).position === 'absolute' || el.style.position === 'fixed' || el.style.position === 'absolute'));
   }
 
-  // Unlike findPopoverContent(), this doesn't require "choose format" text,
-  // so it also catches a stuck/leftover popover wrapper that a previous run
-  // left open but emptied (e.g. after an interrupted or non-standard close).
   function anyPopoverOpen() {
     return [...document.querySelectorAll('[data-scope="popover"]')].some(
       (el) => el.getBoundingClientRect().width > 0
     );
   }
 
-  function findButtonByText(root, pattern) {
-    return [...root.querySelectorAll("button")].find((b) => pattern.test(b.textContent.trim()));
+  function findExportAsMarkdownOption(root) {
+    const elements = [...(root || document).querySelectorAll('button, [role="menuitem"], div, span')];
+    return elements.find(el => {
+      if (!el.textContent) return false;
+      const text = el.textContent.trim();
+      return /Export as Markdown/i.test(text) && el.getBoundingClientRect().width > 0;
+    });
   }
 
   function formatTimestamp(d) {
@@ -63,14 +106,7 @@
     return `${date} ${time}${tz}`;
   }
 
-  function wrapMarkdown(rawMd, url) {
-    const ts = formatTimestamp(new Date());
-    return `[Perplexity](${url}) · *${ts}*\n${rawMd.trim()}\n`;
-  }
-
-  // Polls for the popover instead of relying on one fixed delay, since
-  // Complexity's popover render/animation time can vary.
-  async function waitForPopover(timeoutMs = 2000, intervalMs = 75) {
+  async function waitForPopover(timeoutMs = 3000, intervalMs = 75) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       const popover = findPopoverContent();
@@ -80,13 +116,9 @@
     return null;
   }
 
-  // Diagnostic helper: when the expected popover can't be found, dump every
-  // visible element that looks popover/dialog-like so the selector can be
-  // fixed against Complexity's actual current markup. Open DevTools console
-  // (F12) before clicking the export button to see this output.
   function logPopoverDebugInfo() {
     const candidates = [...document.querySelectorAll(
-      '[data-scope="popover"], [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]'
+      '[data-scope="popover"], [role="dialog"], [role="menu"], [data-radix-popper-content-wrapper], div'
     )].filter((el) => el.getBoundingClientRect().width > 0);
 
     console.log(`[PPLX Obsidian exporter] popover debug: ${candidates.length} candidate element(s) visible`);
@@ -103,84 +135,60 @@
         }
       );
     });
-    if (candidates.length === 0) {
-      console.log("[PPLX Obsidian exporter] no popover/dialog-like elements found in the DOM at all.");
-    }
   }
 
-  // Complexity's export menu is a Zag.js/Ark-UI style popover
-  // (data-scope="popover"). Those components close on a real Escape
-  // keypress or an outside pointerdown, not on a synthetic click(). Using
-  // document.body.click() to dismiss it can leave the popover's internal
-  // open state (and its positioning wrapper) stuck, which then shows up as
-  // a stray empty box and makes the trigger stop working until a full page
-  // reload. Dispatch a real Escape keydown instead so the component's own
-  // dismiss logic runs.
   async function closePopover() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     await new Promise((r) => setTimeout(r, 100));
   }
 
   async function exportFullThread() {
-    // Self-heal: if a previous run left the popover open/stuck (even an
-    // emptied/leftover one with no "choose format" text), close it first
-    // instead of requiring the user to reload the page.
     if (anyPopoverOpen()) {
       await closePopover();
     }
 
-    const trigger = findExportTrigger();
+    const trigger = findThreeDotsTrigger();
     if (!trigger) {
-      alert("Couldn't find the export icon. Complexity's UI may have changed.");
+      alert("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
       return;
     }
+
+    // Set clipboard metadata *before* starting the export to make it available to the watcher
+    const metadata = {
+      url: window.location.href,
+      timestamp: formatTimestamp(new Date()),
+      clickTime: Date.now()
+    };
+    const metadataStr = `__PPLX_EXPORT_METADATA__:${JSON.stringify(metadata)}`;
+    GM_setClipboard(metadataStr, "text");
+
     trigger.click();
 
     const popover = await waitForPopover();
     if (!popover) {
       logPopoverDebugInfo();
       alert(
-        'Popover with "Choose format" not found after clicking the icon. ' +
+        'Popover menu with "Export as Markdown" not found after clicking the three-dots icon. ' +
         "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
       );
       return;
     }
 
-    const copyBtn = findButtonByText(popover, /^copy$/i);
-    if (!copyBtn) {
-      alert('"Copy" button not found in the export popover.');
+    const exportBtn = findExportAsMarkdownOption(popover);
+    if (!exportBtn) {
+      alert('"Export as Markdown" option not found in the menu.');
       return;
     }
 
-    copyBtn.click();
-    await new Promise((r) => setTimeout(r, 300));
+    exportBtn.click();
 
-    let rawMd = null;
-    try {
-      rawMd = await navigator.clipboard.readText();
-    } catch (e) {
-      alert("Couldn't read clipboard — grant clipboard-read permission if Chrome prompts, then retry.");
-      return;
-    }
-
-    if (!rawMd) {
-      alert("Clipboard was empty after clicking Copy.");
-      return;
-    }
-
-    console.log(
-      `[PPLX Obsidian exporter] clipboard content from Complexity's Copy button is ${rawMd.length} chars`,
-      { rawMd }
-    );
-
-    const finalMd = wrapMarkdown(rawMd, window.location.href);
-    GM_setClipboard(finalMd, "text");
     GM_notification({
-      title: "Obsidian Export Ready",
-      text: "Thread Markdown copied to clipboard.",
-      timeout: 2000,
+      title: "Perplexity Saver",
+      text: "Exporting thread... check Obsidian for progress.",
+      timeout: 3000,
     });
 
+    await new Promise((r) => setTimeout(r, 500));
     await closePopover();
   }
 

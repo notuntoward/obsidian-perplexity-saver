@@ -7,6 +7,8 @@ import { registerAppendCommand } from "./commands/append";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 
+import { DownloadsWatcher, getDefaultDownloadsFolder } from "./watcher";
+
 interface PerplexitySaverSettings {
 	searchesFolder: string;
 	generatedTag: string;
@@ -37,6 +39,8 @@ interface PerplexitySaverSettings {
 	 * range: 0.05 to 0.35. Ignored when headlineMethod is "lead".
 	 */
 	headlineLeadBias: number;
+	enableDownloadsWatcher: boolean;
+	downloadsFolderPath: string;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -47,6 +51,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	headlineMethod: "lead",
 	headlineMaxChars: 100,
 	headlineLeadBias: 0.20,
+	enableDownloadsWatcher: true,
+	downloadsFolderPath: "",
 };
 
 interface InlineInputData {
@@ -64,11 +70,18 @@ const clearPerplexityInput = StateEffect.define<null>();
 
 export default class PerplexitySaverPlugin extends Plugin {
 	settings: PerplexitySaverSettings;
+	downloadsWatcher: DownloadsWatcher;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
 		this.registerEditorExtension(perplexityInputStateField(this));
+
+		this.downloadsWatcher = new DownloadsWatcher(this.app, () => ({
+			enableDownloadsWatcher: this.settings.enableDownloadsWatcher,
+			downloadsFolderPath: this.settings.downloadsFolderPath,
+		}));
+		this.downloadsWatcher.start();
 
 		// Keep the original command id and name as aliases so existing
 		// hotkeys/links continue to work, but they now go through the
@@ -93,6 +106,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerPruneSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
+	}
+
+	onunload(): void {
+		if (this.downloadsWatcher) {
+			this.downloadsWatcher.stop();
+		}
 	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
@@ -287,6 +306,8 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		containerEl.createEl("h3", { text: "General settings" });
+
 		new Setting(containerEl)
 			.setName("AI save folder")
 			.setDesc("The name of the folder where AI notes are stored (relative to the active note).")
@@ -337,6 +358,33 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.collapsePromptCallouts)
 					.onChange(async (value) => {
 						this.plugin.settings.collapsePromptCallouts = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		containerEl.createEl("h3", { text: "Downloads Watcher" });
+
+		new Setting(containerEl)
+			.setName("Enable Downloads Watcher")
+			.setDesc("Monitor the system Downloads folder for standard Perplexity thread exports.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.enableDownloadsWatcher)
+					.onChange(async (value) => {
+						this.plugin.settings.enableDownloadsWatcher = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Downloads Folder Path")
+			.setDesc("The absolute path to your Downloads folder. Leave blank to default to ~/Downloads.")
+			.addText((text) =>
+				text
+					.setPlaceholder(getDefaultDownloadsFolder() || "~/Downloads")
+					.setValue(this.plugin.settings.downloadsFolderPath)
+					.onChange(async (value) => {
+						this.plugin.settings.downloadsFolderPath = value;
 						await this.plugin.saveSettings();
 					})
 			);
