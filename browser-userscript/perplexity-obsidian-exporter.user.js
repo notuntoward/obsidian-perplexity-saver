@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Standard Interface)
 // @namespace    scott-otterson-obsidian-export
-// @version      8.1
+// @version      8.2
 // @description  Clicks standard Perplexity three-dots menu, selects "Export as Markdown", and writes metadata to clipboard so the Obsidian plugin can complete the import.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -16,6 +16,20 @@
 
   function isLikelyThreeDots(btn) {
     const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
+
+    // Explicitly exclude non-related common header buttons to prevent false positives
+    if (label.includes('user') || label.includes('profile') || label.includes('account') ||
+        label.includes('avatar') || label.includes('setting') || label.includes('help') ||
+        label.includes('feedback') || label.includes('bookmark') || label.includes('collection') ||
+        label.includes('search') || label.includes('notification')) {
+      return false;
+    }
+
+    const className = (btn.className || '').toLowerCase();
+    if (className.includes('user') || className.includes('avatar') || className.includes('profile')) {
+      return false;
+    }
+
     if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis') || label.includes('action') || label.includes('three')) {
       return true;
     }
@@ -24,7 +38,7 @@
       return true;
     }
     const html = btn.innerHTML.toLowerCase();
-    if (html.includes('ellipsis') || html.includes('dots') || html.includes('more-horizontal') || html.includes('more-vertical') || html.includes('dots-horizontal') || html.includes('lucide-more')) {
+    if (html.includes('ellipsis') || html.includes('dots-horizontal') || html.includes('dots-vertical') || html.includes('more-horizontal') || html.includes('more-vertical') || html.includes('lucide-more')) {
       return true;
     }
     // Check for aria-haspopup
@@ -34,17 +48,10 @@
     }
     const svgs = btn.querySelectorAll('svg');
     for (const svg of svgs) {
-      if (svg.querySelectorAll('circle').length >= 3) {
+      // lucide-react more-horizontal has exactly 3 circle elements
+      if (svg.querySelectorAll('circle').length === 3) {
         return true;
       }
-      if (svg.innerHTML.includes('circle')) {
-        return true;
-      }
-    }
-    // Highly specific to Perplexity's layout buttons
-    const className = btn.className || '';
-    if (className.includes('aspect-[9/8]')) {
-      return true;
     }
     return false;
   }
@@ -65,6 +72,24 @@
 
     console.log(`[PPLX Obsidian exporter] Found ${buttons.length} visible buttons on page.`);
 
+    // Comprehensive debugging: print out all buttons in the upper header right area
+    console.log("[PPLX Obsidian exporter] Diagnostic list of buttons in top-right header area:");
+    buttons.forEach((btn, idx) => {
+      const rect = btn.getBoundingClientRect();
+      const isInHeaderArea = rect.top >= 0 && rect.top <= 120;
+      const isOnRightSide = rect.right > (window.innerWidth / 2);
+      if (isInHeaderArea && isOnRightSide && !isInsideTurn(btn) && !isInsideSidebar(btn)) {
+        console.log(`[PPLX Obsidian exporter] Header-right Button #${idx}:`, {
+          text: btn.textContent.trim(),
+          ariaLabel: btn.getAttribute('aria-label'),
+          title: btn.getAttribute('title'),
+          className: btn.className,
+          isLikely: isLikelyThreeDots(btn),
+          outerHTML: btn.outerHTML.slice(0, 300)
+        });
+      }
+    });
+
     // Strategy A: Find the "Share" button first (which is in the same header group)
     const shareBtn = buttons.find(btn => {
       if (isInsideTurn(btn) || isInsideSidebar(btn)) return false;
@@ -81,9 +106,20 @@
         if (descendantButtons.length > 0) {
           const likelyBtn = descendantButtons.find(btn => isLikelyThreeDots(btn));
           if (likelyBtn) {
+            console.log("[PPLX Obsidian exporter] Strategy A Matched three-dots button:", likelyBtn);
             return {
               element: likelyBtn,
               strategy: "Exact match (detected likely three-dots button inside Share button's ancestor container hierarchy)",
+              exact: true
+            };
+          }
+          // Fallback Strategy A2: find any button with class aspect-[9/8] (and make sure it's not the share button itself)
+          const fallbackBtn = descendantButtons.find(btn => (btn.className || '').includes('aspect-[9/8]'));
+          if (fallbackBtn) {
+            console.log("[PPLX Obsidian exporter] Strategy A Fallback Matched aspect-[9/8] button:", fallbackBtn);
+            return {
+              element: fallbackBtn,
+              strategy: "Exact match (detected aspect-[9/8] button inside Share button's ancestor container hierarchy)",
               exact: true
             };
           }
@@ -258,6 +294,59 @@
     await new Promise((r) => setTimeout(r, 100));
   }
 
+  function showError(message) {
+    console.error("[PPLX Obsidian exporter] Error:", message);
+    try {
+      GM_notification({
+        title: "Perplexity Saver: Error",
+        text: message,
+        timeout: 10000,
+      });
+    } catch (_) {}
+
+    // Create a temporary visible error modal/banner on the page
+    const banner = document.createElement("div");
+    banner.style.cssText = `
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #FF4A4A;
+      color: #FFFFFF;
+      padding: 16px 24px;
+      border-radius: 8px;
+      z-index: 100000;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+      font-family: sans-serif;
+      font-weight: bold;
+      max-width: 500px;
+      text-align: center;
+    `;
+    banner.textContent = message;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "Close";
+    closeBtn.style.cssText = `
+      margin-top: 10px;
+      background: #FFFFFF;
+      color: #FF4A4A;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    `;
+    closeBtn.onclick = () => banner.remove();
+    banner.appendChild(document.createElement("br"));
+    banner.appendChild(closeBtn);
+
+    document.body.appendChild(banner);
+
+    try {
+      alert(message);
+    } catch (_) {}
+  }
+
   async function exportFullThread() {
     console.log("[PPLX Obsidian exporter] Starting exportFullThread workflow...");
     const btn = document.getElementById("pplx-obsidian-export-btn");
@@ -279,7 +368,7 @@
       console.log("[PPLX Obsidian exporter] Looking for three-dots menu trigger...");
       const match = findThreeDotsTrigger();
       if (!match) {
-        alert("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
+        showError("Couldn't find the three-dots menu icon. Perplexity's UI may have changed.");
         return;
       }
 
@@ -326,7 +415,7 @@
         console.log("[PPLX Obsidian exporter] Clipboard metadata write completed successfully.");
       } catch (err) {
         console.error("[PPLX Obsidian exporter] Failed to write metadata to clipboard:", err);
-        alert("Perplexity Saver Error: Failed to write export metadata to clipboard. Please grant clipboard permissions.");
+        showError("Perplexity Saver Error: Failed to write export metadata to clipboard. Please grant clipboard permissions.");
         return;
       }
 
@@ -348,7 +437,7 @@
       if (!exportBtn) {
         console.warn("[PPLX Obsidian exporter] 'Export as Markdown' option not found.");
         logPopoverDebugInfo();
-        alert(
+        showError(
           'Popover menu option "Export as Markdown" not found after clicking the three-dots icon. ' +
           "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
         );
@@ -486,7 +575,7 @@
       console.log("[PPLX Obsidian exporter] Floating button clicked. Initiating export workflow...");
       exportFullThread().catch((err) => {
         console.error("[PPLX Obsidian exporter] exportFullThread error:", err);
-        alert("Perplexity Saver Error during export: " + err.toString());
+        showError("Perplexity Saver Error during export: " + err.toString());
       });
     }, true);
 
