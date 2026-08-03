@@ -16,7 +16,7 @@
 
   function isLikelyThreeDots(btn) {
     const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').toLowerCase();
-    if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis') || label.includes('action')) {
+    if (label.includes('more') || label.includes('option') || label.includes('menu') || label.includes('ellipsis') || label.includes('action') || label.includes('three')) {
       return true;
     }
     const text = btn.textContent.trim();
@@ -24,7 +24,12 @@
       return true;
     }
     const html = btn.innerHTML.toLowerCase();
-    if (html.includes('ellipsis') || html.includes('dots') || html.includes('more-horizontal') || html.includes('more-vertical')) {
+    if (html.includes('ellipsis') || html.includes('dots') || html.includes('more-horizontal') || html.includes('more-vertical') || html.includes('dots-horizontal') || html.includes('lucide-more')) {
+      return true;
+    }
+    // Check for aria-haspopup
+    const hasPopup = (btn.getAttribute('aria-haspopup') || '').toLowerCase();
+    if (hasPopup === 'menu' || hasPopup === 'true') {
       return true;
     }
     const svgs = btn.querySelectorAll('svg');
@@ -32,6 +37,14 @@
       if (svg.querySelectorAll('circle').length >= 3) {
         return true;
       }
+      if (svg.innerHTML.includes('circle')) {
+        return true;
+      }
+    }
+    // Highly specific to Perplexity's layout buttons
+    const className = btn.className || '';
+    if (className.includes('aspect-[9/8]')) {
+      return true;
     }
     return false;
   }
@@ -63,26 +76,19 @@
     if (shareBtn) {
       console.log("[PPLX Obsidian exporter] Found Share button as anchor:", shareBtn);
       let container = shareBtn.parentElement;
-      for (let i = 0; i < 3 && container; i++) {
-        if (container.querySelectorAll('button').length >= 3) {
-          break;
+      for (let i = 0; i < 4 && container; i++) {
+        const descendantButtons = [...container.querySelectorAll('button')].filter(btn => btn !== shareBtn && !isInsideTurn(btn) && !isInsideSidebar(btn));
+        if (descendantButtons.length > 0) {
+          const likelyBtn = descendantButtons.find(btn => isLikelyThreeDots(btn));
+          if (likelyBtn) {
+            return {
+              element: likelyBtn,
+              strategy: "Exact match (detected likely three-dots button inside Share button's ancestor container hierarchy)",
+              exact: true
+            };
+          }
         }
         container = container.parentElement;
-      }
-
-      if (container) {
-        const headerButtons = [...container.querySelectorAll('button')].filter(btn => btn !== shareBtn);
-        console.log(`[PPLX Obsidian exporter] Found ${headerButtons.length} other buttons in Share header group.`);
-
-        // Find one that looks like three-dots
-        const likelyBtn = headerButtons.find(btn => isLikelyThreeDots(btn));
-        if (likelyBtn) {
-          return {
-            element: likelyBtn,
-            strategy: "Exact match (detected likely three-dots button in the Share header group)",
-            exact: true
-          };
-        }
       }
     }
 
