@@ -168,19 +168,25 @@ To prevent your Obsidian outline pane from displaying a repetitive wall of "Prom
 
 ---
 
-# Continuing & Appending to a Dialog
+# Continuing, Appending & Syncing a Dialog
 
 If you continue a conversation in your browser and want to save the new turns into the existing note:
 
 1. **(Browser)** Ask follow-up questions in Perplexity or Gemini. Copy the updated conversation to your clipboard using the same method (Export as Markdown in Perplexity, or the Web Clipper in Gemini).
 2. **(Obsidian)** Open the existing note in your vault. Place your cursor anywhere in the file.
-3. **(Obsidian)** Run the command: **"Append AI dialog from clipboard to this note"** (assign a hotkey to make this fast).
+3. **(Obsidian)** Run the command: **"Sync AI dialog from clipboard"** (assign a hotkey to make this fast).
 
-### What Appending Does:
+### What Syncing Does:
 - It auto-detects the vendor (Perplexity/Gemini) of your clipboard.
-- It scans the current file for the highest existing `^turn-N` anchor and starts numbering new turns at `N + 1`.
+- It reads the `ai-source-turns-synced` YAML watermark from the note's frontmatter (falling back to the highest surviving `^turn-N` anchor if missing) to know exactly how many turns have already been synced.
+- It slices the incoming clipboard conversation, only appending the genuinely *new* turns.
+- It starts numbering new local anchors sequentially at `max(existing ^turn-N anchors) + 1`, making your local numbering robust and monotonic even if earlier turns were deleted.
 - It appends the new turns directly before the `# Sources` heading.
 - It **completely regenerates and merges the `# Sources` section** to ensure all citations from old and new turns are consolidated, mapped correctly, and deduplicated.
+- It updates the `ai-source-turns-synced` watermark to reflect the new total number of synced turns.
+
+> [!NOTE] Known Limitation
+> If you edit or regenerate an earlier prompt directly on the source Perplexity/Gemini page (not just ask new questions), the plugin cannot detect this — syncing only looks at the turn count, not turn content. This is a known limitation; re-export manually if this happens.
 
 ---
 

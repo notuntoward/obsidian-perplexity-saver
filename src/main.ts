@@ -3,7 +3,8 @@ import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
 import { createPerplexityNote } from "./note-creator";
 import { registerPruneSourcesCommand } from "./commands/prune";
-import { registerAppendCommand } from "./commands/append";
+import { registerSyncCommand } from "./commands/sync";
+import { registerDeleteTurnCommand } from "./commands/delete";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 
@@ -89,7 +90,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 			},
 		});
 
-		registerAppendCommand(this);
+		registerSyncCommand(this);
+		registerDeleteTurnCommand(this);
 		registerPruneSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
