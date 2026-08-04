@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { deleteDialogTurn } from "../../src/commands/delete";
+import { deleteDialogTurn, getTurnsFromNote } from "../../src/commands/delete";
 
 describe("deleteDialogTurn", () => {
 	let mockApp: any;
@@ -70,5 +70,32 @@ Third answer text[^3_1]
 		expect(written).toContain("Third question text");
 		expect(written).toContain("[^1_1]: [A]");
 		expect(written).toContain("[^3_1]: [C]");
+	});
+});
+
+describe("getTurnsFromNote", () => {
+	it("correctly extracts turn numbers and shortened prompts as heading texts", () => {
+		const noteText = `# Dialog
+
+## How do I do X? ^turn-1
+
+Prompt 1
+
+## Why is Y like that? ^turn-5
+
+Prompt 5
+`;
+		const turns = getTurnsFromNote(noteText);
+		expect(turns).toHaveLength(2);
+		expect(turns[0]).toEqual({
+			turnNum: 1,
+			headingText: "How do I do X?",
+			displayText: "Turn 1: How do I do X?",
+		});
+		expect(turns[1]).toEqual({
+			turnNum: 5,
+			headingText: "Why is Y like that?",
+			displayText: "Turn 5: Why is Y like that?",
+		});
 	});
 });
