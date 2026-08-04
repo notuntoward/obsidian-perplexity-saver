@@ -332,3 +332,40 @@ describe("parsePerplexityDialog — question-only export (no AI response text)",
 		expect(dialog.turns[1].rawText).toContain("Is there an extension for it in vscode");
 	});
 });
+
+describe("parsePerplexityDialog — annotated format", () => {
+	it("parses the annotated format correctly with PPLX-TURN and PPLX-ROLE tags", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/d32a8935-7c70-4902-b3d8-64e2b7d0fcc9) · *2026-08-03 20:35 PDT*
+
+---
+
+<!-- PPLX-TURN 1 -->
+<!-- PPLX-ROLE: prompt -->
+Compare population size and land area of the PNW states
+
+<!-- PPLX-ROLE: ai -->
+Here’s a quick comparison of the main PNW states often used in the core Pacific Northwest definition: Washington, Oregon, and Idaho.[1][2]
+
+<!-- PPLX-ROLE: sources -->
+[^1_1]: https://ofm.wa.gov/data-research/washington-trends/population-changes/
+[^1_2]: https://www.census.gov/quickfacts/fact/table/WA/PST045225`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.sourceVendor).toBe("perplexity");
+		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/d32a8935-7c70-4902-b3d8-64e2b7d0fcc9");
+		expect(dialog.turns).toHaveLength(2);
+
+		expect(dialog.turns[0].role).toBe("prompt");
+		expect(dialog.turns[0].rawText).toBe("Compare population size and land area of the PNW states");
+
+		expect(dialog.turns[1].role).toBe("ai");
+		expect(dialog.turns[1].rawText).toBe("Here’s a quick comparison of the main PNW states often used in the core Pacific Northwest definition: Washington, Oregon, and Idaho.[1][2]");
+		expect(dialog.turns[1].citations).toHaveLength(2);
+		expect(dialog.turns[1].citations[0]).toEqual({
+			origNum: "1",
+			url: "https://ofm.wa.gov/data-research/washington-trends/population-changes/",
+			title: undefined,
+		});
+		expect(dialog.turns[1].citations[1].url).toBe("https://www.census.gov/quickfacts/fact/table/WA/PST045225");
+	});
+});
