@@ -1,4 +1,4 @@
-import { DialogFile, DialogTurn, ParsedCitation } from "./types";
+import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".
@@ -25,28 +25,35 @@ const SMC_RESPONSE_HEADER = "**AI answer**";
 const SMC_SOURCES_HEADER = "**Sources:**";
 
 /**
+ * Checks if the content has annotated Perplexity format (HTML comments).
+ * Only matches if the annotation starts at the root level of the file,
+ * directly after the optional metadata header.
+ */
+export function isAnnotatedPerplexityContent(text: string): boolean {
+	return /^(?:\[Perplexity\]\([\s\S]*?\)\s*(?:·\s*\*.*?\*)?\s*(?:\n+---\n+)?\s*)?<!-- PPLX-TURN 1 -->/i.test(text.trim());
+}
+
+export function stripAnnotations(text: string): string {
+	return text
+		.replace(/<!-- PPLX-TURN \d+ -->/gi, "")
+		.replace(/<!-- PPLX-ROLE:\s*\S+\s*-->/gi, "")
+		.trim();
+}
+
+/**
  * Parse a Perplexity dialog export into the shared DialogFile shape.
- *
- * Two formats are accepted:
- *   - Stock Perplexity pastes: multiple prompt/response pairs separated by
- *     `---` lines. Each pair has a user prompt (first paragraph), an AI
- *     response (intro paragraph plus ## headings), and a trailing
- *     `# Citations:` block. All source lists across pairs are merged into
- *     one global deduped set by the renderer.
- *   - "Save My Chatbot" browser-extension exports: have explicit **You**
- *     and **AI answer** bold markers, plus a **Sources:** block.
  */
 export function parsePerplexityDialog(rawText: string): DialogFile {
-	// Normalize line endings first. Every downstream regex in this file
-	// matches a literal "\n" for section/line boundaries; real clipboard
-	// content from Windows browsers is frequently CRLF, and a stray "\r"
-	// before each "\n" silently breaks those matches (e.g. the `---`
-	// separator between prompt/response pairs), collapsing what should be
-	// multiple turns into one and scrambling citation numbering across pairs.
 	const normalizedText = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+	if (isAnnotatedPerplexityContent(normalizedText)) {
+		return parseAnnotatedPerplexityDialog(normalizedText);
+	}
+
 	const sections = splitIntoPromptResponsePairs(normalizedText);
 	const turns: DialogTurn[] = [];
 	let sourceUrl: string | undefined;
+	let sourceMetadata: string | undefined;
 
 	for (const section of sections) {
 		const { promptText, responseText, sourceListText } = splitPromptResponseSources(section);
@@ -59,9 +66,126 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
 			turns.push({ role: "ai", rawText: responseText.trim(), citations });
 		}
 		if (!sourceUrl) sourceUrl = extractSourceUrl(section);
+		if (!sourceMetadata) sourceMetadata = extractSourceMetadata(section);
 	}
 
-	return { sourceVendor: "perplexity", sourceUrl, turns };
+	return { sourceVendor: "perplexity", sourceUrl, sourceMetadata, turns };
+}
+
+/**
+ * Parses the annotated Perplexity format (with PPLX-TURN and PPLX-ROLE comments)
+ * into a shared DialogFile shape.
+ */
+function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
+	const sourceUrl = extractSourceUrl(normalizedText);
+	const sourceMetadata = extractSourceMetadata(normalizedText);
+
+	// Split by turn blocks using the turn regex
+	const turnBlocks = normalizedText.split(/<!-- PPLX-TURN \d+ -->/g);
+	const turns: DialogTurn[] = [];
+
+	// The first split block is the metadata header (before the first turn marker), which we ignore.
+	for (let i = 1; i < turnBlocks.length; i++) {
+		const block = turnBlocks[i].trim();
+		if (!block) continue;
+
+		const turnNum = i;
+		const roles: { role: string; content: string }[] = [];
+		const roleMatchRe = /<!-- PPLX-ROLE:\s*(prompt|ai|sources|unknown[^>]*) -->/g;
+		const indices: { index: number; length: number; role: string }[] = [];
+		let match: RegExpExecArray | null;
+
+		while ((match = roleMatchRe.exec(block)) !== null) {
+			indices.push({ index: match.index, length: match[0].length, role: match[1].trim() });
+		}
+
+		for (let j = 0; j < indices.length; j++) {
+			const start = indices[j].index + indices[j].length;
+			const end = j + 1 < indices.length ? indices[j + 1].index : block.length;
+			const content = block.slice(start, end).trim();
+			roles.push({ role: indices[j].role, content });
+		}
+
+		let promptText = "";
+		let responseText = "";
+		let sourcesText = "";
+
+		for (const r of roles) {
+			if (r.role === "prompt") {
+				promptText = stripAnnotations(r.content);
+			} else if (r.role === "ai") {
+				responseText = stripAnnotations(r.content);
+			} else if (r.role === "sources") {
+				sourcesText = stripAnnotations(r.content);
+			} else if (r.role.startsWith("unknown")) {
+				const cleaned = stripAnnotations(r.content);
+				// Fallback: treat the first line of the unresolved block as prompt, and the rest as response
+				const firstNewline = cleaned.indexOf("\n");
+				if (firstNewline !== -1) {
+					promptText = cleaned.slice(0, firstNewline).trim();
+					responseText = cleaned.slice(firstNewline).trim();
+				} else {
+					promptText = cleaned;
+					responseText = "";
+				}
+			}
+		}
+
+		// Parse the bibliography list to map citation references for this turn
+		const urlByNum = new Map<string, { url: string; title?: string }>();
+		if (sourcesText && sourcesText !== "(none)") {
+			const lines = sourcesText.split("\n");
+			const footnoteRe = /^\s*\[\^([^\]]+)\]:\s*(?:\[(.*?)\]\()?(https?:\/\/\S+?)\)?(?:\s+.*)?$/;
+			for (const line of lines) {
+				const fMatch = line.match(footnoteRe);
+				if (fMatch) {
+					const num = fMatch[1]; // e.g., "4_1"
+					const title = fMatch[2] || undefined;
+					const url = fMatch[3];
+					urlByNum.set(num, { url, title });
+				}
+			}
+		}
+
+		if (promptText.trim()) {
+			turns.push({ role: "prompt", rawText: extractLeadingQuotes(promptText.trim()), citations: [] });
+		}
+
+		if (responseText.trim()) {
+			// Extract citations for this turn
+			const citations: ParsedCitation[] = [];
+			const seen = new Set<string>();
+			const citeRe = new RegExp(CITENUM_RE.source, "g");
+			let cm: RegExpExecArray | null;
+
+			while ((cm = citeRe.exec(responseText)) !== null) {
+				const num = cm[1]; // e.g., "1"
+				if (seen.has(num)) continue;
+				seen.add(num);
+
+				// Match turn-scoped footnote keys (e.g. "4_1") first, then global numeric keys
+				const turnKey = `${turnNum}_${num}`;
+				const entry = urlByNum.get(turnKey) || urlByNum.get(num);
+				if (entry) {
+					citations.push({ origNum: num, url: entry.url, title: entry.title });
+				}
+			}
+
+			// Fallback: if no inline references were matched but there are citations for this turn in urlByNum, add them
+			if (citations.length === 0 && urlByNum.size > 0) {
+				for (const [key, entry] of urlByNum.entries()) {
+					if (key.startsWith(`${turnNum}_`)) {
+						const num = key.slice(`${turnNum}_`.length);
+						citations.push({ origNum: num, url: entry.url, title: entry.title });
+					}
+				}
+			}
+
+			turns.push({ role: "ai", rawText: responseText.trim(), citations });
+		}
+	}
+
+	return { sourceVendor: "perplexity", sourceUrl, sourceMetadata, turns };
 }
 
 /**
@@ -70,7 +194,12 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
  * "source" link in the note's frontmatter.
  */
 function extractSourceUrl(section: string): string | undefined {
-	const m = section.match(/^\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)/m);
+	const m = section.match(/\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)/);
+	return m ? m[1] : undefined;
+}
+
+function extractSourceMetadata(section: string): string | undefined {
+	const m = section.match(/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+\) · \*(.*?)\*/);
 	return m ? m[1] : undefined;
 }
 
@@ -285,6 +414,7 @@ export function isPerplexityContent(text: string): boolean {
 		/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\//m.test(text) ||
 		/^(?:\#{1,3}|\*\*|\s*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\s*)$/im.test(text) ||
 		/<div style="text-align: ?center">/i.test(text) ||
-		/\*\*You\*\*/.test(text)
+		/\*\*You\*\*/.test(text) ||
+		/<!-- PPLX-TURN \d+ -->/i.test(text)
 	);
 }

@@ -45,5 +45,7 @@ export interface DialogFile {
 	sourceVendor: "perplexity" | "gemini";
 	/** The URL from the clipboard metadata line linking back to the original AI dialog. */
 	sourceUrl?: string;
+	/** Original metadata string containing timestamp and timezone. */
+	sourceMetadata?: string;
 	turns: DialogTurn[];
 }

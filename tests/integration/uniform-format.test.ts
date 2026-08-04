@@ -95,19 +95,20 @@ describe("uniform note format from Perplexity export", () => {
 
 		// Bug 5: every occurrence of a repeated citation number converts,
 		// not just the first. [1][1][2] in "Setup Steps" must all convert.
-		expect(body).toContain("Open the settings panel and toggle the option.[[#^src-1|1]][[#^src-1|1]][[#^src-2|2]]");
+		expect(body).toContain("Open the settings panel and toggle the option.[^1_1][^1_1][^1_2]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
 
 		// Bug 2: the source cited from both turn 1 and turn 2 records both
 		// owning turns, not just whichever one happened to introduce it.
-		expect(sourceLines).toHaveLength(2);
-		expect(sourceLines[0]).toContain("^src-1 [One](https://one.com/) (turns 1, 2) <!-- src-url: https://one.com/ -->");
-		expect(sourceLines[1]).toContain("^src-2 [Two](https://two.com/) (turn 1) <!-- src-url: https://two.com/ -->");
+		expect(sourceLines).toHaveLength(3);
+		expect(sourceLines[0]).toBe("[^1_1]: [One](https://one.com/)");
+		expect(sourceLines[1]).toBe("[^1_2]: [Two](https://two.com/)");
+		expect(sourceLines[2]).toBe("[^2_1]: [One](https://one.com/)");
 
 		// Inline source link at the top of the note, clickable in editor and
-		// reading view. Appears as the first content line after # Dialog.
+		// reading view. Appears as the first content line.
 		expect(body).toMatch(
-			/# Dialog\n\n\*\*Source:\*\* \[perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\)\n\n## /
+			/^\[Perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/x\) · \*2026-07-27 10:18 PDT\*\n\n# Dialog/
 		);
 	});
 });
@@ -118,13 +119,10 @@ describe("inline source link", () => {
 			`[Perplexity](https://www.perplexity.ai/search/abc) · *2026-07-27*\n# q\n\n## A\n\nbody[1]\n\n# Citations:\n[1] [X](https://x.com/)`
 		);
 		const { body } = buildNoteBody(dialog);
-		expect(body).toContain("**Source:** [perplexity](https://www.perplexity.ai/search/abc)");
-		// It is the first content line, immediately after # Dialog.
-		const dialogHeadingIndex = body.indexOf("# Dialog");
-		const linkIndex = body.indexOf("**Source:**");
-		expect(linkIndex).toBeGreaterThan(dialogHeadingIndex);
-		// The first turn marker is the level-2 heading (starts with "## ").
-		expect(linkIndex).toBeLessThan(body.search(/^## /m));
+		expect(body).toContain("[Perplexity](https://www.perplexity.ai/search/abc) · *2026-07-27*");
+		const linkIndex = body.indexOf("[Perplexity](https://www.perplexity.ai/search/abc)");
+		expect(linkIndex).toBe(0);
+		expect(body.indexOf("# Dialog")).toBeGreaterThan(linkIndex);
 	});
 
 	it("renders a clickable link to the source URL for Gemini", () => {

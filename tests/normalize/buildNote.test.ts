@@ -22,10 +22,10 @@ describe("buildNoteBody", () => {
 		expect(body).toMatch(/## What is the answer to this question\? \^turn-1/);
 		expect(body).toMatch(/> \[!Prompt\]\+/);
 		expect(body).not.toMatch(/### AI response/);
-		expect(body).toContain("The answer is here.[[#^src-1|1]]");
+		expect(body).toContain("The answer is here.[^1_1]");
 		expect(body).toContain("# Sources");
 		expect(sourceLines).toHaveLength(1);
-		expect(sourceLines[0]).toContain("^src-1 [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->");
+		expect(sourceLines[0]).toBe("[^1_1]: [X](https://example.com/x)");
 	});
 
 	it("converts every occurrence of a repeated citation number, not just the first", () => {
@@ -40,7 +40,7 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body } = buildNoteBody(d);
-		expect(body).toContain("first[[#^src-1|1]] second[[#^src-1|1]] third[[#^src-2|2]]");
+		expect(body).toContain("first[^1_1] second[^1_1] third[^1_2]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
 	});
 
@@ -54,7 +54,7 @@ describe("buildNoteBody", () => {
 	});
 
 	it("reuses existing source IDs when the same URL appears in existingSourceText", () => {
-		const existingSources = " ^src-4 [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
+		const existingSources = "[^1_1]: [Y](https://example.com/y)\n";
 		const d = dialog([
 			{
 				role: "ai",
@@ -63,13 +63,13 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body, sourceLines } = buildNoteBody(d, { existingSourceText: existingSources });
-		expect(body).toContain("answer[[#^src-4|4]]");
+		expect(body).toContain("answer[^1_1]");
 		expect(sourceLines).toHaveLength(1);
-		expect(sourceLines[0]).toContain("^src-4 [Y](https://example.com/y) (turns 1, 3) <!-- src-url: https://example.com/y -->");
+		expect(sourceLines[0]).toBe("[^1_1]: [Y](https://example.com/y)");
 	});
 
 	it("mints a new id for a URL not present in existingSourceText", () => {
-		const existingSources = " ^src-4 [Y](https://example.com/y) (turn 3) <!-- src-url: https://example.com/y -->\n";
+		const existingSources = "[^4_3]: [Y](https://example.com/y)\n";
 		const d = dialog([
 			{
 				role: "ai",
@@ -78,10 +78,10 @@ describe("buildNoteBody", () => {
 			},
 		]);
 		const { body, sourceLines } = buildNoteBody(d, { existingSourceText: existingSources });
-		expect(body).toContain("answer[[#^src-5|5]]");
+		expect(body).toContain("answer[^1_1]");
 		expect(sourceLines).toHaveLength(2);
-		expect(sourceLines[0]).toContain("^src-4 [Y](https://example.com/y) (turn 3)");
-		expect(sourceLines[1]).toContain("^src-5");
+		expect(sourceLines[0]).toBe("[^1_1]: [Z](https://example.com/z)");
+		expect(sourceLines[1]).toBe("[^4_3]: [Y](https://example.com/y)");
 	});
 
 	it("records every turn that cites a URL, across turns within one call", () => {
@@ -91,8 +91,9 @@ describe("buildNoteBody", () => {
 			{ role: "ai", rawText: "b[1]", citations: [{ origNum: "1", url: "https://example.com/shared" }] },
 		]);
 		const { sourceLines } = buildNoteBody(d);
-		expect(sourceLines).toHaveLength(1);
-		expect(sourceLines[0]).toContain("(turns 1, 2)");
+		expect(sourceLines).toHaveLength(2);
+		expect(sourceLines[0]).toBe("[^1_1]: <https://example.com/shared>");
+		expect(sourceLines[1]).toBe("[^2_1]: <https://example.com/shared>");
 	});
 
 	it("preserves numbered turn IDs across appends: new counter is max(existing) + 1", () => {
@@ -101,7 +102,7 @@ describe("buildNoteBody", () => {
 ## Headline (turn 3) ^turn-3
 
 # Sources
-^src-7: [Q](https://example.com/q) (turn 2) <!-- src-url: https://example.com/q -->
+[^2_1]: [Q](https://example.com/q)
 `;
 		const d = dialog([{ role: "prompt", rawText: "What is the next question?", citations: [] }]);
 		const { body } = buildNoteBody(d, {
@@ -180,14 +181,14 @@ describe("buildNoteBody — collapseBlankLines option", () => {
 	it("collapses by default (collapseBlankLines omitted)", () => {
 		const { body } = buildNoteBody(d);
 		expect(body).toContain(
-			"# Dialog\n\n**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
+			"**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n# Dialog\n\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
 		);
 		expect(body).not.toMatch(/\n{3,}/);
 	});
 
 	it("preserves blank lines around headings when collapseBlankLines is false", () => {
 		const { body } = buildNoteBody(d, { collapseBlankLines: false });
-		expect(body).toContain("# Dialog\n\n**Source:**");
+		expect(body).toContain("**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n# Dialog\n\n## AI response (turn 1)");
 		expect(body).toMatch(/\n\n> \[!Prompt\]/);
 	});
 });
@@ -227,8 +228,8 @@ describe("extractSourcesSection", () => {
 
 # Sources
 
-^src-1 [X](https://example.com/x) (turn 1) <!-- src-url: https://example.com/x -->
+[^1_1]: [X](https://example.com/x)
 `;
-		expect(extractSourcesSection(text)).toContain("^src-1 [X]");
+		expect(extractSourcesSection(text)).toContain("[^1_1]: [X]");
 	});
 });
