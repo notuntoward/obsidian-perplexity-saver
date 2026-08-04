@@ -253,6 +253,29 @@
     return { body, sources };
   }
 
+  function findPromptEnd(strippedBody, strippedDomPrompt) {
+    // 1. Try matching the entire stripped prompt
+    const idx = strippedBody.indexOf(strippedDomPrompt);
+    if (idx !== -1) {
+      return idx + strippedDomPrompt.length;
+    }
+
+    // 2. Try matching trailing suffixes of the prompt to be robust against markdown formatting differences
+    const suffixLens = [40, 30, 20, 15, 12, 10, 8];
+    for (const len of suffixLens) {
+      if (strippedDomPrompt.length >= len) {
+        const suffix = strippedDomPrompt.slice(-len);
+        const sIdx = strippedBody.indexOf(suffix);
+        if (sIdx !== -1) {
+          console.log(`[PPLX Obsidian Exporter] Matched prompt end using trailing suffix of length ${len}: "${suffix}"`);
+          return sIdx + len;
+        }
+      }
+    }
+
+    return -1;
+  }
+
   function splitPromptFromResponse(chunkText, domPromptText, turnNum, title) {
     const { body: chunkBody, sources } = splitSources(chunkText);
 
@@ -279,13 +302,12 @@
       return null;
     }
 
-    const idxStripped = strippedBody.indexOf(strippedDomPrompt);
-    if (idxStripped === -1) {
+    const promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+    if (promptEndStrippedIdx === -1) {
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt not found in strippedBody.`);
       return null;
     }
 
-    const promptEndStrippedIdx = idxStripped + strippedDomPrompt.length;
     const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
 
     // Scan forward for the first alphanumeric character of the response

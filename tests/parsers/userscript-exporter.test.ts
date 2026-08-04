@@ -63,6 +63,28 @@ function splitSources(responsePart: string) {
   return { body, sources };
 }
 
+function findPromptEnd(strippedBody: string, strippedDomPrompt: string) {
+  // 1. Try matching the entire stripped prompt
+  const idx = strippedBody.indexOf(strippedDomPrompt);
+  if (idx !== -1) {
+    return idx + strippedDomPrompt.length;
+  }
+
+  // 2. Try matching trailing suffixes of the prompt to be robust against markdown formatting differences
+  const suffixLens = [40, 30, 20, 15, 12, 10, 8];
+  for (const len of suffixLens) {
+    if (strippedDomPrompt.length >= len) {
+      const suffix = strippedDomPrompt.slice(-len);
+      const sIdx = strippedBody.indexOf(suffix);
+      if (sIdx !== -1) {
+        return sIdx + len;
+      }
+    }
+  }
+
+  return -1;
+}
+
 function splitPromptFromResponse(chunkText: string, domPromptText: string, turnNum: number, title: string) {
   const { body: chunkBody, sources } = splitSources(chunkText);
 
@@ -87,12 +109,11 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
     return null;
   }
 
-  const idxStripped = strippedBody.indexOf(strippedDomPrompt);
-  if (idxStripped === -1) {
+  const promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+  if (promptEndStrippedIdx === -1) {
     return null;
   }
 
-  const promptEndStrippedIdx = idxStripped + strippedDomPrompt.length;
   const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
 
   // Scan forward for the first alphanumeric character of the response
@@ -162,6 +183,23 @@ Research suggests that excessive intake of these amino acids may activate biolog
       // Sources should have been cleanly separated
       expect(split.sources).toContain("[^4_1]: https://elifesciences.org/articles/00065");
       expect(split.sources).toContain("[^4_15]: https://www.ajinomoto.com/amino-acids/amino-acids-for-healthy-ageing");
+    }
+  });
+
+  it("perfectly aligns even when the prompt has links or formatting that render differently in the DOM", () => {
+    // Let's simulate a chunk where the prompt in markdown has formatting, but the DOM text does not
+    const chunk = `# Explain links
+
+Go to [Google](https://google.com) to search.
+
+AI Response here.`;
+
+    const domPromptText = "Explain links\n\nGo to Google to search.";
+    const split = splitPromptFromResponse(chunk, domPromptText, 1, "Explain links");
+    expect(split).not.toBeNull();
+    if (split) {
+      expect(split.prompt).toContain("[Google](https://google.com)");
+      expect(split.response).toBe("AI Response here.");
     }
   });
 
