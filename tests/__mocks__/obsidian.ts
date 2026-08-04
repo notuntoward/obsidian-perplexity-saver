@@ -88,6 +88,31 @@ export class Modal {
 	onClose(): void {}
 }
 
+export class SuggestModal<T> {
+	app: any;
+	inputEl: any = { value: "" };
+
+	constructor(app: any) {
+		this.app = app;
+	}
+
+	open(): void {}
+	close(): void {}
+	onOpen(): void {}
+	onClose(): void {}
+	getSuggestions(_query: string): T[] {
+		return [];
+	}
+	renderSuggestion(_item: T, _el: any): void {}
+	onChooseSuggestion(_item: T, _evt: any): void {}
+}
+
+export function prepareFuzzySearch(_query: string): any {
+	return (_text: string) => null;
+}
+
+export function renderResults(_el: any, _text: string, _match: any): void {}
+
 export class Component {
 	load(): void {}
 	onload(): void {}
