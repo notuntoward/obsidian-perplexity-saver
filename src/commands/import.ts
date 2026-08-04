@@ -4,6 +4,7 @@ import { buildNoteBody } from "../normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, createDialogNote } from "../normalize/frontmatter";
 import { HeadlineOptions } from "../normalize/headlines";
 import { sanitizeFilename } from "../utils";
+import { groupLogicalTurns } from "../normalize/turns";
 
 export interface ImportDialogParams {
 	app: App;
@@ -58,6 +59,7 @@ export async function importDialogFromClipboard(
 		"ai-dialog-format": "v1",
 		"ai-source-vendor": dialog.sourceVendor,
 		"ai-source-url": dialog.sourceUrl,
+		"ai-source-turns-synced": groupLogicalTurns(dialog.turns).length,
 		tags: [generatedTag],
 		...(existingFrontmatter ?? {}),
 	});

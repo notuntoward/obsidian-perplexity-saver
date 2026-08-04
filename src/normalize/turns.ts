@@ -137,6 +137,29 @@ export function assignTurnIds(turns: DialogTurn[], startTurnId: number): number[
 }
 
 /**
+ * Group flat DialogTurn list into logical turns (pairing prompts and responses).
+ */
+export interface LogicalTurn {
+	id: number;
+	turns: DialogTurn[];
+}
+
+export function groupLogicalTurns(turns: DialogTurn[]): LogicalTurn[] {
+	const ids = assignTurnIds(turns, 1);
+	const groups: LogicalTurn[] = [];
+	let currentGroup: LogicalTurn | null = null;
+	for (let i = 0; i < turns.length; i++) {
+		const id = ids[i];
+		if (!currentGroup || currentGroup.id !== id) {
+			currentGroup = { id, turns: [] };
+			groups.push(currentGroup);
+		}
+		currentGroup.turns.push(turns[i]);
+	}
+	return groups;
+}
+
+/**
  * Find the next available turn ID by scanning the file for the highest
  * existing `^turn-N` anchor. Self-correcting against manual edits
  * (e.g. a user deleting a middle turn does not desync the counter).
