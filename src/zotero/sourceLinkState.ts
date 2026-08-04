@@ -57,9 +57,7 @@ export function renderSourceLine(
 	rawUrl: string
 ): string {
 	const linkText = renderLinkText(state);
-	const sorted = [...new Set(turnIds)].sort((a, b) => a - b);
-	const turnLabel = sorted.length <= 1 ? `turn ${sorted[0]}` : `turns ${sorted.join(", ")}`;
-	return `^${toBlockId(id)} ${linkText} (${turnLabel}) <!-- src-url: ${rawUrl} -->`;
+	return `[^${id}]: ${linkText}`;
 }
 
 function renderLinkText(state: SourceLinkState): string {
@@ -77,58 +75,43 @@ function renderLinkText(state: SourceLinkState): string {
  * Convert internal footnote id "s1" to Obsidian block-id "src-1".
  */
 export function toBlockId(id: string): string {
-	const m = id.match(/^s(\d+)$/);
-	return m ? `src-${m[1]}` : id;
-}
-
-/**
- * Convert Obsidian block-id "src-1" back to internal footnote id "s1".
- */
-function fromBlockId(blockId: string): string {
-	const m = blockId.match(/^src-(\d+)$/);
-	return m ? `s${m[1]}` : blockId;
+	return id;
 }
 
 /**
  * Regex for parsing a rendered source line back into its parts.
- * Matches, in order: block id, link (one of three forms), turn number(s)
- * (either "turn N" or "turns N, M, ..."), and the trailing hidden src-url
- * comment.
+ * Matches standard markdown footnote format: [^id]: <url> or [^id]: [title](url) or [^id]: [[citekey]]
  */
 const SOURCE_LINE_RE =
-	/^\^(?<id>src-\d+)\s+(?:\[\[(?<citekey>[^\]]+)\]\]|\[Zotero:\s*(?<zkey>[^\]]+)\]\(zotero:\/\/select\/library\/items\/(?<zotkey>[^)]+)\)|\[(?<title>[^\]]*)\]\((?<url>[^)]+)\)|<(?<bareUrl>[^>]+)>)\s*\(turns?\s+(?<turns>[\d,\s]+)\)\s*<!--\s*src-url:\s*(?<rawUrl>\S+)\s*-->\s*$/;
+	/^\[\^(?<id>[^\]]+)\]:\s+(?:\[\[(?<citekey>[^\]]+)\]\]|\[(?<title>[^\]]*)\]\((?<url>[^)]+)\)|<(?<bareUrl>[^>]+)>)\s*$/;
 
 /**
- * Parse a "# Sources" line back into a structured object. Returns null if
- * the line doesn't match the expected format (e.g. malformed, hand-edited
- * without the trailing src-url comment, or some other plugin's output).
- * Callers must handle null and should generally leave unparseable lines
- * untouched rather than deleting them, since we can't be sure what they are.
+ * Parse a "# Sources" line back into a structured object.
  */
 export function parseSourceLine(line: string): ParsedSourceLine | null {
 	const m = SOURCE_LINE_RE.exec(line.trim());
 	if (!m || !m.groups) return null;
 
 	const g = m.groups;
-	const turnIds = g.turns
-		.split(",")
-		.map((s) => parseInt(s.trim(), 10))
-		.filter((n) => !isNaN(n));
-	if (turnIds.length === 0) return null;
-	const rawUrl = g.rawUrl;
+	const id = g.id;
+
+	// Turn ID is parsed from the prefix before the underscore (e.g. "1" from "1_1")
+	const turnNum = parseInt(id.split("_")[0], 10);
+	const turnIds = isNaN(turnNum) ? [1] : [turnNum];
 
 	let state: SourceLinkState;
+	let rawUrl = "";
 	if (g.citekey) {
 		state = { kind: "lit-note", citekey: g.citekey };
-	} else if (g.zkey && g.zotkey) {
-		state = { kind: "zotero-item", citekey: g.zkey, zotkey: g.zotkey };
 	} else if (g.url) {
 		state = { kind: "raw", url: g.url, title: g.title || undefined };
+		rawUrl = g.url;
 	} else if (g.bareUrl) {
 		state = { kind: "raw", url: g.bareUrl };
+		rawUrl = g.bareUrl;
 	} else {
 		return null;
 	}
 
-	return { id: fromBlockId(g.id), state, turnIds, rawUrl };
+	return { id, state, turnIds, rawUrl };
 }

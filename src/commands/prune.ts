@@ -73,7 +73,7 @@ export class ConfirmPruneSourcesModal extends Modal {
 					: src.state.kind === "zotero-item"
 						? `[Zotero: ${src.state.citekey}]`
 						: `[[${src.state.citekey}]]`;
-			item.createEl("strong", { text: `[[#^${toBlockId(src.id)}|${src.id.replace(/^s/, "")}]] ` });
+			item.createEl("strong", { text: `[^${src.id}] ` });
 			const deadLabel = src.deadTurnIds.length === 1 ? `turn ${src.deadTurnIds[0]}` : `turns ${src.deadTurnIds.join(", ")}`;
 			const action =
 				src.survivingTurnIds.length === 0

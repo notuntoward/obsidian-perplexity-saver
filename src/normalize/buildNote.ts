@@ -63,37 +63,25 @@ export function buildNoteBody(
 	const collapsePromptCallouts = options.collapsePromptCallouts ?? true;
 	const headlineOptions: HeadlineOptions = options.headlineOptions ?? { method: "lead" };
 
-	// url -> full source entry, seeded with whatever the existing # Sources
-	// block already has so we never mint a duplicate sN for the same URL,
-	// and so a newly citing turn can be added to an existing entry's
-	// turnIds set rather than creating a second entry for the same source.
-	const sourcesByUrl = new Map<string, SourceEntry>();
-	let maxExistingSourceNum = 0;
+	// Seed with existing sources from note, keyed by their unique footnote ID
+	const sourcesById = new Map<string, SourceEntry>();
 	for (const line of existingSourceText.split("\n")) {
 		const parsed = parseSourceLine(line);
 		if (!parsed) continue;
-		sourcesByUrl.set(parsed.rawUrl, {
+		sourcesById.set(parsed.id, {
 			id: parsed.id,
 			turnIds: new Set(parsed.turnIds),
 			state: parsed.state,
 			rawUrl: parsed.rawUrl,
 		});
-		const m = parsed.id.match(/^s(\d+)$/);
-		if (m) maxExistingSourceNum = Math.max(maxExistingSourceNum, parseInt(m[1], 10));
 	}
-	let sourceCounter = maxExistingSourceNum + 1;
 
 	const turnIds = assignTurnIds(dialog.turns, startTurnId);
 	const turnBlocks: string[] = [];
 
 	dialog.turns.forEach((turn, i) => {
 		const turnId = turnIds[i];
-		const mintNextSourceId = () => {
-			const id = "s" + sourceCounter;
-			sourceCounter++;
-			return id;
-		};
-		const bodyText = rewriteCitationsForTurn(turn, turnId, sourcesByUrl, mintNextSourceId);
+		const bodyText = rewriteCitationsForTurn(turn, turnId, sourcesById);
 		// The prompt heading is the turn's only heading and carries both
 		// anchor IDs. A paired AI turn (one that immediately follows a
 		// prompt with the same turnId) has no heading of its own — the
@@ -117,16 +105,17 @@ export function buildNoteBody(
 
 	// Sources section below — kept as before.
 
-	const sourceLines = [...sourcesByUrl.values()]
-		.sort((a, b) => numericSourceId(a.id) - numericSourceId(b.id))
+	const sourceLines = [...sourcesById.values()]
+		.sort((a, b) => compareSourceIds(a.id, b.id))
 		.map((entry) =>
 			renderSourceLine(entry.id, entry.state, [...entry.turnIds].sort((a, b) => a - b), entry.rawUrl)
 		);
 
-	const sections: string[] = ["# Dialog", ""];
+	const sections: string[] = [];
 	if (dialog.sourceUrl) {
-		sections.push(renderSourceLink(dialog.sourceVendor, dialog.sourceUrl), "");
+		sections.push(renderSourceLink(dialog.sourceVendor, dialog.sourceUrl, dialog.sourceMetadata), "");
 	}
+	sections.push("# Dialog", "");
 	sections.push(...turnBlocks);
 	if (sourceLines.length > 0) {
 		sections.push("", "# Sources", "", ...sourceLines);
@@ -142,12 +131,12 @@ export function buildNoteBody(
 /**
  * Render a clickable link back to the original AI dialog page, placed
  * inline as the first line of the note body so it is visible from both
- * the editor and reading view (the YAML property is no longer the only
- * way to reach the source). Not wrapped in a blockquote: blockquoting it
- * added visual noise without semantic benefit, and the source link is
- * structural metadata about the note, not a quoted passage.
+ * the editor and reading view.
  */
-function renderSourceLink(vendor: DialogFile["sourceVendor"], url: string): string {
+function renderSourceLink(vendor: DialogFile["sourceVendor"], url: string, metadata?: string): string {
+	if (metadata) {
+		return `[${vendor === "perplexity" ? "Perplexity" : "Gemini"}](${url}) · *${metadata}*`;
+	}
 	return `**Source:** [${vendor}](${url})`;
 }
 
@@ -176,18 +165,12 @@ export function collapseWhitespace(body: string): string {
 }
 
 /**
- * Rewrite an AI turn's citation markers (e.g. [1]) to Obsidian block-linked
- * citations (e.g. [[#^src-1|1]]), minting a new source entry the first time
- * a URL is seen and adding this turn's ID to an existing entry's ownership
- * set on every subsequent citation of the same URL (whether from an earlier
- * turn in this same call or from a prior append). Every occurrence of a given
- * citation number in the text is rewritten, not just the first.
+ * Rewrite an AI turn's citation markers to standard Markdown footnote markers.
  */
 function rewriteCitationsForTurn(
 	turn: DialogTurn,
 	turnId: number,
-	sourcesByUrl: Map<string, SourceEntry>,
-	mintId: () => string
+	sourcesById: Map<string, SourceEntry>
 ): string {
 	if (turn.role !== "ai" || turn.citations.length === 0) {
 		return turn.rawText;
@@ -195,32 +178,45 @@ function rewriteCitationsForTurn(
 
 	const numToId = new Map<string, string>();
 	for (const c of turn.citations) {
-		let entry = sourcesByUrl.get(c.url);
+		// Footnote ID of the form "turnId_citationNum"
+		const id = `${turnId}_${c.origNum}`;
+		let entry = sourcesById.get(id);
 		if (!entry) {
 			entry = {
-				id: mintId(),
+				id,
 				turnIds: new Set([turnId]),
 				state: { kind: "raw", url: c.url, title: c.title },
 				rawUrl: c.url,
 			};
-			sourcesByUrl.set(c.url, entry);
+			sourcesById.set(id, entry);
 		} else {
 			entry.turnIds.add(turnId);
 		}
 		numToId.set(c.origNum, entry.id);
 	}
 
-	return turn.rawText.replace(/\[(\d+)\]/g, (match, num) => {
+	// First rewrite any existing [^num] back to [^id]
+	let text = turn.rawText;
+	numToId.forEach((id, origNum) => {
+		const re = new RegExp(`\\[\\^${origNum}\\]`, "g");
+		text = text.replace(re, `[^${id}]`);
+	});
+
+	// Next, rewrite bracket format [num] to [^id]
+	return text.replace(/\[(\d+)\]/g, (match, num) => {
 		const id = numToId.get(num);
 		if (!id) return match;
-		const sourceNum = id.replace(/^s/, "");
-		return `[[#^${toBlockId(id)}|${sourceNum}]]`;
+		return `[^${id}]`;
 	});
 }
 
-function numericSourceId(id: string): number {
-	const m = id.match(/^s(\d+)$/);
-	return m ? parseInt(m[1], 10) : Number.MAX_SAFE_INTEGER;
+function compareSourceIds(a: string, b: string): number {
+	const aParts = a.split("_").map((x) => parseInt(x, 10));
+	const bParts = b.split("_").map((x) => parseInt(x, 10));
+	if (isNaN(aParts[0]) || isNaN(bParts[0])) return a.localeCompare(b);
+	if (aParts[0] !== bParts[0]) return aParts[0] - bParts[0];
+	if (isNaN(aParts[1]) || isNaN(bParts[1])) return a.localeCompare(b);
+	return aParts[1] - bParts[1];
 }
 
 /** Pull the existing # Sources section text out of a note, for re-use during append. */

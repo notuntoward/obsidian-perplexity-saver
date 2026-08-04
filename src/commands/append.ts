@@ -74,7 +74,7 @@ export async function appendDialogFromClipboard(
 }
 
 function countSourceLines(sourcesText: string): number {
-	return sourcesText.split("\n").filter((line) => /^\^src-\d+/.test(line)).length;
+	return sourcesText.split("\n").filter((line) => /^\[\^/.test(line)).length;
 }
 
 /**

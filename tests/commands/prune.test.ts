@@ -7,67 +7,36 @@ describe("findPrunableSources", () => {
 	});
 
 	it("flags sources whose only citing turn is not present in the body (full removal case)", () => {
-		const note = `### AI response (turn 1) ^turn-1-ai
+		const note = `## AI response (turn 1) ^turn-1
 
 body
 
-### AI response (turn 3) ^turn-3-ai
+## AI response (turn 3) ^turn-3
 
 body
 
 # Sources
 
- ^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
- ^src-2 [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
- ^src-3 [C](https://c/) (turn 3) <!-- src-url: https://c/ -->
+[^1_1]: [A](https://a/)
+[^2_1]: [B](https://b/)
+[^3_1]: [C](https://c/)
 `;
 		const prunable = findPrunableSources(note);
 		expect(prunable).toHaveLength(1);
-		expect(prunable[0].id).toBe("s2");
+		expect(prunable[0].id).toBe("2_1");
 		expect(prunable[0].turnIds).toEqual([2]);
 		expect(prunable[0].deadTurnIds).toEqual([2]);
 		expect(prunable[0].survivingTurnIds).toEqual([]);
 	});
 
 	it("leaves sources alone when their turn ids are all present", () => {
-		const note = `### AI response (turn 1) ^turn-1-ai
+		const note = `## AI response (turn 1) ^turn-1
 
 body
 
 # Sources
 
-^src-1: [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
-`;
-		expect(findPrunableSources(note)).toEqual([]);
-	});
-
-	it("flags a multi-turn source as partially prunable when only some owning turns survive", () => {
-		const note = `### AI response (turn 1) ^turn-1-ai
-
-body
-
-# Sources
-
- ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
-`;
-		const prunable = findPrunableSources(note);
-		expect(prunable).toHaveLength(1);
-		expect(prunable[0].deadTurnIds).toEqual([2]);
-		expect(prunable[0].survivingTurnIds).toEqual([1]);
-	});
-
-	it("leaves a multi-turn source alone when all owning turns survive", () => {
-		const note = `### AI response (turn 1) ^turn-1-ai
-
-body
-
-### AI response (turn 2) ^turn-2-ai
-
-body
-
-# Sources
-
- ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
+[^1_1]: [A](https://a/)
 `;
 		expect(findPrunableSources(note)).toEqual([]);
 	});
@@ -77,37 +46,20 @@ describe("applyPrune", () => {
 	it("removes flagged source lines and leaves the rest intact", () => {
 		const note = `# Dialog
 
-### AI response (turn 1) ^turn-1-ai
+## AI response (turn 1) ^turn-1
 
 body
 
 # Sources
 
- ^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->
- ^src-2 [B](https://b/) (turn 2) <!-- src-url: https://b/ -->
+[^1_1]: [A](https://a/)
+[^2_1]: [B](https://b/)
 `;
 		const prunable = findPrunableSources(note);
 		const updated = applyPrune(note, prunable);
-		expect(updated).toContain("^src-1 [A](https://a/)");
-		expect(updated).not.toContain("^src-2");
-		expect(updated).toContain("### AI response (turn 1) ^turn-1-ai");
-	});
-
-	it("rewrites a partially-owned source to drop only the dead turn, keeping the line", () => {
-		const note = `# Dialog
-
-### AI response (turn 1) ^turn-1-ai
-
-body
-
-# Sources
-
- ^src-1 [A](https://a/) (turns 1, 2) <!-- src-url: https://a/ -->
-`;
-		const prunable = findPrunableSources(note);
-		const updated = applyPrune(note, prunable);
-		expect(updated).toContain("^src-1 [A](https://a/) (turn 1) <!-- src-url: https://a/ -->");
-		expect(updated).not.toContain("turns 1, 2");
+		expect(updated).toContain("[^1_1]: [A](https://a/)");
+		expect(updated).not.toContain("[^2_1]");
+		expect(updated).toContain("## AI response (turn 1) ^turn-1");
 	});
 
 	it("is a no-op when there is nothing to remove", () => {

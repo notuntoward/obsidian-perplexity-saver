@@ -26,9 +26,18 @@ const SMC_SOURCES_HEADER = "**Sources:**";
 
 /**
  * Checks if the content has annotated Perplexity format (HTML comments).
+ * Only matches if the annotation starts at the root level of the file,
+ * directly after the optional metadata header.
  */
 export function isAnnotatedPerplexityContent(text: string): boolean {
-	return /<!-- PPLX-TURN \d+ -->/i.test(text);
+	return /^(?:\[Perplexity\]\([\s\S]*?\)\s*(?:·\s*\*.*?\*)?\s*(?:\n+---\n+)?\s*)?<!-- PPLX-TURN 1 -->/i.test(text.trim());
+}
+
+export function stripAnnotations(text: string): string {
+	return text
+		.replace(/<!-- PPLX-TURN \d+ -->/gi, "")
+		.replace(/<!-- PPLX-ROLE:\s*\S+\s*-->/gi, "")
+		.trim();
 }
 
 /**
@@ -44,6 +53,7 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
 	const sections = splitIntoPromptResponsePairs(normalizedText);
 	const turns: DialogTurn[] = [];
 	let sourceUrl: string | undefined;
+	let sourceMetadata: string | undefined;
 
 	for (const section of sections) {
 		const { promptText, responseText, sourceListText } = splitPromptResponseSources(section);
@@ -56,9 +66,10 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
 			turns.push({ role: "ai", rawText: responseText.trim(), citations });
 		}
 		if (!sourceUrl) sourceUrl = extractSourceUrl(section);
+		if (!sourceMetadata) sourceMetadata = extractSourceMetadata(section);
 	}
 
-	return { sourceVendor: "perplexity", sourceUrl, turns };
+	return { sourceVendor: "perplexity", sourceUrl, sourceMetadata, turns };
 }
 
 /**
@@ -67,6 +78,7 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
  */
 function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 	const sourceUrl = extractSourceUrl(normalizedText);
+	const sourceMetadata = extractSourceMetadata(normalizedText);
 
 	// Split by turn blocks using the turn regex
 	const turnBlocks = normalizedText.split(/<!-- PPLX-TURN \d+ -->/g);
@@ -100,19 +112,20 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 
 		for (const r of roles) {
 			if (r.role === "prompt") {
-				promptText = r.content;
+				promptText = stripAnnotations(r.content);
 			} else if (r.role === "ai") {
-				responseText = r.content;
+				responseText = stripAnnotations(r.content);
 			} else if (r.role === "sources") {
-				sourcesText = r.content;
+				sourcesText = stripAnnotations(r.content);
 			} else if (r.role.startsWith("unknown")) {
+				const cleaned = stripAnnotations(r.content);
 				// Fallback: treat the first line of the unresolved block as prompt, and the rest as response
-				const firstNewline = r.content.indexOf("\n");
+				const firstNewline = cleaned.indexOf("\n");
 				if (firstNewline !== -1) {
-					promptText = r.content.slice(0, firstNewline).trim();
-					responseText = r.content.slice(firstNewline).trim();
+					promptText = cleaned.slice(0, firstNewline).trim();
+					responseText = cleaned.slice(firstNewline).trim();
 				} else {
-					promptText = r.content;
+					promptText = cleaned;
 					responseText = "";
 				}
 			}
@@ -172,7 +185,7 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 		}
 	}
 
-	return { sourceVendor: "perplexity", sourceUrl, turns };
+	return { sourceVendor: "perplexity", sourceUrl, sourceMetadata, turns };
 }
 
 /**
@@ -181,7 +194,12 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
  * "source" link in the note's frontmatter.
  */
 function extractSourceUrl(section: string): string | undefined {
-	const m = section.match(/^\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)/m);
+	const m = section.match(/\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)/);
+	return m ? m[1] : undefined;
+}
+
+function extractSourceMetadata(section: string): string | undefined {
+	const m = section.match(/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+\) · \*(.*?)\*/);
 	return m ? m[1] : undefined;
 }
 
