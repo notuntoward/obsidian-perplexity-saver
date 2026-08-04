@@ -11,8 +11,8 @@ manual file creation, no frontmatter editing.
 
 ```mermaid
 flowchart TD
-    A["Ask Perplexity<br/>a question"] --> B["Click browser Obsidian button<br/>(Tampermonkey)"]
-    B --> C["Clipboard now has<br/>Link + Markdown"]
+    A["Ask Perplexity<br/>or Gemini as normal"] --> B["Prepare clipboard via browser<br/>(Tampermonkey or Clipper)"]
+    B --> C["Clipboard now has<br/>Link + Normalized Markdown"]
     C --> D["Press hotkey<br/>in Obsidian"]
     D --> E{"Text selected<br/>in note?"}
     E -->|No| F["Inline input is blank<br/>Type a filename"]
@@ -27,55 +27,65 @@ flowchart TD
     class A,B,C,D,E,F,G,H smallFont;
 ```
 
-# Which AI?
-## Perplexity
+# Supported AI Vendors & Workflow
 
-You can export single perplexity resposes from the default perplexity page, But full dialogs are available if you install the Complexity chrome plubin, a Perplexity companion plugin; a little more convenience can be had by also installing a small chrome tampermonkey script.
+This plugin supports saving and appending dialogs from both **Perplexity** and **Gemini**. The key is to get the conversation into your clipboard using the appropriate method for each platform, after which the Obsidian plugin processes and formats it identically.
 
-## Gemini
+---
 
-Whole dialogs are capturable when you install the obsidian web clipper browser plugin and set it to store to your clipboard
+## 1. Perplexity Workflow
 
-# Full workflow
+With Perplexity, you can enjoy an automated workflow using a browser UserScript (via Tampermonkey). It intercepts Perplexity’s standard "Export as Markdown" download action, robustly aligns prompt-response boundaries, adds the source URL and timestamps, and copies the finalized markdown directly to your clipboard.
 
-1. **(Browser)** Ask your question(s) in Perplexity or Gemini as normal.
-2. **(Browser)** Copy the conversation to your clipboard (Perplexity: click
-   the "📋 Copy for Obsidian" button; Gemini: open the Obsidian Web
-   Clipper, set destination to Clipboard, and click Copy).
-3. **(Obsidian)** Place your cursor in the note you're writing, where you want
-   a link to the saved note to appear.
-4. **(Obsidian)** Press your assigned hotkey. An inline input field appears at
-   your cursor position.
-5. **(Obsidian)** Type a filename in the inline input. You can click elsewhere
-   in the note to copy text, then return to the input to paste it — the input
-   stays open and doesn't block interaction with the rest of the editor.
-6. **(Obsidian)** Press Enter. The input is replaced with a link to the newly
-   created note.
+### Exporting (Perplexity)
+1. While viewing your thread on Perplexity, click the **three dots (`...`)** menu at the top-right or bottom of the page.
+2. Select **Export as Markdown**.
+3. Instead of downloading a file, the direct UserScript intercepts the action, automatically handles collapsed prompts (expanding "show more" sections so they aren't lost), aligns prompt/response boundaries, copies the complete annotated markdown to your clipboard, and displays a temporary green toast saying `"Copied annotated export to clipboard"`.
 
-The note **content** always comes from the clipboard (the AI conversation
-you copied). The plugin automatically creates a subfolder (default:
-`ai-searches`) in the same folder as your current note (if it doesn't already
-exist), saves the normalized clipboard content into a new note there, tags
-it (default: `ai-generated`), and inserts a link to it at your cursor
-position.
+*(If you haven't installed the Tampermonkey script yet, see the [Installation & Setup](#installation--setup) section below).*
 
-## Using selected text as the filename
+---
 
-If you have text selected in your note when you run the command, the plugin
-uses the selected text as a suggested filename: the selection is deleted and the
-inline input is pre-filled with it (auto-selected, so you can type over it
-immediately). The note content still comes from the clipboard, not from the
-selection. This is handy when you want the new note's name to match nearby text
-in your current note.
+## 2. Gemini Workflow
 
-Selecting text is purely a filename convenience — it never changes what gets
-saved into the note body.
+For Gemini, you copy the formatted dialog into your clipboard using the official Obsidian Web Clipper extension.
 
-# The uniform note format
+### Exporting (Gemini)
+1. Ask your questions in Gemini as normal.
+2. Click the **Obsidian Web Clipper** icon in your browser toolbar. A popup will appear showing the markdown it has extracted from the current Gemini thread.
+3. Scroll to the bottom of the clipper popup and click the **Copy to Clipboard** button.
+4. Your clipboard is now ready for the Obsidian plugin.
 
-Every saved note uses the same markdown structure regardless of whether
-the clipboard came from Perplexity or Gemini, so a single Obsidian query,
-outline pane, or search works across all your AI dialogs.
+*(If you haven't installed the Obsidian Web Clipper yet, see the [Installation & Setup](#installation--setup) section below).*
+
+---
+
+## 3. Obsidian Saving & Linking
+
+Once the conversation markdown is on your clipboard (via Perplexity's Export menu or Gemini's Web Clipper):
+
+1. **Place your cursor** in the Obsidian note where you want a link to the saved AI dialog to appear.
+2. **Press your hotkey** (e.g., `Ctrl+Shift+V` or whatever you bound to "Import AI dialog from clipboard"). An inline input field appears directly at your cursor position.
+3. **Type a filename** (or use selected text as the filename, see below). You can click elsewhere in the note to copy text, then return to the input to paste it — the input stays open and doesn't block interaction with the rest of the editor.
+4. **Press Enter**. The input is replaced with a link to the newly created note.
+
+The plugin automatically:
+- Identifies the source vendor (Perplexity or Gemini).
+- Creates a subfolder (default: `ai-searches`) in the folder of your current note if it doesn't exist.
+- Saves the normalized, structured conversation into a new note there.
+- Tags it (default: `ai-generated`) in the frontmatter.
+- Inserts a link to it at your cursor position.
+
+### Using selected text as the filename
+If you select text in your note *before* pressing the hotkey, the plugin uses the selected text as the suggested filename: the selection is cleared and the inline input is pre-filled with it (auto-selected so you can type over it immediately). The note content still comes from the clipboard, not the selection.
+
+---
+
+# The Universal AI Format
+
+No matter whether you copy your conversation from Perplexity or Gemini, the Obsidian plugin parses and converts the content into a single **Universal AI Format**. This makes sure that your entire corpus of AI research has a uniform markdown structure, allowing a single Obsidian query, dataview block, outline pane, or tag search to work seamlessly across all of your dialogs.
+
+Below is an annotated example of this universal structure, followed by specific details on how it is parsed and structured:
 
 ```markdown
 ---
@@ -85,18 +95,18 @@ ai-source-url: https://www.perplexity.ai/search/...
 tags: [ai-generated]
 ---
 
+[Perplexity](https://www.perplexity.ai/search/...) · *2026-10-24 14:32 EST*
+
 # Dialog
 
-**Source:** [perplexity](https://www.perplexity.ai/search/...)
-
- ## How do I configure foo mode? ^turn-1
+## How do I configure foo mode? ^turn-1
 
 > [!Prompt]+
 > How do I configure foo mode?
 > 
 > Explain.
 
-first AI response, with a trailing sources list removed
+first AI response, with citation markers mapped to footnote-style links[^1_1].
 
 ## Does it work with baz? ^turn-2
 
@@ -105,350 +115,145 @@ first AI response, with a trailing sources list removed
 >
 > Explain.
 
-follow-up response
+follow-up response citing another source[^2_14].
 
 # Sources
 
-^src-1 [Page title](https://url) (turn 1) <!-- src-url: https://url -->
-^src-2 [Page title](https://url) (turn 2) <!-- src-url: https://url -->
-^src-3 [Page title](https://url) (turns 1, 2) <!-- src-url: https://url -->
+[^1_1]: [Page title](https://url-one)
+[^2_14]: <https://www.reddit.com/r/learnprogramming/comments/pymrss/can_someone_for_the_love_of_god_explain_what_git/>
 ```
 
-Key conventions:
+## Structure Rules & Technical Specs (for AI / Parsers)
 
-- **Each turn has exactly one prompt marker** — a closed Obsidian
-  `> [!Prompt]+` callout carrying the single `^turn-N` block ID on its
-  heading line. The prompt body is folded inside the callout (each line
-  prefixed with `> `) so the whole question collapses into a single
-  clickable block. A prompt and the AI response immediately following
-  it share one logical turn number; the next pair gets turn 2, and so
-  on. A standalone AI response (no preceding prompt) still gets its own
-  callout labeled `AI response (turn N)`. The block ID is what makes
-  pairing machine-readable, and the number is what makes the outline
-  pane readable.
-- **All citations from all turns go into a single `# Sources` section
-  at the end.** Inline `[1]` markers in the AI response are rewritten
-  to block-linked citations (`[[#^src-1|1]]`, `[[#^src-2|2]]`, etc.)
-  that click through to the block-ID'd entry in the Sources section.
-  The same URL cited in two different turns is one source line with
-  `(turns 1, 3)`, not two duplicate lines.
-- **Each source line carries an invisible `<!-- src-url: ... -->` comment
-  holding the original URL.** This is the stable key a future Zotero
-  relinker uses to match an entry across notes, regardless of how the
-  visible link above has been edited.
-- **The inline `**Source:** [perplexity](url)` line at the top is
-  clickable from both the editor and reading view.** It is also
-  duplicated in frontmatter as `ai-source-vendor` and `ai-source-url`
-  for programmatic access.
-- **AI response body headings are demoted so the topmost lands at level
-  3** (one level below the level-2 prompt heading). This preserves the
-  original heading hierarchy in the response without ever colliding
-  with the structural turn marker.
+This format is structured to be machine-readable yet highly readable in standard markdown parsers and Obsidian previews. If an AI or program wants to write or parse this format, these are the exact rules:
+
+1. **Frontmatter**:
+   - `ai-dialog-format`: String specifying the format version (currently `v1`).
+   - `ai-source-vendor`: Either `perplexity` or `gemini`.
+   - `ai-source-url`: The direct web link back to the conversation thread.
+   - `tags`: An array containing user-configured tags (default: `[ai-generated]`).
+
+2. **Source Metadata Preamble**:
+   - Located directly above `# Dialog`.
+   - Formatted as: `[Vendor](URL) · *Timestamp*` (e.g., `[Perplexity](https://...) · *2026-10-24 14:32 EST*`).
+
+3. **Dialogue Turns (`^turn-N`)**:
+   - Each QA interaction is a single "turn" identified by a turn index `N` starting at `1` (e.g., `turn-1`, `turn-2`).
+   - Every turn starts with a level-2 heading (`##`) representing the prompt headline summary (see headlines section).
+   - The level-2 heading line must end with a block ID anchor in the exact format: `^turn-N`.
+   - Following the heading, the user prompt is wrapped inside a folded Obsidian callout block (`> [!Prompt]+` or `> [!Prompt]-`). Each line of the prompt is prefixed with `> ` so that the entire prompt can be collapsed/expanded by clicking in the preview.
+
+4. **Response Heading Demotion**:
+   - To prevent headings within the AI's response from cluttering the note's top-level outline, any headings inside the AI response are dynamically demoted so the highest heading starts at level 3 (`###` or lower).
+
+5. **Turn-Scoped Footnote Citations**:
+   - Inline citation markers in the AI response are rewritten from raw brackets (e.g., `[1]`, `[14]`) into standard markdown footnote markers (e.g., `[^1_1]`, `[^2_14]`).
+   - The footnote key format is `[^turnNumber_sourceNumber]`. For example, in `[^9_14]`, `9` is the logical turn number (corresponding to the `^turn-9` heading block) and `14` is the source citation number within that turn.
+   - All citations listed in the original export (including those provided by Perplexity that may not be directly cited inside the response text) are captured and mapped.
+
+6. **The `# Sources` Section**:
+   - Located at the very bottom of the document.
+   - Contains a standard markdown footnote list.
+   - Each footnote corresponds to the turn-scoped footnote keys, formatted as standard markdown links:
+     - Formatted as `[^turnNumber_sourceNumber]: [Title](URL)` or simply `[^turnNumber_sourceNumber]: <URL>` if no title is present.
+
+---
 
 # Headlines
 
-Above each user prompt turn, the plugin inserts a level-2 summary
-heading derived from the prompt text. This makes the Obsidian
-outline pane show what each turn was about at a glance, rather
-than a wall of identical "Prompt (turn N)" labels. Two selectable
-algorithms are available (Settings → Headline method):
+To prevent your Obsidian outline pane from displaying a repetitive wall of "Prompt (turn N)" labels, the plugin inserts a summarizing level-2 heading (`##`) above each prompt. You can configure this via **Settings → Headline method**:
 
-## Method 1: Lead sentence (default)
+- **Method 1: Lead sentence (default)**: Splits the prompt into sentences and uses the first sentence that fits within the configured length limit (truncating at word boundaries if the first sentence is too long). Fast and deterministic.
+- **Method 2: TF-IDF ranked sentence**: Tokenizes prompt sentences, scores each based on term salience (TF-IDF) combined with a configurable lead-position bias, and selects the highest-scoring sentence. Requires the `stopword` package.
 
-Uses `Intl.Segmenter` to split the prompt into sentences, then
-adds sentences one at a time until adding another would exceed
-`Headline max characters` (default 100). If the first sentence
-is too long, it is truncated cleanly at a word boundary with an
-ellipsis. No external dependencies; fast and deterministic.
+---
 
-## Method 2: TF-IDF ranked sentence
+# Continuing & Appending to a Dialog
 
-Tokenizes every sentence, drops stopwords, scores each by
-TF-IDF with a configurable lead-position prior, and picks the
-highest-scoring sentence. The `stopword` package is used for
-scoring only; the returned headline is an original sentence
-(not a stop-word-stripped keyword phrase), so it remains
-grammatical. Two tunings (grayed out unless Method 2 is
-selected):
+If you continue a conversation in your browser and want to save the new turns into the existing note:
 
-- **Headline lead bias** (default 0.20): amount to favor
-  sentences near the beginning. 0 disables the positional
-  prior entirely; 0.20 is a gentle nudge toward the lead;
-  0.30+ makes lead extraction dominate; 0.5+ effectively
-  always picks the first sentence. This setting is grayed
-  out in the settings tab unless "TF-IDF ranked sentence" is
-  selected as the prompt heading method.
-- **Headline max characters** (default 100): maximum length of
-  the summary heading, including a possible ellipsis. 90–120
-  is suitable for note titles and sidebar lists. At 60 or less
-  the method is necessarily a truncator rather than a robust
-  summarizer.
+1. **(Browser)** Ask follow-up questions in Perplexity or Gemini. Copy the updated conversation to your clipboard using the same method (Export as Markdown in Perplexity, or the Web Clipper in Gemini).
+2. **(Obsidian)** Open the existing note in your vault. Place your cursor anywhere in the file.
+3. **(Obsidian)** Run the command: **"Append AI dialog from clipboard to this note"** (assign a hotkey to make this fast).
 
-If both algorithms return an empty string (e.g. the prompt is
-too short to yield a meaningful sentence), the plugin falls back
-to a safe default of `Prompt (turn N)` so the heading is never
-blank.
+### What Appending Does:
+- It auto-detects the vendor (Perplexity/Gemini) of your clipboard.
+- It scans the current file for the highest existing `^turn-N` anchor and starts numbering new turns at `N + 1`.
+- It appends the new turns directly before the `# Sources` heading.
+- It **completely regenerates and merges the `# Sources` section** to ensure all citations from old and new turns are consolidated, mapped correctly, and deduplicated.
 
-# Appending to a dialog
+---
 
-Long conversations come back in pieces. To continue a dialog:
+# Pruning Orphaned Sources
 
-1. **(Browser)** Continue the same thread in Perplexity or Gemini. Copy the
-   new turn(s) to your clipboard the same way as for an import.
-2. **(Obsidian)** Open the note you want to extend. Place your cursor anywhere
-   in the note (it doesn't matter where — the command operates on the
-   whole file).
-3. **(Obsidian)** Run the **"Append AI dialog from clipboard to this note"**
-   command (assign a hotkey in Settings → Hotkeys to make this fast).
+If you manually delete a turn (e.g., removing a prompt callout and its accompanying AI response to tidy up a note), the citations tied exclusively to that turn will remain in the `# Sources` block at the bottom.
 
-What the command does:
+To clean this up:
+1. Open the note and run the command: **"Prune orphaned sources in this dialog note"**.
+2. A confirmation modal will appear, categorizing what will happen:
+   - **Full removal**: If a source was only cited by the deleted turn, it is deleted entirely.
+   - **Partial adjustment**: If a source is still cited by other surviving turns, it is kept but its metadata reference to the deleted turn is removed.
+3. Confirm to run the cleanup. No files are modified without your confirmation.
 
-- Parses the new clipboard content the same way an import does (vendor
-  auto-detected: Perplexity or Gemini).
-- Numbers the new turns starting at **one past the highest existing turn
-  number** in the note. If the note ends with a callout carrying
-  `^turn-2`, the appended turn becomes a new `## ... ^turn-3` prompt
-  marker followed by the new prompt and AI body.
-- Splices the new turns into the note body, just before the `# Sources`
-  heading (or at the end of the file if there's no Sources section yet).
-- **Regenerates the entire `# Sources` block**, not just appends to it.
-  This is required: if a new turn cites a URL that was already in
-  `# Sources`, the existing entry's ownership list grows in place
-  (e.g. `(turn 1)` becomes `(turns 1, 3)`), and a fresh source is
-  minted only for genuinely new URLs. A pure tail-append could not
-  preserve this.
-- If the new clipboard has no turns the parser can recognize, the
-  command fails with a notice and the file is not touched.
+---
 
-A status notice reports what happened:
-`Appended 2 turn(s) and 1 new source(s).`
+# Settings Configuration
 
-If the note has no `^turn-N` anchors (i.e. it was not created by this
-plugin, or you hand-edited all turn headings away), the command refuses
-with: "This note has no ^turn-N anchors. Use 'Import AI dialog from
-clipboard' on a new note instead." Run the import command on a new
-note first.
+- **AI save folder** (default: `ai-searches`): Folder name where notes are created (relative to your currently active note).
+- **AI generated tag** (default: `ai-generated`): Tag inserted into the frontmatter.
+- **Collapse blank lines** (default: on): Collapses consecutive blank lines into a single blank line to make the note structure clean and dense.
+- **Collapse prompt callouts** (default: on): When on, user prompts start collapsed (`> [!Prompt]+`). When off, they start expanded (`> [!Prompt]-`).
+- **Prompt heading**:
+  - **Heading max characters** (default: `100`): Maximum length for the summary heading.
+  - **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` and `TF-IDF ranked sentence`.
+  - **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt.
 
-# Pruning orphaned sources
+---
 
-Each source line records which turn(s) introduced or cited it
-(`(turn 1)` or `(turns 1, 3)`). If you edit a note and delete a
-summary heading `## ... ^turn-1` together with its prompt callout —
-for example, to remove an embarrassing early prompt or compress a noisy
-stretch of the dialog — the source(s) that only that turn referenced
-become orphaned. They still sit in `# Sources` with a `(turn 1)`
-annotation pointing at a heading that no longer exists.
+# Installation & Setup
 
-To clean them up:
-
-1. **(Obsidian)** Open the note. Place your cursor anywhere in the note.
-2. **(Obsidian)** Run the **"Prune orphaned sources in this dialog
-   note"** command.
-
-A confirmation modal appears (see below) listing every source line that
-references at least one deleted turn. Confirm with the button at the
-bottom, or cancel.
-
-## The two cases the modal distinguishes
-
-The modal separates the action into two categories, so you can see at
-a glance what will happen to each source before you commit:
-
-### 1. Full removal — "will be removed"
-
-The source's only citing turn was the one you deleted. The entire
-source line is deleted from `# Sources`. Example wording:
-> [[#^src-2|2]] [Help with PDF++ and text selection highlighting](https://...)
-> - will be removed (only cited from turn 2, now deleted)
-
-### 2. Partial adjustment — "will be kept, dropping its reference to deleted turn N"
-
-The source was cited from multiple turns, and only one of those turns
-was deleted. The line **stays** in `# Sources` (it is still cited by a
-surviving turn, so the note's narrative still depends on it), but the
-ownership annotation loses the dead turn. Example wording:
-> [[#^src-3|3]] [BookBrowse Research & NEA Survey](https://...) -
-> will be kept, dropping its reference to deleted turn 2
-> (still cited from turn 1)
-
-The button label reflects the mix:
-- "Remove N source(s)" if everything is being deleted.
-- "Adjust N source(s)" if everything is being kept but losing a turn
-  reference.
-- "Update N source(s) (X removed, Y adjusted)" if both are happening.
-
-The command never runs without your confirmation. The modal also
-distinguishes:
-- **No orphans** — shows "No orphaned sources found. Nothing to
-  remove." with only a Close button. Nothing happens to the file.
-
-After you confirm, a notice reports the result:
-`Removed 3 source(s), adjusted 2 other(s).`
-
-# Settings
-
-- **AI save folder** (default: `ai-searches`) — The name of the subfolder
-  where saved AI notes are stored. It is automatically created in the same
-  folder as the currently active note.
-- **AI generated tag** (default: `ai-generated`) — The tag pushed into the
-  frontmatter `tags` property of every saved AI note.
-- **Collapse blank lines** (default: on) — When on, the note body is
-  post-processed to collapse any run of 2+ blank lines down to a single
-  blank line, including around headings. Produces a denser, more uniform
-  file while keeping one blank line between paragraphs and headings so
-  Obsidian renders them correctly. Turn this off if you prefer extra
-  visual breathing room.
-- **Collapse prompt callouts** (default: on) — When on, each user prompt
-  starts as a collapsed `> [!Prompt]+` callout. Turn it off to leave
-  prompts expanded (`> [!Prompt]-`).
-
-## Prompt heading
-
-These three settings, grouped under the **Prompt heading** header in
-the settings tab, control the level-2 prompt callout above each user
-prompt. See the [Headlines](#headlines) section above for the full
-description of what they do.
-
-- **Heading max characters** (default: 100) — Maximum length of the
-  summary heading, including a possible ellipsis. 90–120 is suitable
-  for note titles and sidebar lists. Used by both methods; always
-  active.
-- **Prompt heading method** (default: Lead sentence) — Algorithm for
-  the summary heading. "Lead sentence" is the simple, fast default
-  with no extra dependencies. "TF-IDF ranked sentence" requires the
-  `stopword` package and is best for prompts where the most distinctive
-  sentence is not the first one.
-- **Heading lead bias** (default: 0.20) — TF-IDF only. Amount to favor
-  sentences near the beginning. 0 disables the positional prior
-  entirely; 0.20 is a gentle nudge toward the lead; 0.30+ makes lead
-  extraction dominate. Grayed out unless "TF-IDF ranked sentence" is
-  selected above, since it has no effect on the lead method.
-
-# Setup
-
-## A. Obsidian plugin setup
-
+### A. Obsidian Plugin Setup
 1. Download or build this plugin (see "Building from source" below).
-2. Copy the plugin folder into `<your vault>/.obsidian/plugins/`.
-3. In Obsidian, go to Settings → Community plugins, disable Restricted mode if
-    needed, refresh the plugin list, and enable "Perplexity Saver."
-4. Go to Settings → Hotkeys, search "Save Perplexity Note," and assign a
-   hotkey (e.g. Ctrl+Shift+V).
+2. Copy the plugin folder into your vault under `<your vault>/.obsidian/plugins/`.
+3. In Obsidian, go to **Settings → Community plugins**, disable Restricted mode if needed, refresh the plugin list, and enable **Perplexity Saver**.
+4. Go to **Settings → Hotkeys**, search "Import AI dialog from clipboard", and assign a hotkey (e.g., `Ctrl+Shift+V`).
 
-
-## B. Tampermonkey script (Perplexity)
-
-This works by pairing a small browser helper with this plugin — the browser
-side copies the conversation in the right format, and this plugin handles
-creating the note, tagging it, and linking it back into your current note.
-
-To get the one-click experience above, you need two quick installs: a browser
-script (2 minutes) and this plugin.
-
-#### Tampermonkey browser setup
-
+### B. Perplexity UserScript Setup (Tampermonkey)
+To set up the automated boundary-aligning "Direct" exporter:
 1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
-2. Install the
-   [Complexity](https://github.com/pnd280/complexity) Chrome extension, which
-   adds full multi-turn dialog export to Perplexity's UI.
-3. Open Tampermonkey's dashboard, click "Create a new script," and replace the
-   contents with
-   [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js)
-   from this repo. Save it.
-4. In Chrome, go to `chrome://extensions` → **Tampermonkey** → **Details**:
-   - Set **Site access** to **On all sites** (or explicitly allow
-     `https://www.perplexity.ai`).
-   - Turn on **Allow user scripts**.
-   - Confirm Tampermonkey itself is enabled.
-5. Visit perplexity.ai — you should see a small "📋 Copy for Obsidian" button
-   appear in the bottom-right corner of the page.
+2. Open Tampermonkey's dashboard, click "Create a new script," and replace the default code with the contents of [`browser-userscript/perplexity-obsidian-exporter-direct.user.js`](./browser-userscript/perplexity-obsidian-exporter-direct.user.js) from this repository. Save it.
+3. In your browser's extension settings (e.g. `chrome://extensions` → **Tampermonkey** → **Details**):
+   - Confirm Tampermonkey is enabled.
+   - Set **Site access** to **On all sites** (or explicitly permit `https://www.perplexity.ai`).
+   - Turn on **Allow access to file URLs** and/or **Allow user scripts** depending on your browser.
+4. Reload your Perplexity tab. When you click **Export as Markdown** inside Perplexity, the UserScript will run and process the export automatically.
 
-## C. Obsididan web clipper (for Gemini)
+### C. Gemini Web Clipper Setup
+1. Install the official **Obsidian Web Clipper** from your browser’s extension store.
+2. Open the clipper, click the gear icon to open **Settings**, and set the destination/action to **Clipboard**.
 
-Install the official **Obsidian Web Clipper** from your browser’s extension store and pin it to the toolbar.
+---
 
-On any page, open the clipper, select **Settings** (gear), and set the destination/action to **Clipboard**. Then choose **Copy** to place the generated Markdown on your clipboard, ready to paste anywhere, but don't paste, use this plugin to save the dialog instead.
-
-## D. Optional
-
-### Hiding Block IDs
-
-You can hide the heading block IDs in live preview mode with this css snippet
-
-```css
-/* Hide block IDs in preview (will be visible in reading and source modes, and in prevview when you click on the heading) */
-.is-live-preview .cm-blockid {
-  opacity: 0;
-}
-.is-live-preview .cm-active .cm-blockid {
-  opacity: 1;
-}
-```
-
-### Easier Prompt Copying: Callout Copy Buttons
-
-Copying prompts from the prompt callout is simpler if you install the [Callout Copy Buttons Obsidian plugin](https://community.obsidian.md/plugins/callout-copy-buttons), which adds a copy button on the callout.
-
-### Prompt to Enforce numerical citation references
-
-By default, Perplexity sometimes references sources with inconsistent text e.g. "...the 2019 de Cabo/Mattson NEJM review."  You can instruct it to instead use numerical references in its exports with a prompt like this:
-
-```
-In every response, whenever you name a source descriptively in the text (author names, publication year, journal/outlet, or study name), place its bracketed citation number immediately after that mention in the same sentence, rather than only at the end of a paragraph. Do this in addition to — not instead of — your normal per-sentence citation practice. Repeat the citation number every time the same source is mentioned again, even within the same section. This does not reduce the number of citations you provide; it only ensures descriptive mentions and their citation numbers are co-located, so the output converts cleanly to Obsidian-style footnotes without manual reformatting.
-```
-
-Paste it into perplexity preferences at: `Your Account Icon → All Settings → Personalization → Custom Instructions`
-
-# Building from source
+# Building from Source
 
 Requires [Node.js](https://nodejs.org).
 
-```
+```bash
 npm install
 npm run build
 ```
-This produces `main.js`. Copy `manifest.json` and the built `main.js` into
-`<your vault>/.obsidian/plugins/perplexity-saver/`.
+This compiles the code into `main.js`. Copy `manifest.json`, the compiled `main.js`, and `styles.css` into your vault under `.obsidian/plugins/perplexity-saver/`.
 
-# Troubleshooting
+---
 
-## First checks
+# Deprecated Workflows & Legacy Interfaces
 
-If the button does not appear on Perplexity, check these before anything else:
+*The following sections outline older browser extensions and Tampermonkey configurations which are no longer recommended but remain supported for backward compatibility.*
 
-1. Open a Perplexity tab, click the Tampermonkey extension icon, and make sure
-   this script is shown as active/running.
-2. Go to `chrome://extensions` → **Tampermonkey** → **Details**:
-   - Confirm Tampermonkey is enabled.
-   - Set **Site access** to **On all sites** (or explicitly permit
-     `https://www.perplexity.ai`).
-   - Turn on **Allow user scripts**.
-3. In the Tampermonkey Dashboard, make sure the script's enable toggle is on,
-   then reload Perplexity with a full reload: `Ctrl+Shift+R`.
+### Complexity Chrome Extension & Older Tampermonkey Script
+Previously, exporting multi-turn dialogs from Perplexity required installing the "Complexity" Chrome companion plugin along with an older script. While still functional, this has been deprecated in favor of the **Direct & Robust UserScript** (`perplexity-obsidian-exporter-direct.user.js`), which has zero dependencies, does not require the "Complexity" extension, and operates directly inside Perplexity's native export menu.
 
-A Chrome update can reset these permissions. If site access is set to **On
-click**, the script cannot inject the button automatically.
-
-### Confirm the script is running
-
-Open the browser's developer tools (`F12`) and switch to the **Console** tab.
-When you reload Perplexity you should see a line like:
-
-```
-[PPLX Obsidian exporter] userscript started https://www.perplexity.ai/...
-```
-
-If the line does not appear, the script is not being injected at all — go back
-to the First checks section above. If the line appears but the button is still
-missing, look for a red error in the Console and report it.
-
-## Other common issues
-
-- **Nothing happens when I click "Copy for Obsidian":** Make sure the
-  Complexity extension is installed and enabled, and that you're on a
-  perplexity.ai conversation page (not the homepage).
-- **Chrome asks for clipboard permission:** Allow it — the script needs to
-  read back what was copied in order to prepend the Perplexity link.
-- **Hotkey does nothing in Obsidian:** Confirm your cursor is inside an open
-  note (the command requires an active editor), and check Settings → Hotkeys
-  for a conflict with another plugin.
+If you are still using Complexity:
+1. Install the [Complexity](https://github.com/pnd280/complexity) Chrome extension.
+2. In Tampermonkey, use the [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js) script instead.
+3. This adds a floating circular "📋 Copy for Obsidian" button near the bottom right of Perplexity, which triggers the Complexity popup and copies the formatted thread.
