@@ -483,56 +483,77 @@
     await new Promise((r) => setTimeout(r, 100));
   }
 
-  async function triggerNativeExport() {
-    showToast("Opening export menu...", false);
+  function findThreeDotsButton() {
+    const buttons = [...document.querySelectorAll('button')];
+    for (const btn of buttons) {
+      const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
+      if (label.includes("more") || label.includes("option") || label.includes("thread options")) {
+        return btn;
+      }
 
-    // 1. Find the native options/share/more button
-    const candidates = [...document.querySelectorAll('button, [role="button"]')];
-    let menuBtn = null;
+      const svg = btn.querySelector("svg");
+      if (svg) {
+        const html = svg.innerHTML.toLowerCase();
+        const circleCount = (html.match(/circle/g) || []).length;
+        if (circleCount === 3) {
+          return btn;
+        }
+        if (html.includes("d=") && (html.match(/M/g) || []).length >= 3) {
+          return btn;
+        }
+      }
+    }
+    return null;
+  }
 
-    for (const btn of candidates) {
+  function findShareButton() {
+    const buttons = [...document.querySelectorAll('button')];
+    for (const btn of buttons) {
       const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
       const text = (btn.textContent || "").toLowerCase();
-
-      const matchesLabelOrText =
-        label.includes("options") ||
-        label.includes("more") ||
-        label.includes("thread options") ||
-        label.includes("share") ||
-        text.includes("share");
-
-      if (matchesLabelOrText && btn.getBoundingClientRect().width > 0) {
-        menuBtn = btn;
-        break;
+      if (label.includes("share") || text.includes("share")) {
+        return btn;
       }
+    }
+    return null;
+  }
+
+  async function triggerNativeExport() {
+    showToast("Locating export menu...", false);
+
+    // 1. Try finding Three-Dots/Options button
+    let menuBtn = findThreeDotsButton();
+
+    // 2. Try finding Share button if Three-Dots wasn't found
+    if (!menuBtn) {
+      menuBtn = findShareButton();
     }
 
     if (!menuBtn) {
-      // Fallback: look for 3-dots SVGs
-      for (const btn of candidates) {
-        const svg = btn.querySelector("svg");
-        if (svg) {
-          const html = svg.innerHTML.toLowerCase();
-          if (html.includes("circle") || html.includes("dot")) {
-            if (btn.getBoundingClientRect().width > 0) {
-              menuBtn = btn;
-              break;
-            }
+      // Wider search across all clickable elements
+      const clickables = [...document.querySelectorAll('[role="button"], a, div')];
+      for (const el of clickables) {
+        const label = (el.getAttribute("aria-label") || "").toLowerCase();
+        if (label.includes("more") || label.includes("option") || label.includes("share")) {
+          if (el.getBoundingClientRect().width > 0) {
+            menuBtn = el;
+            break;
           }
         }
       }
     }
 
     if (!menuBtn) {
-      showToast("Menu button not found. Please click '...' -> 'Export as Markdown' manually.", true);
+      showToast("Export menu not found. Please click '...' -> 'Export as Markdown' manually.", true);
       return;
     }
 
+    // Click the found button
     clickToggle(menuBtn);
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 250)); // wait for menu to open
 
-    // 2. Locate the "Export as Markdown" option inside the popup
-    const menuOptions = [...document.querySelectorAll('button, [role="menuitem"], a, span, div')];
+    // 3. Search for "Export as Markdown" or "Download" option
+    let menuOptions = [...document.querySelectorAll('button, [role="menuitem"], a, span, div')];
     let exportOption = null;
     for (const opt of menuOptions) {
       const text = (opt.textContent || "").trim();
@@ -548,11 +569,37 @@
     }
 
     if (!exportOption) {
+      // If clicking the first button didn't work, try alternate button
+      await closePopover();
+
+      const altBtn = menuBtn === findThreeDotsButton() ? findShareButton() : findThreeDotsButton();
+      if (altBtn) {
+        clickToggle(altBtn);
+        await new Promise((r) => setTimeout(r, 250));
+
+        menuOptions = [...document.querySelectorAll('button, [role="menuitem"], a, span, div')];
+        for (const opt of menuOptions) {
+          const text = (opt.textContent || "").trim();
+          const isExportOption =
+            /Export as Markdown/i.test(text) ||
+            /Download/i.test(text) ||
+            (/Export/i.test(text) && /Markdown/i.test(text));
+
+          if (isExportOption && opt.getBoundingClientRect().width > 0) {
+            exportOption = opt;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!exportOption) {
       await closePopover();
       showToast("Export option not found. Please click 'Export as Markdown' manually.", true);
       return;
     }
 
+    showToast("Exporting conversation...", false);
     clickToggle(exportOption);
     await new Promise((r) => setTimeout(r, 150));
     await closePopover();
