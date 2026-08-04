@@ -1,60 +1,113 @@
-import { App, Modal, Setting, Notice, Editor, TFile, MarkdownView } from "obsidian";
+import { App, Editor, MarkdownView, Notice, SuggestModal, TFile, prepareFuzzySearch, renderResults } from "obsidian";
 import { findPrunableSources, applyPrune } from "./prune";
 
-export class DeleteTurnModal extends Modal {
-	private turnNumberInput: string = "";
+export interface TurnSuggestion {
+	turnNum: number;
+	headingText: string;
+	displayText: string;
+}
+
+export function getTurnsFromNote(noteText: string): TurnSuggestion[] {
+	const suggestions: TurnSuggestion[] = [];
+	const lines = noteText.split("\n");
+	for (const line of lines) {
+		const match = line.match(/^## (.*?)\s*\^turn-(\d+)/);
+		if (match) {
+			const headingText = match[1].trim();
+			const turnNum = parseInt(match[2], 10);
+			suggestions.push({
+				turnNum,
+				headingText,
+				displayText: `Turn ${turnNum}: ${headingText}`,
+			});
+		}
+	}
+	return suggestions;
+}
+
+export async function highlightDialogTurn(
+	app: App,
+	editor: Editor,
+	file: TFile,
+	turnNum: number
+): Promise<void> {
+	const noteText = await app.vault.read(file);
+	const escapedId = `\\^turn-${turnNum}(?!\\d)`;
+	const startRe = new RegExp(`^## .*${escapedId}`, "m");
+	const startMatch = noteText.match(startRe);
+	if (!startMatch || startMatch.index === undefined) return;
+
+	const startIndex = startMatch.index;
+	const searchString = noteText.slice(startIndex + startMatch[0].length);
+	const nextHeadingRe = /^(## |# Sources)/m;
+	const endMatch = searchString.match(nextHeadingRe);
+	const endIndex = endMatch
+		? startIndex + startMatch[0].length + endMatch.index!
+		: noteText.length;
+
+	const fromPos = editor.offsetToPos(startIndex);
+	const toPos = editor.offsetToPos(endIndex);
+
+	editor.setSelection(fromPos, toPos);
+	editor.scrollIntoView({ from: fromPos, to: toPos }, true);
+}
+
+export class DeleteTurnSuggestModal extends SuggestModal<TurnSuggestion> {
+	private items: TurnSuggestion[] = [];
 
 	constructor(
 		app: App,
-		private detectedTurn: number | null,
-		private onConfirm: (turnNum: number) => void
+		private editor: Editor,
+		private file: TFile,
+		private onDelete: (turnNum: number) => Promise<void>
 	) {
 		super(app);
-		if (detectedTurn !== null) {
-			this.turnNumberInput = String(detectedTurn);
+		this.setPlaceholder("Search turns by number or heading text...");
+	}
+
+	async onOpen(): Promise<void> {
+		const noteText = await this.app.vault.read(this.file);
+		this.items = getTurnsFromNote(noteText);
+		super.onOpen();
+	}
+
+	getSuggestions(query: string): TurnSuggestion[] {
+		if (!query.trim()) {
+			return this.items;
+		}
+
+		const search = prepareFuzzySearch(query);
+		const matched: { item: TurnSuggestion; score: number }[] = [];
+
+		for (const item of this.items) {
+			const match = search(item.displayText);
+			if (match) {
+				matched.push({ item, score: match.score });
+			}
+		}
+
+		return matched.sort((a, b) => a.score - b.score).map((m) => m.item);
+	}
+
+	renderSuggestion(item: TurnSuggestion, el: HTMLElement): void {
+		const query = this.inputEl.value.trim();
+		if (!query) {
+			el.setText(item.displayText);
+			return;
+		}
+
+		const search = prepareFuzzySearch(query);
+		const match = search(item.displayText);
+		if (match) {
+			renderResults(el, item.displayText, match);
+		} else {
+			el.setText(item.displayText);
 		}
 	}
 
-	onOpen(): void {
-		const { contentEl } = this;
-		contentEl.empty();
-		contentEl.createEl("h2", { text: "Delete AI dialog turn" });
-
-		new Setting(contentEl)
-			.setName("Turn number")
-			.setDesc("The number of the turn you want to delete (e.g. 3 for ^turn-3).")
-			.addText((text) => {
-				text.setValue(this.turnNumberInput);
-				text.onChange((value) => {
-					this.turnNumberInput = value;
-				});
-				window.setTimeout(() => {
-					text.inputEl.focus();
-					text.inputEl.select();
-				}, 50);
-			});
-
-		const btnRow = contentEl.createDiv({ cls: "modal-button-row" });
-		const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
-		cancelBtn.onclick = () => this.close();
-
-		const confirmBtn = btnRow.createEl("button", {
-			text: "Delete",
-			cls: "mod-warning",
-		});
-		confirmBtn.onclick = () => {
-			const turnNum = parseInt(this.turnNumberInput, 10);
-			if (isNaN(turnNum) || turnNum <= 0) {
-				new Notice("Please enter a valid positive turn number.");
-				return;
-			}
-			this.onConfirm(turnNum);
-			this.close();
-		};
-	}
-
-	onClose(): void {
-		this.contentEl.empty();
+	async onChooseSuggestion(item: TurnSuggestion, evt: MouseEvent | KeyboardEvent): Promise<void> {
+		await highlightDialogTurn(this.app, this.editor, this.file, item.turnNum);
+		await this.onDelete(item.turnNum);
 	}
 }
 
@@ -116,19 +169,7 @@ export function registerDeleteTurnCommand(
 				return;
 			}
 
-			// Try to detect turn number from cursor position
-			let detectedTurn: number | null = null;
-			const cursor = editor.getCursor();
-			for (let i = cursor.line; i >= 0; i--) {
-				const line = editor.getLine(i);
-				const match = line.match(/^## .*\^turn-(\d+)/);
-				if (match) {
-					detectedTurn = parseInt(match[1], 10);
-					break;
-				}
-			}
-
-			new DeleteTurnModal(plugin.app, detectedTurn, async (turnNum) => {
+			new DeleteTurnSuggestModal(plugin.app, editor, file, async (turnNum) => {
 				const result = await deleteDialogTurn(plugin.app, file, turnNum);
 				if (!result.success) {
 					new Notice(result.error ?? "Deletion failed.");
