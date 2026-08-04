@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
+import * as path from "path";
 
 // Let's implement the core userscript matching functions locally for testing
 const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=#\s)/g;
@@ -33,17 +34,8 @@ function stripLogo(text: string) {
     /!\[[^\]]*\]\([^)]*(?:pplx[-_]?full[-_]?logo|perplexity[-_]?logo)[^)]*\)\s*/gi,
     /<img\b[^>]*\bsrc=["'][^"']*r2cdn\.perplexity\.ai[^"']*["'][^>]*\/?>\s*/gi,
   ];
-  let removed = false;
-  let result = text;
-  for (const p of patterns) {
-    const matches = result.match(p);
-    if (matches && matches.length) {
-      removed = true;
-      result = result.replace(p, "");
-    }
-  }
-  result = result.replace(/^\s+/, "");
-  return { result, removed };
+  const result = patterns.reduce((acc, p) => acc.replace(p, ""), text).trimStart();
+  return { result, removed: result !== text.trimStart() };
 }
 
 function findBibliographyStart(text: string, fromIdx: number) {
@@ -55,8 +47,7 @@ function findBibliographyStart(text: string, fromIdx: number) {
   const candidates: number[] = [];
   if (spanMatch) candidates.push(fromIdx + spanMatch.index);
   if (footnoteMatch) candidates.push(fromIdx + footnoteMatch.index);
-  if (!candidates.length) return -1;
-  return Math.min(...candidates);
+  return candidates.length > 0 ? Math.min(...candidates) : -1;
 }
 
 function splitSources(responsePart: string) {
@@ -65,11 +56,11 @@ function splitSources(responsePart: string) {
     return { body: responsePart.trim(), sources: "" };
   }
   const body = responsePart.slice(0, bibStart).trim();
-  let sourcesRaw = responsePart.slice(bibStart);
-  sourcesRaw = sourcesRaw.replace(/<span style="display:none">[\s\S]*?<\/span>/g, "");
-  sourcesRaw = sourcesRaw.replace(/<div align="center">\s*⁂\s*<\/div>/g, "");
-  sourcesRaw = sourcesRaw.trim();
-  return { body, sources: sourcesRaw };
+  const sources = responsePart.slice(bibStart)
+    .replace(/<span style="display:none">[\s\S]*?<\/span>/g, "")
+    .replace(/<div align="center">\s*⁂\s*<\/div>/g, "")
+    .trim();
+  return { body, sources };
 }
 
 function splitPromptFromResponse(chunkText: string, domPromptText: string, turnNum: number, title: string) {
@@ -125,7 +116,7 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
 
 describe("Userscript Exporter parser alignment", () => {
   it("perfectly aligns and splits Turn 4 where tampermonkey v5.8 failed", () => {
-    const inputPath = "/tmp/file_attachments/fails tampermonkey and complexity/input perp 2.md";
+    const inputPath = path.join(__dirname, "../fixtures/input-perp-2.md");
     const rawContent = fs.readFileSync(inputPath, "utf-8");
 
     // Clean up logo and carriage returns as copyText does
@@ -175,7 +166,8 @@ Research suggests that excessive intake of these amino acids may activate biolog
   });
 
   it("perfectly aligns and splits Turn 1, 2, 3 as well", () => {
-    const rawContent = fs.readFileSync("/tmp/file_attachments/fails tampermonkey and complexity/input perp 2.md", "utf-8");
+    const inputPath = path.join(__dirname, "../fixtures/input-perp-2.md");
+    const rawContent = fs.readFileSync(inputPath, "utf-8");
     const { result: logoStripped } = stripLogo(rawContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
     const chunks = logoStripped.split(TURN_DIVIDER_RE).filter((c) => c.trim().length > 0);
 

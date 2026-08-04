@@ -20,7 +20,9 @@
   URL.createObjectURL = function (obj) {
     const url = OrigCreateObjectURL(obj);
     try {
-      if (obj instanceof Blob) blobRegistry.set(url, obj);
+      if (obj instanceof Blob) {
+        blobRegistry.set(url, obj);
+      }
     } catch (_) {}
     return url;
   };
@@ -30,18 +32,19 @@
   }
 
   function showToast(msg, isError) {
-    let t = document.getElementById("pplx-clip-toast");
-    if (!t) {
-      t = document.createElement("div");
-      t.id = "pplx-clip-toast";
-      t.style.cssText = `
+    const t = document.getElementById("pplx-clip-toast") || (() => {
+      const el = document.createElement("div");
+      el.id = "pplx-clip-toast";
+      el.style.cssText = `
         position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
         z-index: 999999; padding: 10px 16px; border-radius: 8px;
         font: 13px sans-serif; color: #fff; transition: opacity 0.3s;
         pointer-events: none; max-width: 80vw; text-align: center;
       `;
-      document.body.appendChild(t);
-    }
+      document.body.appendChild(el);
+      return el;
+    })();
+
     t.style.background = isError ? "#c0392b" : "#2e7d32";
     t.textContent = msg;
     t.style.opacity = "1";
@@ -53,21 +56,24 @@
     const pad = (n) => String(n).padStart(2, "0");
     const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    let tz = "";
-    try {
-      const parts = new Intl.DateTimeFormat("en-US", {
-        timeZoneName: "short",
-      }).formatToParts(d);
-      const tzPart = parts.find((p) => p.type === "timeZoneName");
-      if (tzPart) tz = ` ${tzPart.value}`;
-    } catch (_) {
-      const offsetMin = -d.getTimezoneOffset();
-      const sign = offsetMin >= 0 ? "+" : "-";
-      const oh = Math.floor(Math.abs(offsetMin) / 60);
-      const om = Math.abs(offsetMin) % 60;
-      tz = ` UTC${sign}${pad(oh)}:${pad(om)}`;
-    }
-    return `${date} ${time}${tz}`;
+
+    const getTz = () => {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZoneName: "short",
+        }).formatToParts(d);
+        const tzPart = parts.find((p) => p.type === "timeZoneName");
+        return tzPart ? ` ${tzPart.value}` : "";
+      } catch (_) {
+        const offsetMin = -d.getTimezoneOffset();
+        const sign = offsetMin >= 0 ? "+" : "-";
+        const oh = Math.floor(Math.abs(offsetMin) / 60);
+        const om = Math.abs(offsetMin) % 60;
+        return ` UTC${sign}${pad(oh)}:${pad(om)}`;
+      }
+    };
+
+    return `${date} ${time}${getTz()}`;
   }
 
   function buildHeader() {
@@ -81,17 +87,8 @@
       /!\[[^\]]*\]\([^)]*(?:pplx[-_]?full[-_]?logo|perplexity[-_]?logo)[^)]*\)\s*/gi,
       /<img\b[^>]*\bsrc=["'][^"']*r2cdn\.perplexity\.ai[^"']*["'][^>]*\/?>\s*/gi,
     ];
-    let removed = false;
-    let result = text;
-    for (const p of patterns) {
-      const matches = result.match(p);
-      if (matches && matches.length) {
-        removed = true;
-        result = result.replace(p, "");
-      }
-    }
-    result = result.replace(/^\s+/, "");
-    return { result, removed };
+    const result = patterns.reduce((acc, p) => acc.replace(p, ""), text).trimStart();
+    return { result, removed: result !== text.trimStart() };
   }
 
   function findToggleButtons(label) {
@@ -106,7 +103,7 @@
       return (matchesText || matchesAria) && el.getBoundingClientRect().width > 0;
     });
     const strict = matches.filter((el) => el.tagName === "BUTTON" || el.getAttribute("role") === "button");
-    const pool = strict.length ? strict : matches;
+    const pool = strict.length > 0 ? strict : matches;
     const innermost = pool.filter((el) => !pool.some((other) => other !== el && other.contains(el)));
 
     return innermost.map((el) => {
@@ -152,21 +149,21 @@
   async function expandAllPrompts() {
     const MAX_ROUNDS = 6;
     const allClicked = new Set();
-    let round = 0;
-    while (round < MAX_ROUNDS) {
+    for (let round = 0; round < MAX_ROUNDS; round++) {
       const toggles = findToggleButtons("show more").sort(docOrder);
       const fresh = toggles.filter((btn) => !allClicked.has(btn));
       console.log(
         `[PPLX Obsidian Exporter] Expand round ${round + 1}: found ${toggles.length} toggle(s), ${fresh.length} new.`,
         fresh
       );
-      if (!fresh.length) break;
+      if (fresh.length === 0) {
+        break;
+      }
       fresh.forEach((btn) => {
         allClicked.add(btn);
         clickToggle(btn);
       });
       await new Promise((r) => setTimeout(r, 250));
-      round++;
     }
     return [...allClicked];
   }
@@ -240,8 +237,7 @@
     const candidates = [];
     if (spanMatch) candidates.push(fromIdx + spanMatch.index);
     if (footnoteMatch) candidates.push(fromIdx + footnoteMatch.index);
-    if (!candidates.length) return -1;
-    return Math.min(...candidates);
+    return candidates.length > 0 ? Math.min(...candidates) : -1;
   }
 
   function splitSources(responsePart) {
@@ -250,11 +246,11 @@
       return { body: responsePart.trim(), sources: "" };
     }
     const body = responsePart.slice(0, bibStart).trim();
-    let sourcesRaw = responsePart.slice(bibStart);
-    sourcesRaw = sourcesRaw.replace(/<span style="display:none">[\s\S]*?<\/span>/g, "");
-    sourcesRaw = sourcesRaw.replace(/<div align="center">\s*⁂\s*<\/div>/g, "");
-    sourcesRaw = sourcesRaw.trim();
-    return { body, sources: sourcesRaw };
+    const sources = responsePart.slice(bibStart)
+      .replace(/<span style="display:none">[\s\S]*?<\/span>/g, "")
+      .replace(/<div align="center">\s*⁂\s*<\/div>/g, "")
+      .trim();
+    return { body, sources };
   }
 
   function splitPromptFromResponse(chunkText, domPromptText, turnNum, title) {
@@ -292,8 +288,13 @@
     const promptEndStrippedIdx = idxStripped + strippedDomPrompt.length;
     const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
 
-    const promptPart = chunkBody.slice(0, originalEndIdx).trim();
-    const responsePart = chunkBody.slice(originalEndIdx).trim();
+    // Scan forward for the first alphanumeric character of the response
+    const remainingText = chunkBody.slice(originalEndIdx);
+    const firstAlphanumRelIdx = remainingText.search(/[a-zA-Z0-9]/);
+    const splitIdx = firstAlphanumRelIdx === -1 ? originalEndIdx : originalEndIdx + firstAlphanumRelIdx;
+
+    const promptPart = chunkBody.slice(0, splitIdx).trim();
+    const responsePart = chunkBody.slice(splitIdx).trim();
 
     if (!promptPart || !responsePart) {
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: split yielded empty prompt or response.`);
@@ -340,7 +341,8 @@
     const out = [];
     let lastMatchedNode = null;
 
-    chunks.forEach((chunk, idx) => {
+    for (let idx = 0; idx < chunks.length; idx++) {
+      const chunk = chunks[idx];
       const turnNum = idx + 1;
       const titleMatch = chunk.match(/^#\s+(.+?)\s*(?:\n|$)/);
       const title = titleMatch ? titleMatch[1].trim() : null;
@@ -389,7 +391,7 @@
           );
         }
       }
-    });
+    }
 
     return { text: out.join("\n\n"), warnings };
   }
@@ -397,10 +399,10 @@
   async function copyText(text) {
     const toggles = await expandAllPrompts();
 
-    const { result: logoStripped, removed } = stripLogo(text);
+    const { result: logoStripped } = stripLogo(text);
 
     const { text: annotated, warnings } = annotateConversation(logoStripped, toggles);
-    if (warnings.length) {
+    if (warnings.length > 0) {
       showToast(
         `Turn(s) ${warnings.join(", ")} boundaries unresolved — copied with fallback.`,
         true
@@ -492,17 +494,16 @@
       const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
       const text = (btn.textContent || "").toLowerCase();
 
-      if (
+      const matchesLabelOrText =
         label.includes("options") ||
         label.includes("more") ||
         label.includes("thread options") ||
         label.includes("share") ||
-        text.includes("share")
-      ) {
-        if (btn.getBoundingClientRect().width > 0) {
-          menuBtn = btn;
-          break;
-        }
+        text.includes("share");
+
+      if (matchesLabelOrText && btn.getBoundingClientRect().width > 0) {
+        menuBtn = btn;
+        break;
       }
     }
 
@@ -535,11 +536,14 @@
     let exportOption = null;
     for (const opt of menuOptions) {
       const text = (opt.textContent || "").trim();
-      if (/Export as Markdown/i.test(text) || /Download/i.test(text) || (/Export/i.test(text) && /Markdown/i.test(text))) {
-        if (opt.getBoundingClientRect().width > 0) {
-          exportOption = opt;
-          break;
-        }
+      const isExportOption =
+        /Export as Markdown/i.test(text) ||
+        /Download/i.test(text) ||
+        (/Export/i.test(text) && /Markdown/i.test(text));
+
+      if (isExportOption && opt.getBoundingClientRect().width > 0) {
+        exportOption = opt;
+        break;
       }
     }
 
