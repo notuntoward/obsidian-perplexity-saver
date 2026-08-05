@@ -134,6 +134,16 @@ export function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/");
 }
 
+export let requestUrlMock = vi.fn().mockResolvedValue({
+	status: 200,
+	headers: { "content-type": "text/html" },
+	text: "<html><head><title>Test Title</title></head></html>"
+});
+
+export function requestUrl(options: any): Promise<any> {
+	return requestUrlMock(options);
+}
+
 // Minimal YAML subset parser used by normalize/frontmatter.ts. Handles
 // the limited frontmatter shapes that pasted AI dialogs might carry
 // (key: value lines, no nested objects). Sufficient for the strip-leading

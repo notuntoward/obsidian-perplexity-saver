@@ -5,6 +5,7 @@ import { stripLeadingFrontmatterIfPresent, updateFrontMatter } from "../normaliz
 import { getNextTurnIndex, groupLogicalTurns } from "../normalize/turns";
 import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
+import { resolveSourceTitles } from "../scraper";
 
 export interface SyncDialogResult {
 	success: boolean;
@@ -25,7 +26,9 @@ export type AppendDialogResult = SyncDialogResult;
 export async function syncDialogFromClipboard(
 	app: App,
 	file: TFile,
-	headlineOptions: HeadlineOptions
+	headlineOptions: HeadlineOptions,
+	autoFetchSourceTitles: boolean = true,
+	sourceTitleMaxChars: number = 100
 ): Promise<SyncDialogResult> {
 	const clipboard = await navigator.clipboard.readText();
 	if (!clipboard) {
@@ -75,6 +78,15 @@ export async function syncDialogFromClipboard(
 
 	const existingSources = extractSourcesSection(existingText);
 	const existingSourceCount = countSourceLines(existingSources);
+
+	// Resolve titles for new sources, reusing existing ones if possible
+	if (autoFetchSourceTitles) {
+		await resolveSourceTitles(newDialog, {
+			existingSourceText: existingSources,
+			autoFetchSourceTitles,
+			sourceTitleMaxChars,
+		});
+	}
 
 	const { body: newBody, sourceLines: allSourceLines } = buildNoteBody(newDialog, {
 		startTurnId: nextLocalTurnNumber,
@@ -142,6 +154,10 @@ export function registerSyncCommand(
 		app: App;
 		addCommand: (cmd: unknown) => unknown;
 		headlineOptions: () => HeadlineOptions;
+		settings: {
+			autoFetchSourceTitles: boolean;
+			sourceTitleMaxChars: number;
+		};
 	}
 ): void {
 	plugin.addCommand({
@@ -153,7 +169,13 @@ export function registerSyncCommand(
 				new Notice("No active file.");
 				return;
 			}
-			const result = await syncDialogFromClipboard(plugin.app, file, plugin.headlineOptions());
+			const result = await syncDialogFromClipboard(
+				plugin.app,
+				file,
+				plugin.headlineOptions(),
+				plugin.settings.autoFetchSourceTitles,
+				plugin.settings.sourceTitleMaxChars
+			);
 			if (!result.success) {
 				new Notice(result.error ?? "Sync failed.");
 				return;
@@ -178,7 +200,13 @@ export function registerSyncCommand(
 				new Notice("No active file.");
 				return;
 			}
-			const result = await syncDialogFromClipboard(plugin.app, file, plugin.headlineOptions());
+			const result = await syncDialogFromClipboard(
+				plugin.app,
+				file,
+				plugin.headlineOptions(),
+				plugin.settings.autoFetchSourceTitles,
+				plugin.settings.sourceTitleMaxChars
+			);
 			if (!result.success) {
 				new Notice(result.error ?? "Sync failed.");
 				return;

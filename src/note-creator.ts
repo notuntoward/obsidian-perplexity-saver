@@ -6,6 +6,8 @@ import { HeadlineOptions } from "./normalize/headlines";
 import { sanitizeFilename } from "./utils";
 import { groupLogicalTurns } from "./normalize/turns";
 
+import { resolveSourceTitles } from "./scraper";
+
 interface CreateNoteParams {
 	app: App;
 	activeFile: TFile;
@@ -16,6 +18,8 @@ interface CreateNoteParams {
 	collapseBlankLines: boolean;
 	collapsePromptCallouts?: boolean;
 	headlineOptions: HeadlineOptions;
+	autoFetchSourceTitles?: boolean;
+	sourceTitleMaxChars?: number;
 }
 
 interface CreateNoteSuccess {
@@ -42,7 +46,7 @@ export type CreateNoteResult = CreateNoteSuccess | CreateNoteError;
 export async function createPerplexityNote(
 	params: CreateNoteParams
 ): Promise<CreateNoteResult> {
-	const { app, activeFile, clipboardContent, filename, searchesFolder, generatedTag, collapseBlankLines, collapsePromptCallouts = true, headlineOptions } = params;
+	const { app, activeFile, clipboardContent, filename, searchesFolder, generatedTag, collapseBlankLines, collapsePromptCallouts = true, headlineOptions, autoFetchSourceTitles = true, sourceTitleMaxChars = 100 } = params;
 
 	const sanitized = sanitizeFilename(filename);
 	if (!sanitized) {
@@ -52,6 +56,15 @@ export async function createPerplexityNote(
 	// Defensively strip any pre-existing frontmatter the clipboard carries.
 	const { body: stripped, existingFrontmatter } = stripLeadingFrontmatterIfPresent(clipboardContent);
 	const dialog = detectAndParse(stripped);
+
+	// Fetch source titles if enabled
+	if (autoFetchSourceTitles) {
+		await resolveSourceTitles(dialog, {
+			autoFetchSourceTitles,
+			sourceTitleMaxChars,
+		});
+	}
+
 	const { body } = buildNoteBody(dialog, { collapseBlankLines, collapsePromptCallouts, headlineOptions });
 
 	const activeFolderPath = activeFile.parent ? activeFile.parent.path : "";
