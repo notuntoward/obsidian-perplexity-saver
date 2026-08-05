@@ -193,7 +193,7 @@ export function registerSyncCommand(
 	// Register append ID for backward compatibility with existing hotkeys
 	plugin.addCommand({
 		id: "append-ai-dialog-to-active-note",
-		name: "Sync AI dialog from clipboard",
+		name: "Sync AI dialog from clipboard (legacy alias - deprecated)",
 		editorCallback: async (_editor: Editor, view: MarkdownView) => {
 			const file = view.file;
 			if (!file) {
