@@ -189,37 +189,6 @@ export function registerSyncCommand(
 			);
 		},
 	});
-
-	// Register append ID for backward compatibility with existing hotkeys
-	plugin.addCommand({
-		id: "append-ai-dialog-to-active-note",
-		name: "Sync AI dialog from clipboard (legacy alias - deprecated)",
-		editorCallback: async (_editor: Editor, view: MarkdownView) => {
-			const file = view.file;
-			if (!file) {
-				new Notice("No active file.");
-				return;
-			}
-			const result = await syncDialogFromClipboard(
-				plugin.app,
-				file,
-				plugin.headlineOptions(),
-				plugin.settings.autoFetchSourceTitles,
-				plugin.settings.sourceTitleMaxChars
-			);
-			if (!result.success) {
-				new Notice(result.error ?? "Sync failed.");
-				return;
-			}
-			if (result.nothingNew) {
-				new Notice("Nothing new to sync.");
-				return;
-			}
-			new Notice(
-				`Synced ${result.turnsSynced} turn(s)${result.newSources ? ` and ${result.newSources} new source(s)` : ""}.`
-			);
-		},
-	});
 }
 
 // Also export registerAppendCommand as an alias to registerSyncCommand for compatibility

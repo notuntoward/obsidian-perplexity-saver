@@ -215,17 +215,6 @@
     return false;
   }
 
-  function hasAiResponseSiblingAfter(el) {
-    let sibling = el.nextElementSibling;
-    while (sibling) {
-      if (containsAiResponse(sibling)) {
-        return true;
-      }
-      sibling = sibling.nextElementSibling;
-    }
-    return false;
-  }
-
   function findPromptElement(titleText, afterNode) {
     const target = stripForMatch(titleText);
     if (!target) return null;
@@ -251,8 +240,8 @@
     if (bestEl) {
       let current = bestEl;
       while (current && current.parentElement && current.parentElement !== root) {
-        if (hasAiResponseSiblingAfter(current)) {
-          break; // Stop at the prompt container
+        if (containsAiResponse(current.parentElement)) {
+          break; // Stop climbing if parent wraps both prompt and response
         }
         current = current.parentElement;
       }
@@ -267,6 +256,23 @@
     let text = el.textContent || "";
     text = text.replace(/Show\s*(more|less)/gi, "");
     return text.trim();
+  }
+
+  function getFullPromptText(el) {
+    if (!el) return "";
+    const textParts = [];
+    let sib = el;
+    while (sib) {
+      if (containsAiResponse(sib)) {
+        break; // Stop if we hit the AI response element or container
+      }
+      const text = getCleanText(sib);
+      if (text) {
+        textParts.push(text);
+      }
+      sib = sib.nextElementSibling;
+    }
+    return textParts.join("\n\n").trim();
   }
 
   function findBibliographyStart(text, fromIdx) {
@@ -421,7 +427,7 @@
         );
 
         if (domEl) {
-          const domPromptText = getCleanText(domEl);
+          const domPromptText = getFullPromptText(domEl);
           console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched prompt element with text length:`, domPromptText.length);
           split = splitPromptFromResponse(chunk, domPromptText, turnNum, title);
         }
