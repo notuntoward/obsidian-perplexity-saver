@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.1
+// @version      8.2
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -205,11 +205,23 @@
       const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
       const text = (btn.textContent || "").toLowerCase();
       if (
-        aria.includes("copy") || aria.includes("share") || aria.includes("rewrite") ||
-        text.includes("copy") || text.includes("share") || text.includes("rewrite")
+        aria.includes("rewrite") || text.includes("rewrite") ||
+        aria.includes("copy answer") || text.includes("copy answer") ||
+        aria.includes("view sources") || text.includes("view sources")
       ) {
         return true;
       }
+    }
+    return false;
+  }
+
+  function hasAiResponseSiblingAfter(el) {
+    let sibling = el.nextElementSibling;
+    while (sibling) {
+      if (containsAiResponse(sibling)) {
+        return true;
+      }
+      sibling = sibling.nextElementSibling;
     }
     return false;
   }
@@ -239,11 +251,10 @@
     if (bestEl) {
       let current = bestEl;
       while (current && current.parentElement && current.parentElement !== root) {
-        const parent = current.parentElement;
-        if (containsAiResponse(parent)) {
-          break;
+        if (hasAiResponseSiblingAfter(current)) {
+          break; // Stop at the prompt container
         }
-        current = parent;
+        current = current.parentElement;
       }
       bestEl = current;
     }
