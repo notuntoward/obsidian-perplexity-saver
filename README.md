@@ -252,6 +252,11 @@ This compiles the code into `main.js`. Copy `manifest.json`, the compiled `main.
 
 ---
 
+# Credits
+
+- Source titles inspired by [Auto Link Title](https://github.com/zolrath/obsidian-auto-link-title) by zolrath
+- Thanks to [Tampermonkey](https://www.tampermonkey.net/) chrome extension
+
 # Deprecated Workflows & Legacy Interfaces
 
 *The following sections outline older browser extensions and Tampermonkey configurations which are no longer recommended but remain supported for backward compatibility.*
