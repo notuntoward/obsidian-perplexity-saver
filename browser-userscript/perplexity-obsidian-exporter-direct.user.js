@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.0
+// @version      8.1
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -197,6 +197,23 @@
     return { stripped, map };
   }
 
+  function containsAiResponse(el) {
+    if (!el) return false;
+    if (el.querySelector(".prose, .markdown")) return true;
+    const buttons = el.querySelectorAll("button, [role='button']");
+    for (const btn of buttons) {
+      const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
+      const text = (btn.textContent || "").toLowerCase();
+      if (
+        aria.includes("copy") || aria.includes("share") || aria.includes("rewrite") ||
+        text.includes("copy") || text.includes("share") || text.includes("rewrite")
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   function findPromptElement(titleText, afterNode) {
     const target = stripForMatch(titleText);
     if (!target) return null;
@@ -218,6 +235,19 @@
         }
       }
     }
+
+    if (bestEl) {
+      let current = bestEl;
+      while (current && current.parentElement && current.parentElement !== root) {
+        const parent = current.parentElement;
+        if (containsAiResponse(parent)) {
+          break;
+        }
+        current = parent;
+      }
+      bestEl = current;
+    }
+
     return bestEl;
   }
 
