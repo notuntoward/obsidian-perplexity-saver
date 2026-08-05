@@ -94,7 +94,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		this.addCommand({
 			id: "save-perplexity-note",
-			name: "Save AI dialog from clipboard",
+			name: "Save AI dialog from clipboard (legacy alias - deprecated)",
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				await this.startImport(editor, view);
 			},
