@@ -38,6 +38,14 @@ interface PerplexitySaverSettings {
 	 * range: 0.05 to 0.35. Ignored when headlineMethod is "lead".
 	 */
 	headlineLeadBias: number;
+	/**
+	 * Automatically fetch webpage titles to build clean markdown links for sources.
+	 */
+	autoFetchSourceTitles: boolean;
+	/**
+	 * Maximum length of a fetched source link title.
+	 */
+	sourceTitleMaxChars: number;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -48,6 +56,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	headlineMethod: "lead",
 	headlineMaxChars: 100,
 	headlineLeadBias: 0.20,
+	autoFetchSourceTitles: true,
+	sourceTitleMaxChars: 100,
 };
 
 interface InlineInputData {
@@ -234,6 +244,8 @@ class InlineInputWidget extends WidgetType {
 			collapseBlankLines: this.plugin.settings.collapseBlankLines,
 			collapsePromptCallouts: this.plugin.settings.collapsePromptCallouts,
 			headlineOptions: this.plugin.headlineOptions(),
+			autoFetchSourceTitles: this.plugin.settings.autoFetchSourceTitles,
+			sourceTitleMaxChars: this.plugin.settings.sourceTitleMaxChars,
 		});
 
 		if (!result.success) {
@@ -420,6 +432,45 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 			leadBiasSetting.setDisabled(true);
 			leadBiasSetting.settingEl.classList.add("is-disabled");
 			const inputEl = leadBiasSetting.settingEl.querySelector("input");
+			if (inputEl) inputEl.setAttribute("disabled", "true");
+		}
+
+		// "Source link title shortening" group
+		containerEl.createEl("h3", { text: "Source link title shortening" });
+
+		new Setting(containerEl)
+			.setName("Auto-fetch source titles")
+			.setDesc("Automatically fetch webpage titles to build clean markdown links for sources.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoFetchSourceTitles)
+					.onChange(async (value) => {
+						this.plugin.settings.autoFetchSourceTitles = value;
+						await this.plugin.saveSettings();
+						this.display();
+					})
+			);
+
+		const sourceMaxCharsSetting = new Setting(containerEl)
+			.setName("Source title max characters")
+			.setDesc("Maximum length of a fetched source link title, including a possible ellipsis.")
+			.addText((text) => {
+				text
+					.setPlaceholder("100")
+					.setValue(String(this.plugin.settings.sourceTitleMaxChars))
+					.onChange(async (value) => {
+						const n = parseInt(value, 10);
+						if (!isNaN(n) && n > 0) {
+							this.plugin.settings.sourceTitleMaxChars = n;
+							await this.plugin.saveSettings();
+						}
+					});
+			});
+
+		if (!this.plugin.settings.autoFetchSourceTitles) {
+			sourceMaxCharsSetting.setDisabled(true);
+			sourceMaxCharsSetting.settingEl.classList.add("is-disabled");
+			const inputEl = sourceMaxCharsSetting.settingEl.querySelector("input");
 			if (inputEl) inputEl.setAttribute("disabled", "true");
 		}
 	}

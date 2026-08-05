@@ -6,6 +6,8 @@ import { HeadlineOptions } from "../normalize/headlines";
 import { sanitizeFilename } from "../utils";
 import { groupLogicalTurns } from "../normalize/turns";
 
+import { resolveSourceTitles } from "../scraper";
+
 export interface ImportDialogParams {
 	app: App;
 	clipboardContent: string;
@@ -13,6 +15,8 @@ export interface ImportDialogParams {
 	generatedTag: string;
 	collapseBlankLines: boolean;
 	headlineOptions: HeadlineOptions;
+	autoFetchSourceTitles?: boolean;
+	sourceTitleMaxChars?: number;
 }
 
 export interface ImportDialogResult {
@@ -30,7 +34,7 @@ export interface ImportDialogResult {
 export async function importDialogFromClipboard(
 	params: ImportDialogParams & { filename: string }
 ): Promise<ImportDialogResult> {
-	const { app, clipboardContent, filename, importFolder, generatedTag, collapseBlankLines, headlineOptions } = params;
+	const { app, clipboardContent, filename, importFolder, generatedTag, collapseBlankLines, headlineOptions, autoFetchSourceTitles = true, sourceTitleMaxChars = 100 } = params;
 
 	const sanitized = sanitizeFilename(filename);
 	if (!sanitized) {
@@ -41,6 +45,14 @@ export async function importDialogFromClipboard(
 	const { body: stripped, existingFrontmatter } = stripLeadingFrontmatterIfPresent(clipboardContent);
 
 	const dialog = detectAndParse(stripped);
+
+	if (autoFetchSourceTitles) {
+		await resolveSourceTitles(dialog, {
+			autoFetchSourceTitles,
+			sourceTitleMaxChars,
+		});
+	}
+
 	const { body } = buildNoteBody(dialog, { collapseBlankLines, headlineOptions });
 
 	const folderPath = normalizePath(importFolder);

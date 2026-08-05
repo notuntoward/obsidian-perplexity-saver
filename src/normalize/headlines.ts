@@ -256,7 +256,7 @@ function sentenceScore(
 	return score;
 }
 
-function truncateAtWord(text: string, maxChars: number): string {
+export function truncateAtWord(text: string, maxChars: number): string {
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (normalized.length <= maxChars) return normalized;
 	if (maxChars <= 1) return "…".slice(0, maxChars);
