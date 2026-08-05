@@ -207,7 +207,7 @@ function rewriteCitationsForTurn(
 		const id = numToId.get(num);
 		if (!id) return match;
 		return `[^${id}]`;
-	});
+	}).replace(/\](\[\^)/g, "], $1");
 }
 
 function compareSourceIds(a: string, b: string): number {

@@ -95,7 +95,7 @@ describe("uniform note format from Perplexity export", () => {
 
 		// Bug 5: every occurrence of a repeated citation number converts,
 		// not just the first. [1][1][2] in "Setup Steps" must all convert.
-		expect(body).toContain("Open the settings panel and toggle the option.[^1_1][^1_1][^1_2]");
+		expect(body).toContain("Open the settings panel and toggle the option.[^1_1], [^1_1], [^1_2]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
 
 		// Bug 2: the source cited from both turn 1 and turn 2 records both
