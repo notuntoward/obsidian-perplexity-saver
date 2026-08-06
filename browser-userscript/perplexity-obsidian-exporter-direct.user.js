@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.2
+// @version      8.4
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
-// @grant        GM_setClipboard
-// @grant        GM_notification
+// @grant        none
+// @sandbox      raw
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -91,16 +91,30 @@
     return { result, removed: result !== text.trimStart() };
   }
 
-  function findToggleButtons(label) {
-    const lower = label.toLowerCase();
+  function findToggleButtons(pattern) {
     const root = getSearchRoot();
     const candidates = [...root.querySelectorAll('button, [role="button"], span, a, div')];
     const matches = candidates.filter((el) => {
-      const text = (el.textContent || "").trim().toLowerCase();
-      const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-      const matchesText = text.includes(lower) && text.length <= lower.length + 15;
-      const matchesAria = aria.includes(lower);
-      return (matchesText || matchesAria) && el.getBoundingClientRect().width > 0;
+      const text = (el.textContent || "").trim();
+      const aria = (el.getAttribute("aria-label") || "");
+      
+      // Exclude non-thread controls (tables, sidebars, query actions, etc.)
+      const excludePattern = /table|pane|sidebar|menu|option|action|notification|download|share|copy|rewrite|helpful|feedback/i;
+      if (excludePattern.test(text) || excludePattern.test(aria)) {
+        return false;
+      }
+      
+      let isMatch = false;
+      if (pattern instanceof RegExp) {
+        isMatch = pattern.test(text) || pattern.test(aria);
+      } else {
+        const lower = pattern.toLowerCase();
+        isMatch = text.toLowerCase().includes(lower) || aria.toLowerCase().includes(lower);
+        if (isMatch && text.length > lower.length + 15) {
+          isMatch = false;
+        }
+      }
+      return isMatch && el.getBoundingClientRect().width > 0;
     });
     const strict = matches.filter((el) => el.tagName === "BUTTON" || el.getAttribute("role") === "button");
     const pool = strict.length > 0 ? strict : matches;
@@ -149,8 +163,9 @@
   async function expandAllPrompts() {
     const MAX_ROUNDS = 6;
     const allClicked = new Set();
+    const expandRegex = /show\s*(?:\d+\s*)?more|more\s*queries|show\s*queries|show\s*previous|view\s*more|expand/i;
     for (let round = 0; round < MAX_ROUNDS; round++) {
-      const toggles = findToggleButtons("show more").sort(docOrder);
+      const toggles = findToggleButtons(expandRegex).sort(docOrder);
       const fresh = toggles.filter((btn) => !allClicked.has(btn));
       console.log(
         `[PPLX Obsidian Exporter] Expand round ${round + 1}: found ${toggles.length} toggle(s), ${fresh.length} new.`,
@@ -199,7 +214,13 @@
 
   function containsAiResponse(el) {
     if (!el) return false;
-    if (el.querySelector(".prose, .markdown")) return true;
+    const isQuery = el.closest(".group\\/query");
+    if (isQuery) {
+      return false;
+    }
+    if (el.querySelector(".prose, .markdown")) {
+      return true;
+    }
     const buttons = el.querySelectorAll("button, [role='button']");
     for (const btn of buttons) {
       const aria = (btn.getAttribute("aria-label") || "").toLowerCase();
@@ -215,11 +236,228 @@
     return false;
   }
 
-  function findPromptElement(titleText, afterNode) {
+  function getThreadMessagesFromReact() {
+    // --- Helper: check if an array looks like a thread messages list ---
+    function isMessagesArray(arr) {
+      if (!Array.isArray(arr) || arr.length === 0) return false;
+      const sample = arr[0];
+      if (!sample || typeof sample !== "object") return false;
+      const keys = Object.keys(sample);
+      return keys.includes("query") || keys.includes("query_str") ||
+             keys.includes("answer") || keys.includes("role") ||
+             keys.includes("message") || keys.includes("messageBlocks") ||
+             keys.includes("is_user");
+    }
+
+    // --- Helper: recursively search a plain JS object tree for a messages array ---
+    function deepSearch(obj, depth, visited) {
+      if (depth > 12 || !obj || typeof obj !== "object" || visited.has(obj)) return null;
+      visited.add(obj);
+      if (isMessagesArray(obj)) return obj;
+      if (!Array.isArray(obj)) {
+        if (Array.isArray(obj.messageBlocks) && isMessagesArray(obj.messageBlocks)) return obj.messageBlocks;
+        if (Array.isArray(obj.messages) && isMessagesArray(obj.messages)) return obj.messages;
+      }
+      const keys = Array.isArray(obj) ? obj.map((_, i) => i) : Object.keys(obj);
+      for (const k of keys) {
+        try {
+          const val = obj[k];
+          if (val && typeof val === "object") {
+            const r = deepSearch(val, depth + 1, visited);
+            if (r) return r;
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    // ===============================================================
+    // Strategy 1: Walk the React Fiber tree via child/sibling and
+    //             inspect every hook's memoizedState for each fiber.
+    // ===============================================================
+    let rootFiber = null;
+    const nextEl = document.getElementById("__next") || document.body;
+    for (const key in nextEl) {
+      if (key.startsWith("__reactContainer$") || key.startsWith("__reactFiber$")) {
+        rootFiber = nextEl[key];
+        break;
+      }
+    }
+
+    if (rootFiber) {
+      // Walk up to the true root fiber (the HostRoot)
+      let hostRoot = rootFiber;
+      while (hostRoot.return) hostRoot = hostRoot.return;
+
+      const fiberVisited = new Set();
+      let fiberResult = null;
+      let fibersScanned = 0;
+
+      function scanHooks(fiber) {
+        // Walk the hooks linked list on this fiber
+        let hook = fiber.memoizedState;
+        let hookIdx = 0;
+        while (hook && typeof hook === "object" && hookIdx < 50) {
+          hookIdx++;
+          // For useSyncExternalStore / useState / useReducer, the value lives in
+          // hook.memoizedState.  It could be the messages array directly, or an
+          // object/array wrapping it.
+          const val = hook.memoizedState;
+          if (val && typeof val === "object") {
+            const visited = new Set();
+            const r = deepSearch(val, 0, visited);
+            if (r) return r;
+          }
+          // Also check queue.lastRenderedState (useState/useReducer)
+          if (hook.queue && hook.queue.lastRenderedState) {
+            const visited = new Set();
+            const r = deepSearch(hook.queue.lastRenderedState, 0, visited);
+            if (r) return r;
+          }
+          hook = hook.next;
+        }
+        // For class components, check stateNode.state
+        if (fiber.stateNode && typeof fiber.stateNode === "object" && fiber.stateNode.state) {
+          const visited = new Set();
+          const r = deepSearch(fiber.stateNode.state, 0, visited);
+          if (r) return r;
+        }
+        return null;
+      }
+
+      function walkFiber(fiber) {
+        if (!fiber || fiberVisited.has(fiber) || fiberResult) return;
+        fiberVisited.add(fiber);
+        fibersScanned++;
+        if (fibersScanned > 5000) return; // safety cap
+
+        fiberResult = scanHooks(fiber);
+        if (fiberResult) return;
+
+        walkFiber(fiber.child);
+        if (fiberResult) return;
+        walkFiber(fiber.sibling);
+      }
+
+      walkFiber(hostRoot);
+
+      if (fiberResult) {
+        return simplifyMessages(fiberResult);
+      }
+    }
+
+    // ===============================================================
+    // Strategy 2: Check window.__NEXT_DATA__ for SSR-delivered thread data.
+    // ===============================================================
+    try {
+      if (window.__NEXT_DATA__) {
+        const visited = new Set();
+        const r = deepSearch(window.__NEXT_DATA__, 0, visited);
+        if (r) return simplifyMessages(r);
+      }
+    } catch (_) {}
+
+    // ===============================================================
+    // Strategy 3: Scan window-level properties for Zustand stores.
+    //             A Zustand store has .getState() returning an object.
+    // ===============================================================
+    try {
+      const windowKeys = Object.getOwnPropertyNames(window);
+      for (const wk of windowKeys) {
+        try {
+          const wv = window[wk];
+          if (wv && typeof wv === "object" && typeof wv.getState === "function") {
+            const state = wv.getState();
+            if (state && typeof state === "object") {
+              const visited = new Set();
+              const r = deepSearch(state, 0, visited);
+              if (r) {
+                return simplifyMessages(r);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    return null;
+  }
+
+  function simplifyMessages(foundMessages) {
+    try {
+      const simplified = foundMessages.map(msg => {
+        if (!msg) return null;
+        const textVal = msg.query_str || msg.query || msg.text || msg.content || "";
+        const nestedQuery = msg.query && (typeof msg.query === "object" ? (msg.query.text || msg.query.query_str || "") : "");
+        const nestedContent = msg.content && (typeof msg.content === "object" ? (msg.content.text || "") : "");
+        return {
+          query_str: (typeof textVal === "string" ? textVal : "") || 
+                     (typeof nestedQuery === "string" ? nestedQuery : "") || 
+                     (typeof nestedContent === "string" ? nestedContent : "") || 
+                     null
+        };
+      });
+      console.log("[PPLX Obsidian Exporter] Extracted simplified messages:", simplified);
+      return simplified;
+    } catch (e) {
+      console.error("Error simplifying messages:", e);
+      return null;
+    }
+  }
+
+  function getPromptTextFromMsg(msg) {
+    if (!msg || typeof msg !== "object") return null;
+    if (typeof msg.query_str === "string") return msg.query_str;
+    if (typeof msg.query === "string") return msg.query;
+    if (msg.query && typeof msg.query === "object") {
+      if (typeof msg.query.text === "string") return msg.query.text;
+      if (typeof msg.query.query === "string") return msg.query.query;
+    }
+    if (typeof msg.text === "string") return msg.text;
+    if (typeof msg.content === "string") return msg.content;
+    if (msg.content && typeof msg.content === "object" && typeof msg.content.text === "string") return msg.content.text;
+    return null;
+  }
+
+  function findReactMessageForChunk(reactMsgs, title, turnNum) {
+    if (!reactMsgs || !title) return null;
+    const target = stripForMatch(title);
+    const directMsg = reactMsgs[turnNum - 1];
+    if (directMsg) {
+      const pText = getPromptTextFromMsg(directMsg);
+      if (pText && stripForMatch(pText).startsWith(target)) {
+        return directMsg;
+      }
+    }
+    for (const msg of reactMsgs) {
+      const pText = getPromptTextFromMsg(msg);
+      if (pText && stripForMatch(pText).startsWith(target)) {
+        return msg;
+      }
+    }
+    return null;
+  }
+
+  function findPromptElement(titleText, afterNode, turnNum) {
     const target = stripForMatch(titleText);
     if (!target) return null;
 
     const root = getSearchRoot();
+
+    // Log all query elements found by CSS selector
+    const queryEls = [...root.querySelectorAll(".group\\/query")];
+
+    if (turnNum !== undefined && queryEls[turnNum - 1]) {
+      const el = queryEls[turnNum - 1];
+      const text = stripForMatch(el.textContent || "");
+      const isMatch = text === target || (text.length > target.length && text.startsWith(target));
+      if (isMatch) {
+        console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched query container via index.`);
+        return el;
+      }
+    }
+
+    // Fallback to text candidate scanning
     const candidates = [...root.querySelectorAll("div, p, span, section, article")];
 
     let bestEl = null;
@@ -240,7 +478,8 @@
     if (bestEl) {
       let current = bestEl;
       while (current && current.parentElement && current.parentElement !== root) {
-        if (containsAiResponse(current.parentElement)) {
+        const hasAi = containsAiResponse(current.parentElement);
+        if (hasAi) {
           break; // Stop climbing if parent wraps both prompt and response
         }
         current = current.parentElement;
@@ -260,10 +499,19 @@
 
   function getFullPromptText(el) {
     if (!el) return "";
+    
+    const isQueryContainer = el.classList.contains("group/query") || el.matches(".group\\/query");
+
+    if (isQueryContainer) {
+      const clean = getCleanText(el);
+      return clean;
+    }
+
     const textParts = [];
     let sib = el;
     while (sib) {
-      if (containsAiResponse(sib)) {
+      const hasAi = containsAiResponse(sib);
+      if (hasAi) {
         break; // Stop if we hit the AI response element or container
       }
       const text = getCleanText(sib);
@@ -272,7 +520,8 @@
       }
       sib = sib.nextElementSibling;
     }
-    return textParts.join("\n\n").trim();
+    const full = textParts.join("\n\n").trim();
+    return full;
   }
 
   function findBibliographyStart(text, fromIdx) {
@@ -379,27 +628,36 @@
 
   function splitPromptFromResponseFallback(chunkText, turnNum) {
     const { body: chunkBody, sources } = splitSources(chunkText);
-    const startsWithH1 = /^#\s+\S/m.test(chunkBody);
-    const hasResponseHeading = /^##\s+\S/m.test(chunkBody);
-    const firstBlankMatch = chunkBody.match(/\n\s*\n/);
+    const paragraphs = chunkBody.split(/\n\s*\n/);
+    if (paragraphs.length <= 1) {
+      return { prompt: chunkBody, response: "", sources };
+    }
 
-    if ((startsWithH1 || hasResponseHeading) && firstBlankMatch && firstBlankMatch.index !== undefined) {
-      const promptPart = chunkBody.slice(0, firstBlankMatch.index).trim();
-      const responsePart = chunkBody.slice(firstBlankMatch.index + firstBlankMatch[0].length).trim();
+    const citationRegex = new RegExp(`\\[\\^(?:${turnNum}_)?\\d+\\]`);
+    let firstResponseParaIdx = -1;
+
+    for (let i = 0; i < paragraphs.length; i++) {
+      const para = paragraphs[i].trim();
+      if (!para) continue;
+      if (i === 0) continue; // Paragraph 0 is the title heading
+
+      if (citationRegex.test(para) || /^##+\s+\S/.test(para)) {
+        firstResponseParaIdx = i;
+        break;
+      }
+    }
+
+    if (firstResponseParaIdx !== -1) {
+      const promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
+      const responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
+      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fallback split via citation/heading match at paragraph ${firstResponseParaIdx}`);
       return { prompt: promptPart, response: responsePart, sources };
     }
 
-    if (startsWithH1) {
-      const firstNewline = chunkBody.indexOf("\n");
-      if (firstNewline !== -1) {
-        return {
-          prompt: chunkBody.slice(0, firstNewline).trim(),
-          response: chunkBody.slice(firstNewline).trim(),
-          sources
-        };
-      }
-    }
-    return null;
+    // Default fallback if no citations or subheadings found: split after first paragraph
+    const promptPart = paragraphs[0].trim();
+    const responsePart = paragraphs.slice(1).join("\n\n").trim();
+    return { prompt: promptPart, response: responsePart, sources };
   }
 
   function annotateConversation(fullText, toggles) {
@@ -410,6 +668,13 @@
     const out = [];
     let lastMatchedNode = null;
 
+    let reactMsgs = null;
+    try {
+      reactMsgs = getThreadMessagesFromReact();
+    } catch (err) {
+      console.warn("[PPLX Obsidian Exporter] Error getting react messages:", err);
+    }
+
     for (let idx = 0; idx < chunks.length; idx++) {
       const chunk = chunks[idx];
       const turnNum = idx + 1;
@@ -419,8 +684,21 @@
       let split = null;
       let domEl = null;
 
-      if (title) {
-        domEl = findPromptElement(title, lastMatchedNode);
+      // 1. Try React messages state first (works for virtualized/collapsed/deleted turns)
+      if (title && reactMsgs) {
+        const msg = findReactMessageForChunk(reactMsgs, title, turnNum);
+        if (msg) {
+          const promptText = getPromptTextFromMsg(msg);
+          if (promptText) {
+            console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: found matching prompt text in React state (length=${promptText.length}).`);
+            split = splitPromptFromResponse(chunk, promptText, turnNum, title);
+          }
+        }
+      }
+
+      // 2. Fallback to DOM element scanning
+      if (!split && title) {
+        domEl = findPromptElement(title, lastMatchedNode, turnNum);
 
         console.log(
           `[PPLX Obsidian Exporter] Turn ${turnNum}: title="${title.slice(0, 80)}" domEl=${domEl ? "FOUND" : "NOT FOUND"}`
@@ -431,12 +709,14 @@
           console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched prompt element with text length:`, domPromptText.length);
           split = splitPromptFromResponse(chunk, domPromptText, turnNum, title);
         }
-      } else {
+      } else if (!title) {
         console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: could not extract a title heading from chunk.`);
       }
 
       if (split) {
-        lastMatchedNode = domEl;
+        if (domEl) {
+          lastMatchedNode = domEl;
+        }
         out.push(
           `<!-- PPLX-TURN ${turnNum} -->\n` +
           `<!-- PPLX-ROLE: prompt -->\n${split.prompt}\n\n` +

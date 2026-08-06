@@ -135,6 +135,38 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   };
 }
 
+function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
+  const { body: chunkBody, sources } = splitSources(chunkText);
+  const paragraphs = chunkBody.split(/\n\s*\n/);
+  if (paragraphs.length <= 1) {
+    return { prompt: chunkBody, response: "", sources };
+  }
+
+  const citationRegex = new RegExp(`\\[\\^(?:${turnNum}_)?\\d+\\]`);
+  let firstResponseParaIdx = -1;
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const para = paragraphs[i].trim();
+    if (!para) continue;
+    if (i === 0) continue; // Paragraph 0 is the title heading
+
+    if (citationRegex.test(para) || /^##+\s+\S/.test(para)) {
+      firstResponseParaIdx = i;
+      break;
+    }
+  }
+
+  if (firstResponseParaIdx !== -1) {
+    const promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
+    const responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
+    return { prompt: promptPart, response: responsePart, sources };
+  }
+
+  const promptPart = paragraphs[0].trim();
+  const responsePart = paragraphs.slice(1).join("\n\n").trim();
+  return { prompt: promptPart, response: responsePart, sources };
+}
+
 describe("Userscript Exporter parser alignment", () => {
   it("perfectly aligns and splits Turn 4 where tampermonkey v5.8 failed", () => {
     const inputPath = path.join(__dirname, "../fixtures/input-perp-2.md");
@@ -231,6 +263,30 @@ AI Response here.`;
     if (split3) {
       expect(split3.prompt).toBe("# contrast and compare figs and Newton");
       expect(split3.response.startsWith("If you meant **Figs** and **Newton**")).toBe(true);
+    }
+  });
+
+  it("correctly splits Turn 4 using fallback when DOM matching is unavailable", () => {
+    const inputPath = path.join(__dirname, "../fixtures/input-perp-2.md");
+    const rawContent = fs.readFileSync(inputPath, "utf-8");
+    const { result: logoStripped } = stripLogo(rawContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n"));
+    const chunks = logoStripped.split(TURN_DIVIDER_RE).filter((c) => c.trim().length > 0);
+
+    const chunk4 = chunks[3];
+    const fallbackSplit = splitPromptFromResponseFallback(chunk4, 4);
+    expect(fallbackSplit).not.toBeNull();
+    if (fallbackSplit) {
+      // The prompt should contain the heading and the entire pasted article
+      expect(fallbackSplit.prompt).toContain("# Explain this in plain English:");
+      expect(fallbackSplit.prompt).toContain("A Hormone Linked to Longevity");
+      expect(fallbackSplit.prompt).toContain('Lamming says.');
+      
+      // The prompt should NOT contain the response text
+      expect(fallbackSplit.prompt).not.toContain("In plain English: **eating less protein");
+      
+      // The response should start with the correct sentence
+      expect(fallbackSplit.response.startsWith("In plain English: **eating less protein")).toBe(true);
+      expect(fallbackSplit.response).toContain("## What the passage means");
     }
   });
 });
