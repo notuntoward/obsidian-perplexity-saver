@@ -290,3 +290,286 @@ AI Response here.`;
     }
   });
 });
+
+// =====================================================================
+// Regression tests for helpers that caused the turn-boundary bug.
+// These run purely in Node and don't require a browser or DOM.
+// =====================================================================
+
+// --- Local copies of helpers from the userscript (pure functions) ---
+
+function isMessagesArray(arr: unknown[]): boolean {
+  if (!Array.isArray(arr) || arr.length === 0) return false;
+  const sample = arr[0];
+  if (!sample || typeof sample !== "object") return false;
+  const keys = Object.keys(sample as Record<string, unknown>);
+  return keys.includes("query") || keys.includes("query_str") ||
+         keys.includes("answer") || keys.includes("role") ||
+         keys.includes("message") || keys.includes("messageBlocks") ||
+         keys.includes("is_user");
+}
+
+function deepSearch(obj: unknown, depth: number, visited: Set<unknown>): unknown[] | null {
+  if (depth > 12 || !obj || typeof obj !== "object" || visited.has(obj)) return null;
+  visited.add(obj);
+  if (Array.isArray(obj) && isMessagesArray(obj)) return obj;
+  if (!Array.isArray(obj)) {
+    const o = obj as Record<string, unknown>;
+    if (Array.isArray(o.messageBlocks) && isMessagesArray(o.messageBlocks)) return o.messageBlocks;
+    if (Array.isArray(o.messages) && isMessagesArray(o.messages)) return o.messages;
+  }
+  const keys = Array.isArray(obj) ? (obj as unknown[]).map((_: unknown, i: number) => i) : Object.keys(obj as Record<string, unknown>);
+  for (const k of keys) {
+    try {
+      const val = (obj as Record<string | number, unknown>)[k];
+      if (val && typeof val === "object") {
+        const r = deepSearch(val, depth + 1, visited);
+        if (r) return r;
+      }
+    } catch (_) { /* skip */ }
+  }
+  return null;
+}
+
+interface SimplifiedMsg { query_str: string | null }
+
+function simplifyMessages(foundMessages: Record<string, unknown>[]): SimplifiedMsg[] | null {
+  try {
+    return foundMessages.map(msg => {
+      if (!msg) return { query_str: null };
+      const textVal = msg.query_str || msg.query || msg.text || msg.content || "";
+      const nestedQuery = msg.query && (typeof msg.query === "object" ? ((msg.query as Record<string, unknown>).text || (msg.query as Record<string, unknown>).query_str || "") : "");
+      const nestedContent = msg.content && (typeof msg.content === "object" ? ((msg.content as Record<string, unknown>).text || "") : "");
+      return {
+        query_str: (typeof textVal === "string" ? textVal : "") ||
+                   (typeof nestedQuery === "string" ? nestedQuery : "") ||
+                   (typeof nestedContent === "string" ? nestedContent : "") ||
+                   null
+      };
+    });
+  } catch {
+    return null;
+  }
+}
+
+function getPromptTextFromMsg(msg: Record<string, unknown> | null): string | null {
+  if (!msg || typeof msg !== "object") return null;
+  if (typeof msg.query_str === "string") return msg.query_str;
+  if (typeof msg.query === "string") return msg.query;
+  if (msg.query && typeof msg.query === "object") {
+    const q = msg.query as Record<string, unknown>;
+    if (typeof q.text === "string") return q.text;
+    if (typeof q.query === "string") return q.query;
+  }
+  if (typeof msg.text === "string") return msg.text;
+  if (typeof msg.content === "string") return msg.content;
+  if (msg.content && typeof msg.content === "object" && typeof (msg.content as Record<string, unknown>).text === "string") {
+    return (msg.content as Record<string, unknown>).text as string;
+  }
+  return null;
+}
+
+// =====================================================================
+describe("isMessagesArray detection", () => {
+  it("detects arrays with 'query_str' key", () => {
+    expect(isMessagesArray([{ query_str: "hello", answer: "world" }])).toBe(true);
+  });
+  it("detects arrays with 'query' key", () => {
+    expect(isMessagesArray([{ query: "hello" }])).toBe(true);
+  });
+  it("detects arrays with 'role' key (ChatML format)", () => {
+    expect(isMessagesArray([{ role: "user", content: "hi" }])).toBe(true);
+  });
+  it("detects arrays with 'is_user' key", () => {
+    expect(isMessagesArray([{ is_user: true, text: "hi" }])).toBe(true);
+  });
+  it("rejects empty arrays", () => {
+    expect(isMessagesArray([])).toBe(false);
+  });
+  it("rejects arrays of primitives", () => {
+    expect(isMessagesArray(["a", "b", "c"] as unknown[])).toBe(false);
+  });
+  it("rejects arrays of objects without message keys", () => {
+    expect(isMessagesArray([{ id: 1, name: "foo" }])).toBe(false);
+  });
+});
+
+// =====================================================================
+describe("deepSearch recursion", () => {
+  it("finds messages at the top level", () => {
+    const msgs = [{ query: "hello", answer: "world" }];
+    expect(deepSearch(msgs, 0, new Set())).toBe(msgs);
+  });
+
+  it("finds messages nested inside an object", () => {
+    const msgs = [{ query: "hello", answer: "world" }];
+    const tree = { a: { b: { messages: msgs } } };
+    expect(deepSearch(tree, 0, new Set())).toBe(msgs);
+  });
+
+  it("finds messages nested inside an array (the old bug)", () => {
+    const msgs = [{ query_str: "prompt", answer: "resp" }];
+    // Simulates hook.memoizedState = [snapshot] where snapshot wraps the array
+    const tree = [{ data: msgs }];
+    expect(deepSearch(tree, 0, new Set())).toBe(msgs);
+  });
+
+  it("finds messages at depth 12 (boundary)", () => {
+    // Build a 12-level nested object
+    const msgs = [{ query: "deep" }];
+    let obj: Record<string, unknown> = { messages: msgs };
+    for (let i = 0; i < 11; i++) {
+      obj = { inner: obj };
+    }
+    expect(deepSearch(obj, 0, new Set())).toBe(msgs);
+  });
+
+  it("returns null at depth > 12 (safety limit)", () => {
+    const msgs = [{ query: "too deep" }];
+    let obj: Record<string, unknown> = { messages: msgs };
+    for (let i = 0; i < 13; i++) {
+      obj = { inner: obj };
+    }
+    expect(deepSearch(obj, 0, new Set())).toBeNull();
+  });
+
+  it("handles circular references without infinite loop", () => {
+    const obj: Record<string, unknown> = { a: null };
+    obj.a = obj; // circular
+    expect(deepSearch(obj, 0, new Set())).toBeNull();
+  });
+
+  it("finds messages via messageBlocks shortcut", () => {
+    const msgs = [{ query: "hello" }];
+    const tree = { messageBlocks: msgs };
+    expect(deepSearch(tree, 0, new Set())).toBe(msgs);
+  });
+});
+
+// =====================================================================
+describe("simplifyMessages extraction", () => {
+  it("extracts query_str from flat messages", () => {
+    const msgs = [
+      { query_str: "What is git?", answer: "Git is..." },
+      { query_str: "Explain more", answer: "Sure..." },
+    ];
+    const result = simplifyMessages(msgs);
+    expect(result).toHaveLength(2);
+    expect(result![0].query_str).toBe("What is git?");
+    expect(result![1].query_str).toBe("Explain more");
+  });
+
+  it("extracts from nested query object", () => {
+    const msgs = [{ query: { text: "nested prompt" }, answer: "resp" }];
+    const result = simplifyMessages(msgs);
+    expect(result![0].query_str).toBe("nested prompt");
+  });
+
+  it("extracts from content field (ChatML format)", () => {
+    const msgs = [{ role: "user", content: "hello from ChatML" }];
+    const result = simplifyMessages(msgs);
+    expect(result![0].query_str).toBe("hello from ChatML");
+  });
+
+  it("returns null for null message entries", () => {
+    const msgs = [null as unknown as Record<string, unknown>];
+    const result = simplifyMessages(msgs);
+    expect(result![0].query_str).toBeNull();
+  });
+});
+
+// =====================================================================
+describe("getPromptTextFromMsg field priority", () => {
+  it("prefers query_str over other fields", () => {
+    expect(getPromptTextFromMsg({ query_str: "a", query: "b", text: "c" })).toBe("a");
+  });
+  it("falls back to query string", () => {
+    expect(getPromptTextFromMsg({ query: "b", text: "c" })).toBe("b");
+  });
+  it("falls back to query.text for nested objects", () => {
+    expect(getPromptTextFromMsg({ query: { text: "nested" } })).toBe("nested");
+  });
+  it("falls back to text", () => {
+    expect(getPromptTextFromMsg({ text: "plain text" })).toBe("plain text");
+  });
+  it("falls back to content string", () => {
+    expect(getPromptTextFromMsg({ content: "content text" })).toBe("content text");
+  });
+  it("falls back to content.text for nested objects", () => {
+    expect(getPromptTextFromMsg({ content: { text: "deep content" } })).toBe("deep content");
+  });
+  it("returns null for empty/invalid objects", () => {
+    expect(getPromptTextFromMsg(null)).toBeNull();
+    expect(getPromptTextFromMsg({})).toBeNull();
+  });
+});
+
+// =====================================================================
+describe("splitPromptFromResponseFallback edge cases", () => {
+  it("handles a turn with no citations and no sub-headings (splits after title)", () => {
+    const chunk = `# Ask me anything
+
+This is a simple response paragraph with no citations or headings.
+
+Another paragraph of the response.`;
+
+    const result = splitPromptFromResponseFallback(chunk, 1);
+    expect(result.prompt).toBe("# Ask me anything");
+    expect(result.response).toContain("This is a simple response paragraph");
+    expect(result.response).toContain("Another paragraph of the response.");
+  });
+
+  it("handles a multi-paragraph prompt with a code block", () => {
+    const chunk = `# Explain this code:
+
+\`\`\`python
+def hello():
+    print("world")
+\`\`\`
+
+## Explanation
+
+This code defines a simple function.[^1_1]`;
+
+    const result = splitPromptFromResponseFallback(chunk, 1);
+    // The heading "## Explanation" should trigger the split
+    expect(result.prompt).toContain("# Explain this code:");
+    expect(result.prompt).toContain('def hello():');
+    expect(result.response).toContain("## Explanation");
+    expect(result.response).toContain("simple function");
+  });
+
+  it("handles a single-paragraph chunk gracefully", () => {
+    const chunk = "# Just a title with no response";
+    const result = splitPromptFromResponseFallback(chunk, 1);
+    expect(result.prompt).toBe("# Just a title with no response");
+    expect(result.response).toBe("");
+  });
+
+  it("correctly uses turn-specific citation pattern to find boundary", () => {
+    // Turn 5 should look for [^5_N] or [^N]
+    const chunk = `# Tell me about cats
+
+Cats are beloved companions worldwide.
+
+They are independent animals.[^5_1] Cats have been domesticated for thousands of years.[^5_2]`;
+
+    const result = splitPromptFromResponseFallback(chunk, 5);
+    expect(result.prompt).toContain("# Tell me about cats");
+    expect(result.prompt).toContain("Cats are beloved companions worldwide.");
+    expect(result.response).toContain("[^5_1]");
+  });
+
+  it("handles chunk where every paragraph has citations (splits at first)", () => {
+    const chunk = `# What is AI?
+
+Artificial intelligence is a field of study.[^2_1]
+
+It encompasses machine learning and deep learning.[^2_2]`;
+
+    const result = splitPromptFromResponseFallback(chunk, 2);
+    expect(result.prompt).toBe("# What is AI?");
+    expect(result.response).toContain("[^2_1]");
+    expect(result.response).toContain("[^2_2]");
+  });
+});
