@@ -784,7 +784,61 @@
   }
 
   function dismissPerplexityToasts() {
-    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+    // 1. Dispatch Escape keydown and keyup events on document and active element with full backwards-compatibility options
+    const opts = {
+      key: "Escape",
+      code: "Escape",
+      keyCode: 27,
+      which: 27,
+      bubbles: true,
+      cancelable: true
+    };
+
+    try {
+      const activeEl = document.activeElement || document.body || document;
+      activeEl.dispatchEvent(new KeyboardEvent("keydown", opts));
+      activeEl.dispatchEvent(new KeyboardEvent("keyup", opts));
+      if (activeEl !== document) {
+        document.dispatchEvent(new KeyboardEvent("keydown", opts));
+        document.dispatchEvent(new KeyboardEvent("keyup", opts));
+      }
+    } catch (e) {
+      console.warn("[PPLX Obsidian Exporter] KeyboardEvent dispatch failed:", e);
+    }
+
+    // 2. Scan the DOM for progress texts inside toast containers and hide/remove them
+    const textsToSuppress = ["Exporting thread", "Export succeeded", "Exporting..."];
+
+    const performSuppression = () => {
+      try {
+        const toastContainers = document.querySelectorAll(
+          "[data-sonner-toast], [data-radix-toast], [role='status'], [role='alert'], .toast, .notification"
+        );
+        for (const container of toastContainers) {
+          const text = container.textContent || "";
+          if (textsToSuppress.some(t => text.includes(t))) {
+            container.style.display = "none";
+            try {
+              container.remove();
+            } catch (_) {}
+          }
+        }
+      } catch (e) {
+        console.warn("[PPLX Obsidian Exporter] DOM suppression failed:", e);
+      }
+    };
+
+    // Run immediately
+    performSuppression();
+
+    // Poll for the next 1.5 seconds to suppress asynchronously spawned toasts
+    const start = Date.now();
+    const interval = setInterval(() => {
+      performSuppression();
+      if (Date.now() - start > 1500) {
+        clearInterval(interval);
+      }
+    }, 50);
   }
 
   async function handleCandidateHref(href, anchorEl) {
