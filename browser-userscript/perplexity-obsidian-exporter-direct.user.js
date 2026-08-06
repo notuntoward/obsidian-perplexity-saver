@@ -36,10 +36,11 @@
       const el = document.createElement("div");
       el.id = "pplx-clip-toast";
       el.style.cssText = `
-        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-        z-index: 999999; padding: 10px 16px; border-radius: 8px;
-        font: 13px sans-serif; color: #fff; transition: opacity 0.3s;
+        position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
+        z-index: 999999; padding: 14px 22px; border-radius: 10px;
+        font: 15px sans-serif; font-weight: 500; color: #fff; transition: opacity 0.3s;
         pointer-events: none; max-width: 80vw; text-align: center;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
       `;
       document.body.appendChild(el);
       return el;

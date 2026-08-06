@@ -5,6 +5,7 @@ import { stripLeadingFrontmatterIfPresent, createDialogNote } from "./normalize/
 import { HeadlineOptions } from "./normalize/headlines";
 import { sanitizeFilename } from "./utils";
 import { groupLogicalTurns } from "./normalize/turns";
+import { DialogFile } from "./parsers/types";
 
 import { resolveSourceTitles } from "./scraper";
 
@@ -20,6 +21,7 @@ interface CreateNoteParams {
 	headlineOptions: HeadlineOptions;
 	autoFetchSourceTitles?: boolean;
 	sourceTitleMaxChars?: number;
+	prefetchedDialogPromise?: Promise<DialogFile>;
 }
 
 interface CreateNoteSuccess {
@@ -55,10 +57,24 @@ export async function createPerplexityNote(
 
 	// Defensively strip any pre-existing frontmatter the clipboard carries.
 	const { body: stripped, existingFrontmatter } = stripLeadingFrontmatterIfPresent(clipboardContent);
-	const dialog = detectAndParse(stripped);
 
-	// Fetch source titles if enabled
-	if (autoFetchSourceTitles) {
+	let dialog: DialogFile | undefined = undefined;
+	let needResolveSourceTitles = true;
+
+	if (params.prefetchedDialogPromise) {
+		try {
+			dialog = await params.prefetchedDialogPromise;
+			needResolveSourceTitles = false;
+		} catch (err) {
+			console.error("Error awaiting pre-fetched dialog, falling back:", err);
+		}
+	}
+
+	if (!dialog) {
+		dialog = detectAndParse(stripped);
+	}
+
+	if (needResolveSourceTitles && autoFetchSourceTitles) {
 		await resolveSourceTitles(dialog, {
 			autoFetchSourceTitles,
 			sourceTitleMaxChars,
