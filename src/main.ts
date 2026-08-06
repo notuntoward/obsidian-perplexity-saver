@@ -81,20 +81,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
-		// Keep the original command id and name as aliases so existing
-		// hotkeys/links continue to work, but they now go through the
-		// same normalized pipeline as the new "Import" command.
 		this.addCommand({
 			id: "import-ai-dialog-from-clipboard",
 			name: "Import AI dialog from clipboard",
-			editorCallback: async (editor: Editor, view: MarkdownView) => {
-				await this.startImport(editor, view);
-			},
-		});
-
-		this.addCommand({
-			id: "save-perplexity-note",
-			name: "Save AI dialog from clipboard",
 			editorCallback: async (editor: Editor, view: MarkdownView) => {
 				await this.startImport(editor, view);
 			},
