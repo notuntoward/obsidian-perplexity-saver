@@ -1,5 +1,5 @@
 import { App, Editor, MarkdownView, Notice, SuggestModal, TFile, prepareFuzzySearch, renderResults } from "obsidian";
-import { findPrunableSources, applyPrune } from "./prune";
+import { findSourcesWithNoDialog, applyNoDialogRemoval } from "./removeNoDialog";
 
 export interface TurnSuggestion {
 	turnNum: number;
@@ -115,7 +115,7 @@ export async function deleteDialogTurn(
 	app: App,
 	file: TFile,
 	turnNum: number
-): Promise<{ success: boolean; error?: string; prunedCount?: number }> {
+): Promise<{ success: boolean; error?: string; removedCount?: number }> {
 	const noteText = await app.vault.read(file);
 
 	// 1. Locate the block
@@ -140,20 +140,20 @@ export async function deleteDialogTurn(
 	// Clean up consecutive blank lines
 	const cleanedBody = updatedBody.replace(/\n{3,}/g, "\n\n");
 
-	// 3. Scoped Prune
-	const allPrunable = findPrunableSources(cleanedBody);
+	// 3. Scoped Remove
+	const allNoDialog = findSourcesWithNoDialog(cleanedBody);
 	const prefix = `${turnNum}_`;
-	const scopedPrunable = allPrunable.filter((src) => src.id.startsWith(prefix));
+	const scopedNoDialog = allNoDialog.filter((src) => src.id.startsWith(prefix));
 
-	// Apply prune
-	const finalNoteText = applyPrune(cleanedBody, scopedPrunable);
+	// Apply removal of sources with no dialog
+	const finalNoteText = applyNoDialogRemoval(cleanedBody, scopedNoDialog);
 
 	// 4. Save to vault
 	await app.vault.modify(file, finalNoteText);
 
-	const fullyRemoved = scopedPrunable.filter((s) => s.survivingTurnIds.length === 0).length;
+	const fullyRemoved = scopedNoDialog.filter((s) => s.survivingTurnIds.length === 0).length;
 
-	return { success: true, prunedCount: fullyRemoved };
+	return { success: true, removedCount: fullyRemoved };
 }
 
 export function registerDeleteTurnCommand(
@@ -176,7 +176,7 @@ export function registerDeleteTurnCommand(
 					return;
 				}
 				new Notice(
-					`Deleted turn ${turnNum}.${result.prunedCount ? ` Pruned ${result.prunedCount} source(s).` : ""}`
+					`Deleted turn ${turnNum}.${result.removedCount ? ` Removed ${result.removedCount} source(s) with no dialog.` : ""}`
 				);
 			}).open();
 		},

@@ -19,7 +19,7 @@ import { DialogTurn, NoteRole } from "../parsers/types";
  *     the level-2 prompt heading, and never collides with it.
  *
  * The block ID `^turn-N` is the stable machine-readable anchor for
- * everything else (prune, append, getSurvivingTurnIds, getNextTurnIndex).
+ * everything else (removeNoDialog, append, getSurvivingTurnIds, getNextTurnIndex).
  */
 export function renderTurn(
 	role: NoteRole,
@@ -179,7 +179,7 @@ export function getNextTurnIndex(noteText: string): number {
 
 /**
  * Scan the body and return the set of turn IDs that still have at least
- * one `^turn-N` anchor present. Used by the prune command to decide
+ * one `^turn-N` anchor present. Used by the removeNoDialog command to decide
  * which source lines are orphaned.
  */
 export function getSurvivingTurnIds(noteText: string): Set<number> {

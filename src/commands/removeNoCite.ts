@@ -2,7 +2,7 @@ import { App, Notice, TFile } from "obsidian";
 import { parseSourceLine, ParsedSourceLine } from "../zotero/sourceLinkState";
 import { extractSourcesSection } from "../normalize/buildNote";
 
-export interface UncitedSource extends ParsedSourceLine {
+export interface SourceWithNoCite extends ParsedSourceLine {
 	rawLine: string;
 }
 
@@ -68,12 +68,12 @@ export function extractAiResponseFromTurnBlock(blockText: string): string {
  * Find all sources in `# Sources` that are not cited in the AI response part
  * of any dialog turn in the note.
  */
-export function findUncitedSources(noteText: string): UncitedSource[] {
+export function findSourcesWithNoCite(noteText: string): SourceWithNoCite[] {
 	const turnBlocks = getTurnBlocks(noteText);
 	const aiResponses = turnBlocks.map(extractAiResponseFromTurnBlock);
 
 	const sourcesText = extractSourcesSection(noteText);
-	const out: UncitedSource[] = [];
+	const out: SourceWithNoCite[] = [];
 
 	for (const line of sourcesText.split("\n")) {
 		const parsed = parseSourceLine(line);
@@ -91,9 +91,9 @@ export function findUncitedSources(noteText: string): UncitedSource[] {
 }
 
 /**
- * Remove the lines corresponding to uncited sources and clean up blank lines.
+ * Remove the lines corresponding to sources with no cite and clean up blank lines.
  */
-export function applyRemoveUncited(noteText: string, toRemove: UncitedSource[]): string {
+export function applyRemoveSourcesWithNoCite(noteText: string, toRemove: SourceWithNoCite[]): string {
 	if (toRemove.length === 0) return noteText;
 	const linesToRemove = new Set(toRemove.map((s) => s.rawLine));
 	const updated = noteText
@@ -104,14 +104,14 @@ export function applyRemoveUncited(noteText: string, toRemove: UncitedSource[]):
 }
 
 /**
- * Register the "Remove uncited sources" command on the plugin.
+ * Register the "Remove sources with no cite" command on the plugin.
  */
-export function registerRemoveUncitedCommand(
+export function registerRemoveSourcesWithNoCiteCommand(
 	plugin: { addCommand: (cmd: unknown) => unknown; app: App }
 ): void {
 	plugin.addCommand({
-		id: "remove-uncited-sources",
-		name: "Remove uncited sources in this dialog note",
+		id: "remove-sources-with-no-cite",
+		name: "Remove sources with no cite",
 		editorCallback: async (_editor: unknown, view: { file?: TFile }) => {
 			const file = view.file;
 			if (!file) {
@@ -119,14 +119,14 @@ export function registerRemoveUncitedCommand(
 				return;
 			}
 			const noteText = await plugin.app.vault.read(file);
-			const toRemove = findUncitedSources(noteText);
+			const toRemove = findSourcesWithNoCite(noteText);
 			if (toRemove.length === 0) {
-				new Notice("No uncited sources found.");
+				new Notice("No sources with no cite found.");
 				return;
 			}
-			const updated = applyRemoveUncited(noteText, toRemove);
+			const updated = applyRemoveSourcesWithNoCite(noteText, toRemove);
 			await plugin.app.vault.modify(file, updated);
-			new Notice(`Removed ${toRemove.length} uncited source(s).`);
+			new Notice(`Removed ${toRemove.length} source(s) with no cite.`);
 		},
 	});
 }

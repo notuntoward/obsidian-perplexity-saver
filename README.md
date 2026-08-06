@@ -194,17 +194,17 @@ If you continue a conversation in your browser and want to save the new turns in
 
 This plugin provides two convenient commands to help keep your `# Sources` clean and relevant. Since both execute immediately and can be easily undone using standard Obsidian undo commands (`Ctrl+Z`), no confirmation modal is shown.
 
-### 1. Pruning Orphaned Sources
+### 1. Removing Sources with No Dialog
 If you manually delete a turn (e.g., removing a prompt callout and its accompanying AI response to tidy up a note), the citations tied exclusively to that turn will remain in the `# Sources` block at the bottom.
 
-To clean this up, run the command: **"Prune orphaned sources in this dialog note"**.
+To clean this up, run the command: **"Remove sources with no dialog"**.
 - **Full removal**: If a source was only cited by the deleted turn, it is deleted entirely.
 - **Partial adjustment**: If a source is still cited by other surviving turns, it is kept but its metadata reference to the deleted turn is removed.
 
-### 2. Removing Uncited Sources
+### 2. Removing Sources with No Cite
 If you edit an AI response and delete the footnote citation reference (e.g. removing `[^1_1]` from the response text), the source link itself remains under `# Sources`.
 
-To clean this up, run the command: **"Remove uncited sources in this dialog note"**.
+To clean this up, run the command: **"Remove sources with no cite"**.
 - This scans all logical dialog turns, extracts the AI response parts, and identifies any source lines under `# Sources` that are no longer cited in any AI response.
 - Any completely uncited sources are removed immediately from the note.
 

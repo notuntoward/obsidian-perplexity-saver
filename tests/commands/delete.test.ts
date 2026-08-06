@@ -22,7 +22,7 @@ describe("deleteDialogTurn", () => {
 		expect(result.error).toContain("Could not find turn 3");
 	});
 
-	it("successfully deletes the targeted turn block and prunes scoped sources", async () => {
+	it("successfully deletes the targeted turn block and removes scoped sources with no dialog", async () => {
 		const existingText = `# Dialog
 
 ## First question ^turn-1
@@ -57,7 +57,7 @@ Third answer text[^3_1]
 
 		const result = await deleteDialogTurn(mockApp, mockFile, 2);
 		expect(result.success).toBe(true);
-		expect(result.prunedCount).toBe(1); // source B [^2_1] is fully pruned since turn 2 is deleted
+		expect(result.removedCount).toBe(1); // source B [^2_1] is fully removed since turn 2 is deleted
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
 		// Turn 2 is deleted

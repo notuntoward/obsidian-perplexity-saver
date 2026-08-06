@@ -3,7 +3,7 @@ import { parseSourceLine, renderSourceLine, ParsedSourceLine } from "../zotero/s
 import { getSurvivingTurnIds } from "../normalize/turns";
 import { extractSourcesSection } from "../normalize/buildNote";
 
-export interface PrunableSource extends ParsedSourceLine {
+export interface SourceWithNoDialog extends ParsedSourceLine {
 	rawLine: string;
 	/** Turn IDs on this source's ownership list that no longer exist. */
 	deadTurnIds: number[];
@@ -15,14 +15,14 @@ export interface PrunableSource extends ParsedSourceLine {
  * Find every source line that cites at least one turn no longer present
  * in the note body (a `^turn-N-*` anchor was deleted). A source is only
  * ever fully removed once ALL of its citing turns are gone; if some but
- * not all of its owning turns survive, it is still "prunable" in the
+ * not all of its owning turns survive, it is still removable in the
  * sense that its stale turn reference(s) need to be dropped, but the
- * source line itself is kept (see applyPrune).
+ * source line itself is kept (see applyNoDialogRemoval).
  */
-export function findPrunableSources(noteText: string): PrunableSource[] {
+export function findSourcesWithNoDialog(noteText: string): SourceWithNoDialog[] {
 	const survivingIds = getSurvivingTurnIds(noteText);
 	const sourcesText = extractSourcesSection(noteText);
-	const out: PrunableSource[] = [];
+	const out: SourceWithNoDialog[] = [];
 	for (const line of sourcesText.split("\n")) {
 		const parsed = parseSourceLine(line);
 		if (!parsed) continue;
@@ -35,13 +35,13 @@ export function findPrunableSources(noteText: string): PrunableSource[] {
 }
 
 /**
- * Apply the prune. For each prunable source: if none of its citing turns
+ * Apply removal of sources with no dialog. For each source: if none of its citing turns
  * survive, remove the line entirely. If some but not all survive, rewrite
  * the line with only the surviving turn IDs in its ownership list, leaving
  * everything else (id, link state, url) untouched. Lines not in the
- * prunable set are left completely alone.
+ * set to remove are left completely alone.
  */
-export function applyPrune(noteText: string, toRemove: PrunableSource[]): string {
+export function applyNoDialogRemoval(noteText: string, toRemove: SourceWithNoDialog[]): string {
 	if (toRemove.length === 0) return noteText;
 	const byRawLine = new Map(toRemove.map((s) => [s.rawLine, s]));
 	return noteText
@@ -57,14 +57,14 @@ export function applyPrune(noteText: string, toRemove: PrunableSource[]): string
 }
 
 /**
- * Register the "Prune orphaned sources" command on the plugin.
+ * Register the "Remove sources with no dialog" command on the plugin.
  */
-export function registerPruneSourcesCommand(
+export function registerRemoveSourcesWithNoDialogCommand(
 	plugin: { addCommand: (cmd: unknown) => unknown; app: App }
 ): void {
 	plugin.addCommand({
-		id: "prune-orphaned-sources",
-		name: "Prune orphaned sources in this dialog note",
+		id: "remove-sources-with-no-dialog",
+		name: "Remove sources with no dialog",
 		editorCallback: async (_editor: unknown, view: { file?: TFile }) => {
 			const file = view.file;
 			if (!file) {
@@ -72,17 +72,17 @@ export function registerPruneSourcesCommand(
 				return;
 			}
 			const noteText = await plugin.app.vault.read(file);
-			const toRemove = findPrunableSources(noteText);
+			const toRemove = findSourcesWithNoDialog(noteText);
 			if (toRemove.length === 0) {
-				new Notice("No orphaned sources found.");
+				new Notice("No sources with no dialog found.");
 				return;
 			}
-			const updated = applyPrune(noteText, toRemove);
+			const updated = applyNoDialogRemoval(noteText, toRemove);
 			await plugin.app.vault.modify(file, updated);
 			const fullyRemoved = toRemove.filter((s) => s.survivingTurnIds.length === 0).length;
 			const adjusted = toRemove.length - fullyRemoved;
 			new Notice(
-				`Removed ${fullyRemoved} source(s)${adjusted ? `, adjusted ${adjusted} other(s)` : ""}.`
+				`Removed ${fullyRemoved} source(s) with no dialog${adjusted ? `, adjusted ${adjusted} other(s)` : ""}.`
 			);
 		},
 	});
