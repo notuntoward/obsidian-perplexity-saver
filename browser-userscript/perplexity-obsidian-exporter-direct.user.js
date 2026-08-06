@@ -778,6 +778,15 @@
     }
   }
 
+  function isExportDownload(href, download) {
+    return (download && /\.(md|markdown|txt)$/i.test(download)) ||
+           (href && (href.startsWith("blob:") || href.startsWith("data:")));
+  }
+
+  function dismissPerplexityToasts() {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  }
+
   async function handleCandidateHref(href, anchorEl) {
     let text = null;
     try {
@@ -807,6 +816,8 @@
     const success = await copyText(text);
     if (!success) {
       OrigAnchorClick.call(anchorEl);
+    } else {
+      dismissPerplexityToasts();
     }
   }
 
@@ -814,12 +825,10 @@
   HTMLAnchorElement.prototype.click = function () {
     try {
       const href = this.href || "";
-      const looksLikeExport =
-        (this.download && /\.(md|markdown|txt)$/i.test(this.download)) ||
-        href.startsWith("blob:") ||
-        href.startsWith("data:");
+      const looksLikeExport = isExportDownload(href, this.download);
       if (looksLikeExport) {
         handleCandidateHref(href, this);
+        dismissPerplexityToasts();
         return;
       }
     } catch (err) {
