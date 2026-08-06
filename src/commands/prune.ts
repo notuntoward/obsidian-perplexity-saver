@@ -1,5 +1,5 @@
-import { App, Modal, Notice, TFile } from "obsidian";
-import { parseSourceLine, renderSourceLine, ParsedSourceLine, toBlockId } from "../zotero/sourceLinkState";
+import { App, Notice, TFile } from "obsidian";
+import { parseSourceLine, renderSourceLine, ParsedSourceLine } from "../zotero/sourceLinkState";
 import { getSurvivingTurnIds } from "../normalize/turns";
 import { extractSourcesSection } from "../normalize/buildNote";
 
@@ -32,80 +32,6 @@ export function findPrunableSources(noteText: string): PrunableSource[] {
 		out.push({ ...parsed, rawLine: line, deadTurnIds, survivingTurnIds });
 	}
 	return out;
-}
-
-export class ConfirmPruneSourcesModal extends Modal {
-	constructor(
-		app: App,
-		private toRemove: PrunableSource[],
-		private onConfirm: () => void
-	) {
-		super(app);
-	}
-
-	onOpen(): void {
-		const { contentEl } = this;
-		contentEl.empty();
-		contentEl.createEl("h2", { text: "Prune orphaned sources?" });
-
-		if (this.toRemove.length === 0) {
-			contentEl.createEl("p", {
-				text: "No orphaned sources found. Nothing to remove.",
-			});
-			const closeBtn = contentEl.createEl("button", { text: "Close" });
-			closeBtn.onclick = () => this.close();
-			return;
-		}
-
-		const fullyRemoved = this.toRemove.filter((s) => s.survivingTurnIds.length === 0);
-		const partiallyUpdated = this.toRemove.filter((s) => s.survivingTurnIds.length > 0);
-
-		contentEl.createEl("p", {
-			text: `The following ${this.toRemove.length} source(s) reference at least one deleted turn:`,
-		});
-
-		const list = contentEl.createEl("ul");
-		for (const src of this.toRemove) {
-			const item = list.createEl("li");
-			const title =
-				src.state.kind === "raw"
-					? src.state.title ?? src.state.url
-					: src.state.kind === "zotero-item"
-						? `[Zotero: ${src.state.citekey}]`
-						: `[[${src.state.citekey}]]`;
-			item.createEl("strong", { text: `[^${src.id}] ` });
-			const deadLabel = src.deadTurnIds.length === 1 ? `turn ${src.deadTurnIds[0]}` : `turns ${src.deadTurnIds.join(", ")}`;
-			const action =
-				src.survivingTurnIds.length === 0
-					? `will be removed (only cited from ${deadLabel}, now deleted)`
-					: `will be kept, dropping its reference to deleted ${deadLabel} (still cited from turn ${src.survivingTurnIds.join(", ")})`;
-			item.appendText(`${title} - ${action}`);
-		}
-
-		const btnRow = contentEl.createDiv({ cls: "modal-button-row" });
-		const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
-		cancelBtn.onclick = () => this.close();
-
-		const summary =
-			fullyRemoved.length > 0 && partiallyUpdated.length > 0
-				? `Update ${this.toRemove.length} source(s) (${fullyRemoved.length} removed, ${partiallyUpdated.length} adjusted)`
-				: fullyRemoved.length > 0
-					? `Remove ${fullyRemoved.length} source(s)`
-					: `Adjust ${partiallyUpdated.length} source(s)`;
-
-		const confirmBtn = btnRow.createEl("button", {
-			text: summary,
-			cls: "mod-warning",
-		});
-		confirmBtn.onclick = () => {
-			this.onConfirm();
-			this.close();
-		};
-	}
-
-	onClose(): void {
-		this.contentEl.empty();
-	}
 }
 
 /**
@@ -147,15 +73,17 @@ export function registerPruneSourcesCommand(
 			}
 			const noteText = await plugin.app.vault.read(file);
 			const toRemove = findPrunableSources(noteText);
-			new ConfirmPruneSourcesModal(plugin.app, toRemove, async () => {
-				const updated = applyPrune(noteText, toRemove);
-				await plugin.app.vault.modify(file, updated);
-				const fullyRemoved = toRemove.filter((s) => s.survivingTurnIds.length === 0).length;
-				const adjusted = toRemove.length - fullyRemoved;
-				new Notice(
-					`Removed ${fullyRemoved} source(s)${adjusted ? `, adjusted ${adjusted} other(s)` : ""}.`
-				);
-			}).open();
+			if (toRemove.length === 0) {
+				new Notice("No orphaned sources found.");
+				return;
+			}
+			const updated = applyPrune(noteText, toRemove);
+			await plugin.app.vault.modify(file, updated);
+			const fullyRemoved = toRemove.filter((s) => s.survivingTurnIds.length === 0).length;
+			const adjusted = toRemove.length - fullyRemoved;
+			new Notice(
+				`Removed ${fullyRemoved} source(s)${adjusted ? `, adjusted ${adjusted} other(s)` : ""}.`
+			);
 		},
 	});
 }
