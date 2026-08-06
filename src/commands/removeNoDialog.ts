@@ -15,9 +15,9 @@ export interface SourceWithNoDialog extends ParsedSourceLine {
  * Find every source line that cites at least one turn no longer present
  * in the note body (a `^turn-N-*` anchor was deleted). A source is only
  * ever fully removed once ALL of its citing turns are gone; if some but
- * not all of its owning turns survive, it is still "prunable" in the
+ * not all of its owning turns survive, it is still removable in the
  * sense that its stale turn reference(s) need to be dropped, but the
- * source line itself is kept (see applyRemoveSourcesWithNoDialog).
+ * source line itself is kept (see applyNoDialogRemoval).
  */
 export function findSourcesWithNoDialog(noteText: string): SourceWithNoDialog[] {
 	const survivingIds = getSurvivingTurnIds(noteText);
@@ -35,13 +35,13 @@ export function findSourcesWithNoDialog(noteText: string): SourceWithNoDialog[] 
 }
 
 /**
- * Apply the remove sources with no dialog action. For each prunable source: if none of its citing turns
+ * Apply removal of sources with no dialog. For each source: if none of its citing turns
  * survive, remove the line entirely. If some but not all survive, rewrite
  * the line with only the surviving turn IDs in its ownership list, leaving
  * everything else (id, link state, url) untouched. Lines not in the
- * prunable set are left completely alone.
+ * set to remove are left completely alone.
  */
-export function applyRemoveSourcesWithNoDialog(noteText: string, toRemove: SourceWithNoDialog[]): string {
+export function applyNoDialogRemoval(noteText: string, toRemove: SourceWithNoDialog[]): string {
 	if (toRemove.length === 0) return noteText;
 	const byRawLine = new Map(toRemove.map((s) => [s.rawLine, s]));
 	return noteText
@@ -77,7 +77,7 @@ export function registerRemoveSourcesWithNoDialogCommand(
 				new Notice("No sources with no dialog found.");
 				return;
 			}
-			const updated = applyRemoveSourcesWithNoDialog(noteText, toRemove);
+			const updated = applyNoDialogRemoval(noteText, toRemove);
 			await plugin.app.vault.modify(file, updated);
 			const fullyRemoved = toRemove.filter((s) => s.survivingTurnIds.length === 0).length;
 			const adjusted = toRemove.length - fullyRemoved;

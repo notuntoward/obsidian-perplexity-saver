@@ -19,7 +19,7 @@
  *
  * Ownership model: a source's `(turn N)` / `(turns N, M)` tag records every
  * turn that has ever cited it, not just the turn that introduced it. This
- * lets pruning/removal distinguish "this source's only citing turn was deleted,
+ * lets removal distinguish "this source's only citing turn was deleted,
  * remove it" from "one of several citing turns was deleted, just drop that
  * turn from the ownership list and keep the source" (see removeNoDialog.ts).
  */
