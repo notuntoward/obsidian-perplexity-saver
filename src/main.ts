@@ -130,16 +130,26 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		// Start pre-fetching source titles in parallel immediately as soon as command is run
 		let prefetchedDialogPromise: Promise<DialogFile> | undefined = undefined;
-		if (this.settings.autoFetchSourceTitles) {
-			const { body: stripped } = stripLeadingFrontmatterIfPresent(noteContent);
-			const dialog = detectAndParse(stripped);
-			prefetchedDialogPromise = (async () => {
-				await resolveSourceTitles(dialog, {
-					autoFetchSourceTitles: this.settings.autoFetchSourceTitles,
-					sourceTitleMaxChars: this.settings.sourceTitleMaxChars,
-				});
-				return dialog;
-			})();
+		try {
+			if (this.settings.autoFetchSourceTitles) {
+				const { body: stripped } = stripLeadingFrontmatterIfPresent(noteContent);
+				const dialog = detectAndParse(stripped);
+				prefetchedDialogPromise = (async () => {
+					try {
+						await resolveSourceTitles(dialog, {
+							autoFetchSourceTitles: this.settings.autoFetchSourceTitles,
+							sourceTitleMaxChars: this.settings.sourceTitleMaxChars,
+						});
+						return dialog;
+					} catch (err) {
+						console.error("Error pre-fetching source titles asynchronously:", err);
+						throw err;
+					}
+				})();
+			}
+		} catch (err) {
+			console.error("Error setting up pre-fetched dialog promise:", err);
+			prefetchedDialogPromise = undefined;
 		}
 
 		const pos = selection.from;

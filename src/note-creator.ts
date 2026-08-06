@@ -58,28 +58,27 @@ export async function createPerplexityNote(
 	// Defensively strip any pre-existing frontmatter the clipboard carries.
 	const { body: stripped, existingFrontmatter } = stripLeadingFrontmatterIfPresent(clipboardContent);
 
-	let dialog: DialogFile;
+	let dialog: DialogFile | undefined = undefined;
+	let needResolveSourceTitles = true;
+
 	if (params.prefetchedDialogPromise) {
 		try {
 			dialog = await params.prefetchedDialogPromise;
+			needResolveSourceTitles = false;
 		} catch (err) {
-			console.error("Error awaiting pre-fetched dialog:", err);
-			dialog = detectAndParse(stripped);
-			if (autoFetchSourceTitles) {
-				await resolveSourceTitles(dialog, {
-					autoFetchSourceTitles,
-					sourceTitleMaxChars,
-				});
-			}
+			console.error("Error awaiting pre-fetched dialog, falling back:", err);
 		}
-	} else {
+	}
+
+	if (!dialog) {
 		dialog = detectAndParse(stripped);
-		if (autoFetchSourceTitles) {
-			await resolveSourceTitles(dialog, {
-				autoFetchSourceTitles,
-				sourceTitleMaxChars,
-			});
-		}
+	}
+
+	if (needResolveSourceTitles && autoFetchSourceTitles) {
+		await resolveSourceTitles(dialog, {
+			autoFetchSourceTitles,
+			sourceTitleMaxChars,
+		});
 	}
 
 	const { body } = buildNoteBody(dialog, { collapseBlankLines, collapsePromptCallouts, headlineOptions });
