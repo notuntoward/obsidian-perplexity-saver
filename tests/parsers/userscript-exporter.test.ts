@@ -575,13 +575,50 @@ It encompasses machine learning and deep learning.[^2_2]`;
 });
 
 // =====================================================================
-// Regression test for progress prompt / toast suppression
+// Regression tests for progress prompt / toast suppression
 // =====================================================================
 describe("Userscript Exporter progress prompt suppression", () => {
-  it("dispatches the Escape event to suppress progress prompts when intercepting an export download", () => {
-    let escapeDispatchedCount = 0;
+  const getIsExportDownload = (): ((href: string, download: string) => boolean) => {
+    const userscriptPath = path.join(__dirname, "../../browser-userscript/perplexity-obsidian-exporter-direct.user.js");
+    const content = fs.readFileSync(userscriptPath, "utf-8");
+    const match = content.match(/function isExportDownload\([\s\S]*?\}\n/);
+    if (!match) {
+      throw new Error("Could not find isExportDownload function in userscript");
+    }
+    return new Function("return (" + match[0] + ")")();
+  };
 
-    // Plain JS mock of document.dispatchEvent and KeyboardEvent
+  const getDismissPerplexityToasts = (mockDocument: any): (() => void) => {
+    const userscriptPath = path.join(__dirname, "../../browser-userscript/perplexity-obsidian-exporter-direct.user.js");
+    const content = fs.readFileSync(userscriptPath, "utf-8");
+    const match = content.match(/function dismissPerplexityToasts\([\s\S]*?\}\n/);
+    if (!match) {
+      throw new Error("Could not find dismissPerplexityToasts function in userscript");
+    }
+    const mockKeyboardEvent = class {
+      key: string;
+      code: string;
+      bubbles: boolean;
+      constructor(type: string, dict?: any) {
+        this.key = dict?.key || "";
+        this.code = dict?.code || "";
+        this.bubbles = !!dict?.bubbles;
+      }
+    };
+    return new Function("document", "KeyboardEvent", "return (" + match[0] + ")")(mockDocument, mockKeyboardEvent);
+  };
+
+  it("identifies export downloads and dispatches the Escape event using production functions", () => {
+    const isExportDownload = getIsExportDownload();
+
+    // Positive case: markdown export download with blob URL
+    expect(isExportDownload("blob:https://www.perplexity.ai/abc-123", "export.md")).toBe(true);
+
+    // Positive case: data URL
+    expect(isExportDownload("data:text/markdown;base64,abc", "")).toBe(true);
+
+    // Escape dispatch mock
+    let escapeDispatchedCount = 0;
     const mockDocument = {
       dispatchEvent(event: any) {
         if (event && event.key === "Escape" && event.code === "Escape" && event.bubbles) {
@@ -591,31 +628,22 @@ describe("Userscript Exporter progress prompt suppression", () => {
       }
     };
 
-    const mockAnchor = {
-      href: "blob:https://www.perplexity.ai/abc-123",
-      download: "export.md",
-    };
+    const dismissPerplexityToasts = getDismissPerplexityToasts(mockDocument);
+    dismissPerplexityToasts();
 
-    let clickIntercepted = false;
-
-    // Simulate HTMLAnchorElement prototype click override
-    const clickOverride = function (this: any) {
-      const href = this.href || "";
-      const looksLikeExport =
-        (this.download && /\.(md|markdown|txt)$/i.test(this.download)) ||
-        href.startsWith("blob:") ||
-        href.startsWith("data:");
-      if (looksLikeExport) {
-        clickIntercepted = true;
-        mockDocument.dispatchEvent({ key: "Escape", code: "Escape", bubbles: true } as any);
-        return;
-      }
-    };
-
-    // Trigger mock click
-    clickOverride.call(mockAnchor);
-
-    expect(clickIntercepted).toBe(true);
     expect(escapeDispatchedCount).toBe(1);
+  });
+
+  it("does not identify non-export links (negative test cases)", () => {
+    const isExportDownload = getIsExportDownload();
+
+    // Negative case: download missing / non-export extension and non-blob/data href
+    expect(isExportDownload("https://www.perplexity.ai/somefile.pdf", undefined as unknown as string)).toBe(false);
+
+    // Negative case: empty download and normal HTTPS href
+    expect(isExportDownload("https://www.perplexity.ai/page", "")).toBe(false);
+
+    // Negative case: other extension like .pdf and normal HTTPS url
+    expect(isExportDownload("https://www.perplexity.ai/abc-123.pdf", "file.pdf")).toBe(false);
   });
 });

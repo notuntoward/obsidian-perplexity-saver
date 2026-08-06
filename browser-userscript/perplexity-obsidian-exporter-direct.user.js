@@ -778,6 +778,15 @@
     }
   }
 
+  function isExportDownload(href, download) {
+    return (download && /\.(md|markdown|txt)$/i.test(download)) ||
+           (href && (href.startsWith("blob:") || href.startsWith("data:")));
+  }
+
+  function dismissPerplexityToasts() {
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+  }
+
   async function handleCandidateHref(href, anchorEl) {
     let text = null;
     try {
@@ -808,8 +817,7 @@
     if (!success) {
       OrigAnchorClick.call(anchorEl);
     } else {
-      // Dismiss standard Perplexity success notifications and any leftover menus by dispatching an Escape keydown event.
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      dismissPerplexityToasts();
     }
   }
 
@@ -817,14 +825,10 @@
   HTMLAnchorElement.prototype.click = function () {
     try {
       const href = this.href || "";
-      const looksLikeExport =
-        (this.download && /\.(md|markdown|txt)$/i.test(this.download)) ||
-        href.startsWith("blob:") ||
-        href.startsWith("data:");
+      const looksLikeExport = isExportDownload(href, this.download);
       if (looksLikeExport) {
         handleCandidateHref(href, this);
-        // Immediately dismiss standard Perplexity progress prompts (e.g. "Exporting thread...") by dispatching an Escape keydown event.
-        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+        dismissPerplexityToasts();
         return;
       }
     } catch (err) {
