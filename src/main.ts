@@ -2,10 +2,10 @@ import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, T
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
 import { createPerplexityNote } from "./note-creator";
-import { registerPruneSourcesCommand } from "./commands/prune";
+import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
 import { registerSyncCommand } from "./commands/sync";
 import { registerDeleteTurnCommand } from "./commands/delete";
-import { registerRemoveUncitedCommand } from "./commands/removeUncited";
+import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 
@@ -92,8 +92,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		registerSyncCommand(this);
 		registerDeleteTurnCommand(this);
-		registerPruneSourcesCommand(this);
-		registerRemoveUncitedCommand(this);
+		registerRemoveSourcesWithNoDialogCommand(this);
+		registerRemoveSourcesWithNoCiteCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
 	}

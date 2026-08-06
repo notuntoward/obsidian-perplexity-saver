@@ -1,5 +1,5 @@
 import { App, Editor, MarkdownView, Notice, SuggestModal, TFile, prepareFuzzySearch, renderResults } from "obsidian";
-import { findPrunableSources, applyPrune } from "./prune";
+import { findSourcesWithNoDialog, applyRemoveSourcesWithNoDialog } from "./removeNoDialog";
 
 export interface TurnSuggestion {
 	turnNum: number;
@@ -140,13 +140,13 @@ export async function deleteDialogTurn(
 	// Clean up consecutive blank lines
 	const cleanedBody = updatedBody.replace(/\n{3,}/g, "\n\n");
 
-	// 3. Scoped Prune
-	const allPrunable = findPrunableSources(cleanedBody);
+	// 3. Scoped Remove/Prune
+	const allPrunable = findSourcesWithNoDialog(cleanedBody);
 	const prefix = `${turnNum}_`;
 	const scopedPrunable = allPrunable.filter((src) => src.id.startsWith(prefix));
 
-	// Apply prune
-	const finalNoteText = applyPrune(cleanedBody, scopedPrunable);
+	// Apply prune / remove sources with no dialog
+	const finalNoteText = applyRemoveSourcesWithNoDialog(cleanedBody, scopedPrunable);
 
 	// 4. Save to vault
 	await app.vault.modify(file, finalNoteText);

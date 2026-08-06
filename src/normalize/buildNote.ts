@@ -13,7 +13,7 @@ interface SourceEntry {
 /**
  * Build the body of a normalized AI dialog note from a parsed DialogFile.
  * This is the single function that consumes a DialogFile and produces the
- * uniform markdown the rest of the plugin (append, prune, relinker) reads.
+ * uniform markdown the rest of the plugin (append, removeNoDialog, relinker) reads.
  *
  * Behavior:
  *   - A prompt and the AI response immediately following it are one
@@ -32,9 +32,9 @@ interface SourceEntry {
  *     on-disk format is exactly what the future relinker expects.
  *   - A source cited by more than one turn (in this call, or reused from
  *     `existingSourceText` on append) records every citing turn's ID, e.g.
- *     `(turns 2, 5)`, not just the first. This is what lets pruning keep a
+ *     `(turns 2, 5)`, not just the first. This is what lets removeNoDialog keep a
  *     source alive as long as any one of its citing turns still exists
- *     (see prune.ts), instead of deleting it the moment the turn that
+ *     (see removeNoDialog.ts), instead of deleting it the moment the turn that
  *     happened to introduce it first is removed.
  *   - If `existingSourceText` is provided (e.g. when appending to a note
  *     that already has a # Sources block), the returned `sourceLines` is

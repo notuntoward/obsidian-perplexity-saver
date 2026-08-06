@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
 	getTurnBlocks,
 	extractAiResponseFromTurnBlock,
-	findUncitedSources,
-	applyRemoveUncited,
-} from "../../src/commands/removeUncited";
+	findSourcesWithNoCite,
+	applyRemoveSourcesWithNoCite,
+} from "../../src/commands/removeNoCite";
 
 describe("getTurnBlocks", () => {
 	it("correctly identifies and extracts turn blocks", () => {
@@ -66,7 +66,7 @@ AI response here without prompt`;
 	});
 });
 
-describe("findUncitedSources", () => {
+describe("findSourcesWithNoCite", () => {
 	it("correctly flags sources not cited in any AI response", () => {
 		const note = `---
 ai-source-vendor: perplexity
@@ -94,7 +94,7 @@ response 2 without citations
 [^1_2]: [Page 2](https://bar/)
 [^2_1]: [Page 3](https://baz/)
 `;
-		const uncited = findUncitedSources(note);
+		const uncited = findSourcesWithNoCite(note);
 		expect(uncited).toHaveLength(2);
 		// [^1_2] is only cited in the prompt callout, so it's considered uncited in AI response.
 		// [^2_1] is not cited anywhere, so it is uncited.
@@ -105,7 +105,7 @@ response 2 without citations
 	});
 });
 
-describe("applyRemoveUncited", () => {
+describe("applyRemoveSourcesWithNoCite", () => {
 	it("removes flagged uncited lines from note text", () => {
 		const note = `---
 ai-source-vendor: perplexity
@@ -125,8 +125,8 @@ response 1 with [^1_1]
 [^1_1]: [Page 1](https://foo/)
 [^1_2]: [Page 2](https://bar/)
 `;
-		const uncited = findUncitedSources(note);
-		const result = applyRemoveUncited(note, uncited);
+		const uncited = findSourcesWithNoCite(note);
+		const result = applyRemoveSourcesWithNoCite(note, uncited);
 		expect(result).toContain("[^1_1]: [Page 1](https://foo/)");
 		expect(result).not.toContain("[^1_2]");
 	});

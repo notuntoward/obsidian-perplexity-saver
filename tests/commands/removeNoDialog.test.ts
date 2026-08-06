@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { findPrunableSources, applyPrune } from "../../src/commands/prune";
+import { findSourcesWithNoDialog, applyRemoveSourcesWithNoDialog } from "../../src/commands/removeNoDialog";
 
-describe("findPrunableSources", () => {
+describe("findSourcesWithNoDialog", () => {
 	it("returns an empty list when no sources", () => {
-		expect(findPrunableSources("no sources here")).toEqual([]);
+		expect(findSourcesWithNoDialog("no sources here")).toEqual([]);
 	});
 
 	it("flags sources whose only citing turn is not present in the body (full removal case)", () => {
@@ -21,7 +21,7 @@ body
 [^2_1]: [B](https://b/)
 [^3_1]: [C](https://c/)
 `;
-		const prunable = findPrunableSources(note);
+		const prunable = findSourcesWithNoDialog(note);
 		expect(prunable).toHaveLength(1);
 		expect(prunable[0].id).toBe("2_1");
 		expect(prunable[0].turnIds).toEqual([2]);
@@ -38,11 +38,11 @@ body
 
 [^1_1]: [A](https://a/)
 `;
-		expect(findPrunableSources(note)).toEqual([]);
+		expect(findSourcesWithNoDialog(note)).toEqual([]);
 	});
 });
 
-describe("applyPrune", () => {
+describe("applyRemoveSourcesWithNoDialog", () => {
 	it("removes flagged source lines and leaves the rest intact", () => {
 		const note = `# Dialog
 
@@ -55,8 +55,8 @@ body
 [^1_1]: [A](https://a/)
 [^2_1]: [B](https://b/)
 `;
-		const prunable = findPrunableSources(note);
-		const updated = applyPrune(note, prunable);
+		const prunable = findSourcesWithNoDialog(note);
+		const updated = applyRemoveSourcesWithNoDialog(note, prunable);
 		expect(updated).toContain("[^1_1]: [A](https://a/)");
 		expect(updated).not.toContain("[^2_1]");
 		expect(updated).toContain("## AI response (turn 1) ^turn-1");
@@ -64,6 +64,6 @@ body
 
 	it("is a no-op when there is nothing to remove", () => {
 		const note = "anything";
-		expect(applyPrune(note, [])).toBe("anything");
+		expect(applyRemoveSourcesWithNoDialog(note, [])).toBe("anything");
 	});
 });
