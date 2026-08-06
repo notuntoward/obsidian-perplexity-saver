@@ -807,6 +807,9 @@
     const success = await copyText(text);
     if (!success) {
       OrigAnchorClick.call(anchorEl);
+    } else {
+      // Dismiss standard Perplexity success notifications and any leftover menus by dispatching an Escape keydown event.
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     }
   }
 
@@ -820,6 +823,8 @@
         href.startsWith("data:");
       if (looksLikeExport) {
         handleCandidateHref(href, this);
+        // Immediately dismiss standard Perplexity progress prompts (e.g. "Exporting thread...") by dispatching an Escape keydown event.
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
         return;
       }
     } catch (err) {

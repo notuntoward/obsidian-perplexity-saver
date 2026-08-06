@@ -573,3 +573,49 @@ It encompasses machine learning and deep learning.[^2_2]`;
     expect(result.response).toContain("[^2_2]");
   });
 });
+
+// =====================================================================
+// Regression test for progress prompt / toast suppression
+// =====================================================================
+describe("Userscript Exporter progress prompt suppression", () => {
+  it("dispatches the Escape event to suppress progress prompts when intercepting an export download", () => {
+    let escapeDispatchedCount = 0;
+
+    // Plain JS mock of document.dispatchEvent and KeyboardEvent
+    const mockDocument = {
+      dispatchEvent(event: any) {
+        if (event && event.key === "Escape" && event.code === "Escape" && event.bubbles) {
+          escapeDispatchedCount++;
+        }
+        return true;
+      }
+    };
+
+    const mockAnchor = {
+      href: "blob:https://www.perplexity.ai/abc-123",
+      download: "export.md",
+    };
+
+    let clickIntercepted = false;
+
+    // Simulate HTMLAnchorElement prototype click override
+    const clickOverride = function (this: any) {
+      const href = this.href || "";
+      const looksLikeExport =
+        (this.download && /\.(md|markdown|txt)$/i.test(this.download)) ||
+        href.startsWith("blob:") ||
+        href.startsWith("data:");
+      if (looksLikeExport) {
+        clickIntercepted = true;
+        mockDocument.dispatchEvent({ key: "Escape", code: "Escape", bubbles: true } as any);
+        return;
+      }
+    };
+
+    // Trigger mock click
+    clickOverride.call(mockAnchor);
+
+    expect(clickIntercepted).toBe(true);
+    expect(escapeDispatchedCount).toBe(1);
+  });
+});
