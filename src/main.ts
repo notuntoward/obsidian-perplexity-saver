@@ -5,6 +5,7 @@ import { createPerplexityNote } from "./note-creator";
 import { registerPruneSourcesCommand } from "./commands/prune";
 import { registerSyncCommand } from "./commands/sync";
 import { registerDeleteTurnCommand } from "./commands/delete";
+import { registerRemoveUncitedCommand } from "./commands/removeUncited";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 
@@ -92,6 +93,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerSyncCommand(this);
 		registerDeleteTurnCommand(this);
 		registerPruneSourcesCommand(this);
+		registerRemoveUncitedCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
 	}
