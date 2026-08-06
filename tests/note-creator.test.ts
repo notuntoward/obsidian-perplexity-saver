@@ -284,4 +284,42 @@ describe("createPerplexityNote", () => {
 
 		expect(capturedFm.tags).toContain("custom-tag");
 	});
+
+	it("uses prefetched dialog promise if provided", async () => {
+		const mockPrefetchedDialog = {
+			sourceVendor: "perplexity" as const,
+			sourceUrl: "https://perplexity.ai/test",
+			turns: [
+				{
+					role: "prompt" as const,
+					rawText: "prefetched query",
+					citations: [],
+				},
+				{
+					role: "ai" as const,
+					rawText: "prefetched answer",
+					citations: [],
+				},
+			],
+		};
+		const prefetchedDialogPromise = Promise.resolve(mockPrefetchedDialog);
+
+		const result = await createPerplexityNote({
+			app: mockApp,
+			activeFile: mockActiveFile,
+			clipboardContent: "any content",
+			filename: "test",
+			searchesFolder: "ai-searches",
+			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+			headlineOptions: { method: "lead" },
+			prefetchedDialogPromise,
+		});
+
+		expect(result.success).toBe(true);
+		expect(mockApp.vault.create).toHaveBeenCalledWith(
+			expect.stringContaining("test.md"),
+			expect.stringContaining("prefetched answer")
+		);
+	});
 });

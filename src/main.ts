@@ -8,6 +8,10 @@ import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
+import { detectAndParse } from "./parsers/detect";
+import { resolveSourceTitles } from "./scraper";
+import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
+import { DialogFile } from "./parsers/types";
 
 interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -69,6 +73,7 @@ interface InlineInputData {
 	defaultFilename: string;
 	activeFile: TFile;
 	editorView: EditorView;
+	prefetchedDialogPromise?: Promise<DialogFile>;
 }
 
 const startPerplexityInput = StateEffect.define<InlineInputData>();
@@ -123,6 +128,20 @@ export default class PerplexitySaverPlugin extends Plugin {
 			? cm6View.state.doc.sliceString(selection.from, selection.to)
 			: suggestFilenameFromClipboard(noteContent, "");
 
+		// Start pre-fetching source titles in parallel immediately as soon as command is run
+		let prefetchedDialogPromise: Promise<DialogFile> | undefined = undefined;
+		if (this.settings.autoFetchSourceTitles) {
+			const { body: stripped } = stripLeadingFrontmatterIfPresent(noteContent);
+			const dialog = detectAndParse(stripped);
+			prefetchedDialogPromise = (async () => {
+				await resolveSourceTitles(dialog, {
+					autoFetchSourceTitles: this.settings.autoFetchSourceTitles,
+					sourceTitleMaxChars: this.settings.sourceTitleMaxChars,
+				});
+				return dialog;
+			})();
+		}
+
 		const pos = selection.from;
 		cm6View.dispatch({
 			changes: hasSelection
@@ -136,6 +155,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				defaultFilename,
 				activeFile,
 				editorView: cm6View,
+				prefetchedDialogPromise,
 			}),
 		});
 	}
@@ -223,7 +243,7 @@ class InlineInputWidget extends WidgetType {
 	}
 
 	private async handleSubmit(filename: string): Promise<void> {
-		const { noteContent, activeFile, editorView, from, to } = this.data;
+		const { noteContent, activeFile, editorView, from, to, prefetchedDialogPromise } = this.data;
 
 		const result = await createPerplexityNote({
 			app: this.plugin.app,
@@ -237,6 +257,7 @@ class InlineInputWidget extends WidgetType {
 			headlineOptions: this.plugin.headlineOptions(),
 			autoFetchSourceTitles: this.plugin.settings.autoFetchSourceTitles,
 			sourceTitleMaxChars: this.plugin.settings.sourceTitleMaxChars,
+			prefetchedDialogPromise,
 		});
 
 		if (!result.success) {
