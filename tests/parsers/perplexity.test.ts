@@ -331,6 +331,26 @@ describe("parsePerplexityDialog — question-only export (no AI response text)",
 		expect(dialog.turns[1].role).toBe("prompt");
 		expect(dialog.turns[1].rawText).toContain("Is there an extension for it in vscode");
 	});
+
+	it("unwraps fenced code blocks surrounding prompts correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-07 19:44 PDT*
+
+# Question 1
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>Quote here</q> My follow up question
+\`\`\`
+
+AI response 2.`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(4);
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+	});
 });
 
 describe("parsePerplexityDialog — annotated format", () => {
