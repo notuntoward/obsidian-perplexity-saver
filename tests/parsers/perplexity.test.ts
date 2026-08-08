@@ -348,8 +348,16 @@ AI response 1.
 AI response 2.`;
 		const dialog = parsePerplexityDialog(raw);
 		expect(dialog.turns).toHaveLength(4);
+
+		// Ensure the fenced block became a prompt turn in the right position
 		expect(dialog.turns[2].role).toBe("prompt");
 		expect(dialog.turns[2].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+
+		// Strengthened assertions: no fenced artifacts, and surrounding turns are clean
+		expect(dialog.turns[2].rawText).not.toContain("```");
+		expect(dialog.turns[1].rawText).not.toMatch(/Quote here/);
+		expect(dialog.turns[3].rawText).not.toMatch(/Quote here/);
+		expect(dialog.turns[3].rawText).toContain("AI response 2.");
 	});
 });
 
@@ -409,6 +417,12 @@ AI response 2.
 		expect(dialog.turns).toHaveLength(2);
 		expect(dialog.turns[0].role).toBe("prompt");
 		expect(dialog.turns[0].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+
+		// Strengthened assertions: no fenced artifacts, and surrounding turns are clean
+		expect(dialog.turns[0].rawText).not.toContain("```");
+		expect(dialog.turns[1].role).toBe("ai");
+		expect(dialog.turns[1].rawText).not.toMatch(/Quote here/);
+		expect(dialog.turns[1].rawText).toContain("AI response 2.");
 	});
 
 	it("unwraps fenced code blocks with quotes and user text correctly (Tax Foundation case)", () => {
@@ -448,7 +462,10 @@ AI response 1.
 
 AI response 2.`;
 		const d1 = parsePerplexityDialog(raw1);
+		expect(d1.turns).toHaveLength(4);
+		expect(d1.turns[2].role).toBe("prompt");
 		expect(d1.turns[2].rawText).toBe("> Quote\n\n# Follow up");
+		expect(d1.turns[2].rawText).not.toContain("```");
 
 		// 2. Missing closing fence (fallback)
 		const raw2 = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
@@ -461,6 +478,77 @@ AI response 1.
 \`\`\`
 # <q>Quote</q> Follow up`;
 		const d2 = parsePerplexityDialog(raw2);
+		expect(d2.turns).toHaveLength(3);
+		expect(d2.turns[2].role).toBe("prompt");
 		expect(d2.turns[2].rawText).toBe("> Quote\n\n# Follow up");
+		expect(d2.turns[2].rawText).not.toContain("```");
+	});
+
+	it("preserves nested code blocks inside quotes correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+\`\`\`
+
+AI response 2.`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(4);
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(dialog.turns[2].rawText).toContain("# Explain this code");
+	});
+
+	it("preserves nested code blocks when outer fence has a language identifier", () => {
+		const rawWithLang = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+\`\`\`markdown
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+\`\`\`
+
+AI response 2.`;
+
+		const dialogWithLang = parsePerplexityDialog(rawWithLang);
+		expect(dialogWithLang.turns).toHaveLength(4);
+		expect(dialogWithLang.turns[2].role).toBe("prompt");
+		expect(dialogWithLang.turns[2].rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(dialogWithLang.turns[2].rawText).toContain("# Explain this code");
+		// Ensure the language token does not leak into the rendered prompt
+		expect(dialogWithLang.turns[2].rawText).not.toContain("```markdown");
+	});
+
+	it("preserves nested code blocks when the outer fence is missing its closing fence", () => {
+		const rawMissingClosingFence = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+\`\`\`
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+
+AI response 2.`;
+
+		const dialogMissingClosingFence = parsePerplexityDialog(rawMissingClosingFence);
+
+		// Fallback path: even without a closing fence, the inner code block should be preserved
+		const promptTurn = dialogMissingClosingFence.turns.find((t) => t.role === "prompt");
+		expect(promptTurn).toBeDefined();
+		expect(promptTurn!.rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(promptTurn!.rawText).toContain("# Explain this code");
+		// No stray fence markers should remain in the rendered prompt
+		expect(promptTurn!.rawText).not.toMatch(/```(\S*)?/);
 	});
 });

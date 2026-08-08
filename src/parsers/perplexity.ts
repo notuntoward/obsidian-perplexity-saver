@@ -341,7 +341,7 @@ function splitStockSection(section: string): {
 	//     prompt).
 	// If neither is present, the whole body is treated as the response
 	// (e.g. a pasted response with no prompt and no headings).
-	const startsWithH1 = /^#\s+\S/m.test(bodyText) || /^```\n#\s+\S/m.test(bodyText);
+	const startsWithH1 = /^#\s+\S/m.test(bodyText) || /^```\S*\n#\s+\S/m.test(bodyText);
 	const hasResponseHeading = /^##\s+\S/m.test(bodyText);
 	const firstBlankMatch = bodyText.match(/\n\s*\n/);
 	if ((startsWithH1 || hasResponseHeading) && firstBlankMatch && firstBlankMatch.index !== undefined) {
@@ -353,33 +353,11 @@ function splitStockSection(section: string): {
 
 	// Perplexity echoes the user's question as a level-1 (# ) heading. If
 	// there is no blank line to split on (i.e. no AI response text
-	// follows the question), treat the heading line as the prompt and
-	// everything after it (if any) as the response.
+	// follows the question), treat the entire heading line as the prompt.
 	if (startsWithH1) {
-		let firstNewline = bodyText.indexOf("\n");
-		if (bodyText.startsWith("```") && firstNewline !== -1) {
-			const nextNewline = bodyText.indexOf("\n", firstNewline + 1);
-			if (nextNewline !== -1) {
-				const afterNext = bodyText.slice(nextNewline + 1).trim();
-				if (afterNext === "```") {
-					firstNewline = bodyText.length;
-				} else {
-					firstNewline = nextNewline;
-				}
-			} else {
-				firstNewline = bodyText.length;
-			}
-		}
-
-		if (firstNewline === -1 || firstNewline === bodyText.length) {
-			return { promptText: unwrapFencedHeading(bodyText), responseText: "", sourceListText };
-		}
-		let promptText = bodyText.slice(0, firstNewline).trim();
-		const responseText = bodyText.slice(firstNewline).trim();
-		promptText = unwrapFencedHeading(promptText);
 		return {
-			promptText,
-			responseText,
+			promptText: unwrapFencedHeading(bodyText),
+			responseText: "",
 			sourceListText,
 		};
 	}
