@@ -508,4 +508,47 @@ AI response 2.`;
 		expect(dialog.turns[2].rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
 		expect(dialog.turns[2].rawText).toContain("# Explain this code");
 	});
+
+	it("preserves nested code blocks when outer fence has a language identifier", () => {
+		const rawWithLang = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+\`\`\`markdown
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+\`\`\`
+
+AI response 2.`;
+
+		const dialogWithLang = parsePerplexityDialog(rawWithLang);
+		expect(dialogWithLang.turns).toHaveLength(4);
+		expect(dialogWithLang.turns[2].role).toBe("prompt");
+		expect(dialogWithLang.turns[2].rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(dialogWithLang.turns[2].rawText).toContain("# Explain this code");
+		// Ensure the language token does not leak into the rendered prompt
+		expect(dialogWithLang.turns[2].rawText).not.toContain("```markdown");
+	});
+
+	it("preserves nested code blocks when the outer fence is missing its closing fence", () => {
+		const rawMissingClosingFence = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+\`\`\`
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+
+AI response 2.`;
+
+		const dialogMissingClosingFence = parsePerplexityDialog(rawMissingClosingFence);
+
+		// Fallback path: even without a closing fence, the inner code block should be preserved
+		const promptTurn = dialogMissingClosingFence.turns.find((t) => t.role === "prompt");
+		expect(promptTurn).toBeDefined();
+		expect(promptTurn!.rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(promptTurn!.rawText).toContain("# Explain this code");
+		// No stray fence markers should remain in the rendered prompt
+		expect(promptTurn!.rawText).not.toMatch(/```(\S*)?/);
+	});
 });
