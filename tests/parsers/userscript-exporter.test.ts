@@ -20,11 +20,15 @@ function stripForMatch(text: string) {
 }
 
 function unwrapFencedHeading(text: string) {
-  const trimmed = (text || "").trim();
-  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-    const inside = trimmed.slice(3, -3).trim();
-    if (inside.startsWith("#")) {
-      return inside;
+  let trimmed = (text || "").trim();
+  if (trimmed.startsWith("```")) {
+    const match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
+    if (match) {
+      const inside = match[1].trim();
+      if (inside.startsWith("#")) {
+        const rest = trimmed.slice(match[0].length).trim();
+        return rest ? `${inside}\n\n${rest}` : inside;
+      }
     }
   }
   return trimmed;
@@ -140,7 +144,18 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
     return null;
   }
 
-  const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+  let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+
+  // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
+  // but before the response starts, we can consume it as part of the split so that
+  // promptPart is a complete fenced code block.
+  if (chunkBody.startsWith("```")) {
+    const remaining = chunkBody.slice(originalEndIdx);
+    const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```[ \t]*(?:\n|$)/);
+    if (closeMatch) {
+      originalEndIdx += closeMatch[0].length;
+    }
+  }
 
   // Scan forward for the first alphanumeric character of the response
   const remainingText = chunkBody.slice(originalEndIdx);
@@ -336,6 +351,19 @@ AI Response here.`;
     if (result) {
       expect(result.prompt).toBe("# <q>What is Washington's tax burden?</q> The website you link to says Washington");
       expect(result.response).toBe("8.47%; Idaho 7.04%\n\nSome other details here.");
+    }
+  });
+
+  it("correctly splits and unwraps a fenced prompt with trailing user text (Tax Foundation case)", () => {
+    const chunk = "```\n# <q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison\n```\n\nThe Tax Foundation hasn't published a newer...";
+    const domPromptText = "The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th) Find an up to date comparison";
+    const title = "<q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison";
+
+    const result = splitPromptFromResponse(chunk, domPromptText, 2, title);
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result.prompt).toBe("# <q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison");
+      expect(result.response).toBe("The Tax Foundation hasn't published a newer...");
     }
   });
 
