@@ -236,7 +236,13 @@ function promptHeadingText(
 	turnId: number,
 	headlineOptions: HeadlineOptions
 ): string {
-	const headline = headlineForPrompt(promptText, headlineOptions);
+	const lines = promptText.split("\n");
+	const nonQuoteLines = lines.filter(line => !line.trim().startsWith(">") && line.trim() !== "");
+	const nonQuoteText = nonQuoteLines.join("\n").trim();
+
+	const textToUse = nonQuoteText || promptText;
+
+	const headline = headlineForPrompt(textToUse, headlineOptions);
 	if (headline.trim()) return headline;
 	return `Prompt (turn ${turnId})`;
 }

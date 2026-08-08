@@ -141,6 +141,30 @@ describe("buildNoteBody", () => {
 		expect(body).not.toMatch(/^# What is the question\?/m);
 		expect(body).toContain("### A heading");
 	});
+
+	it("bases prompt heading only on user-typed text (ignoring blockquotes) when both exist", () => {
+		const d = dialog([
+			{
+				role: "prompt",
+				rawText: "> This is a quote from the previous AI response.\n\nHere is what the user actually typed.",
+				citations: [],
+			},
+		]);
+		const { body } = buildNoteBody(d);
+		expect(body).toContain("## Here is what the user actually typed. ^turn-1");
+	});
+
+	it("bases prompt heading on the quote itself if the prompt consists entirely of quote", () => {
+		const d = dialog([
+			{
+				role: "prompt",
+				rawText: "> This is a quote from the previous AI response.",
+				citations: [],
+			},
+		]);
+		const { body } = buildNoteBody(d);
+		expect(body).toContain("## This is a quote from the previous AI response. ^turn-1");
+	});
 });
 
 describe("collapseWhitespace", () => {
