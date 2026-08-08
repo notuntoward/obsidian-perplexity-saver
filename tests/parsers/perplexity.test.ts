@@ -463,4 +463,29 @@ AI response 1.
 		const d2 = parsePerplexityDialog(raw2);
 		expect(d2.turns[2].rawText).toBe("> Quote\n\n# Follow up");
 	});
+
+	it("preserves nested code blocks inside quotes correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>The code is:
+\`\`\`
+const x = 1;
+\`\`\`
+</q> Explain this code
+\`\`\`
+
+AI response 2.`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(4);
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toContain("> The code is:\n> ```\n> const x = 1;\n> ```");
+		expect(dialog.turns[2].rawText).toContain("# Explain this code");
+	});
 });

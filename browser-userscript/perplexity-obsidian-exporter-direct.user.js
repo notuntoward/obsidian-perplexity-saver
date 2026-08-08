@@ -207,8 +207,8 @@
   function unwrapFencedHeading(text) {
     let trimmed = (text || "").trim();
     if (trimmed.startsWith("```")) {
-      // 1. Try matching with closing backticks (possibly followed by other content)
-      let match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
+      // 1. Try matching with closing backticks at the very end of the string (to safely support nested code blocks)
+      let match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```$/);
       if (match) {
         const inside = match[1].trim();
         if (inside.startsWith("#")) {
