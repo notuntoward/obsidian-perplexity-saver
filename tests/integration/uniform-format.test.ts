@@ -62,7 +62,7 @@ describe("uniform note format from Perplexity export", () => {
 		// `> [!Prompt]+` callout containing the prompt body. The AI body
 		// follows directly below with no AI heading of its own.
 		expect(body).toMatch(/## How do I configure foo mode\? \^turn-1/);
-		expect(body).toMatch(/## Does it work with baz\? Explain\. \^turn-2/);
+		expect(body).toMatch(/## Explain\. \^turn-2/);
 		expect(body).not.toMatch(/### AI response/);
 
 		// Bug 3: the prompt's embedded "# " heading marker is stripped from
@@ -79,10 +79,10 @@ describe("uniform note format from Perplexity export", () => {
 
 		// Bug 4: the <q>...</q> excerpt becomes a blockquote above the rest
 		// of the prompt, in the order it appeared, with the tags removed.
-		// The headline includes both the quote text and the rest of the
-		// prompt (the lead method picks the first sentence which spans both).
+		// The headline excludes the quote text and only includes the rest of
+		// the prompt typed by the user, if present.
 		expect(body).toMatch(
-			/## Does it work with baz\? Explain\. \^turn-2\n\n> \[!Prompt\]\+\n> > Does it work with baz\?\n>\n> Explain\./
+			/## Explain\. \^turn-2\n\n> \[!Prompt\]\+\n> > Does it work with baz\?\n>\n> Explain\./
 		);
 		expect(body).not.toContain("<q>");
 		expect(body).not.toContain("</q>");

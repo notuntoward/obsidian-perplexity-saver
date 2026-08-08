@@ -3,14 +3,19 @@ import * as fs from "fs";
 import * as path from "path";
 
 // Let's implement the core userscript matching functions locally for testing
-const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=#\s)/g;
+const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
 
 function stripAllWS(s: string) {
   return (s || "").replace(/\s+/g, "");
 }
 
+function stripHtmlTags(text: string) {
+  return (text || "").replace(/<[^>]+>/g, "");
+}
+
 function stripForMatch(text: string) {
   return (text || "")
+    .replace(/<[^>]+>/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 }
@@ -18,12 +23,21 @@ function stripForMatch(text: string) {
 function buildComparableWithMap(text: string) {
   let stripped = "";
   const map: number[] = [];
-  for (let i = 0; i < text.length; i++) {
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '<') {
+      const closeIdx = text.indexOf('>', i);
+      if (closeIdx !== -1) {
+        i = closeIdx + 1;
+        continue;
+      }
+    }
     const c = text[i];
     if (/[a-zA-Z0-9]/.test(c)) {
       stripped += c.toLowerCase();
       map.push(i);
     }
+    i++;
   }
   return { stripped, map };
 }
@@ -92,11 +106,18 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   const startIdx = headingMatch ? headingMatch[0].length : 0;
   const bodyContent = chunkBody.slice(startIdx);
 
-  const domPromptStripped = stripAllWS(domPromptText);
-  const titleStripped = stripAllWS(title || "");
-  if (titleStripped && domPromptStripped === titleStripped) {
+  const domPromptStripped = stripAllWS(stripHtmlTags(domPromptText));
+  const titleStripped = stripAllWS(stripHtmlTags(title || ""));
+  if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
+    let promptPart = chunkBody.slice(0, startIdx).trim();
+    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+      const inside = promptPart.slice(3, -3).trim();
+      if (inside.startsWith("#")) {
+        promptPart = inside;
+      }
+    }
     return {
-      prompt: chunkBody.slice(0, startIdx).trim(),
+      prompt: promptPart,
       response: bodyContent.trim(),
       sources
     };
@@ -121,11 +142,18 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   const firstAlphanumRelIdx = remainingText.search(/[a-zA-Z0-9]/);
   const splitIdx = firstAlphanumRelIdx === -1 ? originalEndIdx : originalEndIdx + firstAlphanumRelIdx;
 
-  const promptPart = chunkBody.slice(0, splitIdx).trim();
+  let promptPart = chunkBody.slice(0, splitIdx).trim();
   const responsePart = chunkBody.slice(splitIdx).trim();
 
   if (!promptPart || !responsePart) {
     return null;
+  }
+
+  if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+    const inside = promptPart.slice(3, -3).trim();
+    if (inside.startsWith("#")) {
+      promptPart = inside;
+    }
   }
 
   return {
@@ -139,7 +167,14 @@ function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
   const { body: chunkBody, sources } = splitSources(chunkText);
   const paragraphs = chunkBody.split(/\n\s*\n/);
   if (paragraphs.length <= 1) {
-    return { prompt: chunkBody, response: "", sources };
+    let promptPart = chunkBody;
+    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+      const inside = promptPart.slice(3, -3).trim();
+      if (inside.startsWith("#")) {
+        promptPart = inside;
+      }
+    }
+    return { prompt: promptPart, response: "", sources };
   }
 
   const citationRegex = new RegExp(`\\[\\^(?:${turnNum}_)?\\d+\\]`);
@@ -156,14 +191,25 @@ function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
     }
   }
 
+  let promptPart;
+  let responsePart;
+
   if (firstResponseParaIdx !== -1) {
-    const promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
-    const responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
-    return { prompt: promptPart, response: responsePart, sources };
+    promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
+    responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
+  } else {
+    // Default fallback if no citations or subheadings found: split after first paragraph
+    promptPart = paragraphs[0].trim();
+    responsePart = paragraphs.slice(1).join("\n\n").trim();
   }
 
-  const promptPart = paragraphs[0].trim();
-  const responsePart = paragraphs.slice(1).join("\n\n").trim();
+  if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+    const inside = promptPart.slice(3, -3).trim();
+    if (inside.startsWith("#")) {
+      promptPart = inside;
+    }
+  }
+
   return { prompt: promptPart, response: responsePart, sources };
 }
 
@@ -288,6 +334,38 @@ AI Response here.`;
       expect(fallbackSplit.response.startsWith("In plain English: **eating less protein")).toBe(true);
       expect(fallbackSplit.response).toContain("## What the passage means");
     }
+  });
+
+  it("correctly splits a chunk with code blocks surrounding the prompt (Perplexity bug case)", () => {
+    const chunk = "```\n# <q>What is Washington's tax burden?</q> The website you link to says Washington\n```\n\n8.47%; Idaho 7.04%\n\nSome other details here.";
+    const domPromptText = "What is Washington's tax burden?\n\nThe website you link to says Washington";
+    const title = "<q>What is Washington's tax burden?</q> The website you link to says Washington";
+
+    const result = splitPromptFromResponse(chunk, domPromptText, 2, title);
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result.prompt).toBe("# <q>What is Washington's tax burden?</q> The website you link to says Washington");
+      expect(result.response).toBe("8.47%; Idaho 7.04%\n\nSome other details here.");
+    }
+  });
+
+  it("ignores HTML tags like <q> in buildComparableWithMap and stripForMatch", () => {
+    const textWithTags = "Hello <q>World</q>!";
+    const textWithoutTags = "Hello World!";
+
+    expect(stripForMatch(textWithTags)).toBe("helloworld");
+    expect(stripForMatch(textWithoutTags)).toBe("helloworld");
+
+    const compWithTags = buildComparableWithMap(textWithTags);
+    const compWithoutTags = buildComparableWithMap(textWithoutTags);
+
+    expect(compWithTags.stripped).toBe("helloworld");
+    expect(compWithoutTags.stripped).toBe("helloworld");
+    // Verify mapped index is correct for 'W' in 'World'
+    // For textWithTags: "Hello <q>World</q>!" -> index 9 is 'W'
+    // For textWithoutTags: "Hello World!" -> index 6 is 'W'
+    expect(compWithTags.map[5]).toBe(9);
+    expect(compWithoutTags.map[5]).toBe(6);
   });
 });
 

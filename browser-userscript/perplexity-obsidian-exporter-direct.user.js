@@ -188,14 +188,19 @@
     findToggleButtons("show less").forEach((btn) => clickToggle(btn));
   }
 
-  const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=#\s)/g;
+  const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
 
   function stripAllWS(s) {
     return (s || "").replace(/\s+/g, "");
   }
 
+  function stripHtmlTags(text) {
+    return (text || "").replace(/<[^>]+>/g, "");
+  }
+
   function stripForMatch(text) {
     return (text || "")
+      .replace(/<[^>]+>/g, "")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
   }
@@ -203,12 +208,21 @@
   function buildComparableWithMap(text) {
     let stripped = "";
     const map = [];
-    for (let i = 0; i < text.length; i++) {
+    let i = 0;
+    while (i < text.length) {
+      if (text[i] === '<') {
+        const closeIdx = text.indexOf('>', i);
+        if (closeIdx !== -1) {
+          i = closeIdx + 1;
+          continue;
+        }
+      }
       const c = text[i];
       if (/[a-zA-Z0-9]/.test(c)) {
         stripped += c.toLowerCase();
         map.push(i);
       }
+      i++;
     }
     return { stripped, map };
   }
@@ -580,12 +594,19 @@
     const startIdx = headingMatch ? headingMatch[0].length : 0;
     const bodyContent = chunkBody.slice(startIdx);
 
-    const domPromptStripped = stripAllWS(domPromptText);
-    const titleStripped = stripAllWS(title || "");
-    if (titleStripped && domPromptStripped === titleStripped) {
+    const domPromptStripped = stripAllWS(stripHtmlTags(domPromptText));
+    const titleStripped = stripAllWS(stripHtmlTags(title || ""));
+    if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
       console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals DOM prompt.`);
+      let promptPart = chunkBody.slice(0, startIdx).trim();
+      if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+        const inside = promptPart.slice(3, -3).trim();
+        if (inside.startsWith("#")) {
+          promptPart = inside;
+        }
+      }
       return {
-        prompt: chunkBody.slice(0, startIdx).trim(),
+        prompt: promptPart,
         response: bodyContent.trim(),
         sources
       };
@@ -612,12 +633,19 @@
     const firstAlphanumRelIdx = remainingText.search(/[a-zA-Z0-9]/);
     const splitIdx = firstAlphanumRelIdx === -1 ? originalEndIdx : originalEndIdx + firstAlphanumRelIdx;
 
-    const promptPart = chunkBody.slice(0, splitIdx).trim();
+    let promptPart = chunkBody.slice(0, splitIdx).trim();
     const responsePart = chunkBody.slice(splitIdx).trim();
 
     if (!promptPart || !responsePart) {
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: split yielded empty prompt or response.`);
       return null;
+    }
+
+    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+      const inside = promptPart.slice(3, -3).trim();
+      if (inside.startsWith("#")) {
+        promptPart = inside;
+      }
     }
 
     return {
@@ -631,7 +659,14 @@
     const { body: chunkBody, sources } = splitSources(chunkText);
     const paragraphs = chunkBody.split(/\n\s*\n/);
     if (paragraphs.length <= 1) {
-      return { prompt: chunkBody, response: "", sources };
+      let promptPart = chunkBody;
+      if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+        const inside = promptPart.slice(3, -3).trim();
+        if (inside.startsWith("#")) {
+          promptPart = inside;
+        }
+      }
+      return { prompt: promptPart, response: "", sources };
     }
 
     const citationRegex = new RegExp(`\\[\\^(?:${turnNum}_)?\\d+\\]`);
@@ -648,16 +683,26 @@
       }
     }
 
+    let promptPart;
+    let responsePart;
+
     if (firstResponseParaIdx !== -1) {
-      const promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
-      const responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
+      promptPart = paragraphs.slice(0, firstResponseParaIdx).join("\n\n").trim();
+      responsePart = paragraphs.slice(firstResponseParaIdx).join("\n\n").trim();
       console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fallback split via citation/heading match at paragraph ${firstResponseParaIdx}`);
-      return { prompt: promptPart, response: responsePart, sources };
+    } else {
+      // Default fallback if no citations or subheadings found: split after first paragraph
+      promptPart = paragraphs[0].trim();
+      responsePart = paragraphs.slice(1).join("\n\n").trim();
     }
 
-    // Default fallback if no citations or subheadings found: split after first paragraph
-    const promptPart = paragraphs[0].trim();
-    const responsePart = paragraphs.slice(1).join("\n\n").trim();
+    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
+      const inside = promptPart.slice(3, -3).trim();
+      if (inside.startsWith("#")) {
+        promptPart = inside;
+      }
+    }
+
     return { prompt: promptPart, response: responsePart, sources };
   }
 
@@ -679,7 +724,7 @@
     for (let idx = 0; idx < chunks.length; idx++) {
       const chunk = chunks[idx];
       const turnNum = idx + 1;
-      const titleMatch = chunk.match(/^#\s+(.+?)\s*(?:\n|$)/);
+      const titleMatch = chunk.match(/^(?:```.*\n)?#\s+(.+?)\s*(?:\n|$)/);
       const title = titleMatch ? titleMatch[1].trim() : null;
 
       let split = null;
