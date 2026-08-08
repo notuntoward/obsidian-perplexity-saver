@@ -14,10 +14,20 @@ function stripHtmlTags(text: string) {
 }
 
 function stripForMatch(text: string) {
-  return (text || "")
-    .replace(/<\/?q>/gi, "")
+  return stripHtmlTags(text || "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
+}
+
+function unwrapFencedHeading(text: string) {
+  const trimmed = (text || "").trim();
+  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
+    const inside = trimmed.slice(3, -3).trim();
+    if (inside.startsWith("#")) {
+      return inside;
+    }
+  }
+  return trimmed;
 }
 
 function buildComparableWithMap(text: string) {
@@ -110,12 +120,7 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   const titleStripped = stripAllWS(stripHtmlTags(title || ""));
   if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
     let promptPart = chunkBody.slice(0, startIdx).trim();
-    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-      const inside = promptPart.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        promptPart = inside;
-      }
-    }
+    promptPart = unwrapFencedHeading(promptPart);
     return {
       prompt: promptPart,
       response: bodyContent.trim(),
@@ -149,12 +154,7 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
     return null;
   }
 
-  if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-    const inside = promptPart.slice(3, -3).trim();
-    if (inside.startsWith("#")) {
-      promptPart = inside;
-    }
-  }
+  promptPart = unwrapFencedHeading(promptPart);
 
   return {
     prompt: promptPart,
@@ -168,12 +168,7 @@ function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
   const paragraphs = chunkBody.split(/\n\s*\n/);
   if (paragraphs.length <= 1) {
     let promptPart = chunkBody;
-    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-      const inside = promptPart.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        promptPart = inside;
-      }
-    }
+    promptPart = unwrapFencedHeading(promptPart);
     return { prompt: promptPart, response: "", sources };
   }
 
@@ -203,12 +198,7 @@ function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
     responsePart = paragraphs.slice(1).join("\n\n").trim();
   }
 
-  if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-    const inside = promptPart.slice(3, -3).trim();
-    if (inside.startsWith("#")) {
-      promptPart = inside;
-    }
-  }
+  promptPart = unwrapFencedHeading(promptPart);
 
   return { prompt: promptPart, response: responsePart, sources };
 }

@@ -199,10 +199,20 @@
   }
 
   function stripForMatch(text) {
-    return (text || "")
-      .replace(/<\/?q>/gi, "")
+    return stripHtmlTags(text || "")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
+  }
+
+  function unwrapFencedHeading(text) {
+    const trimmed = (text || "").trim();
+    if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
+      const inside = trimmed.slice(3, -3).trim();
+      if (inside.startsWith("#")) {
+        return inside;
+      }
+    }
+    return trimmed;
   }
 
   function buildComparableWithMap(text) {
@@ -599,12 +609,7 @@
     if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
       console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals DOM prompt.`);
       let promptPart = chunkBody.slice(0, startIdx).trim();
-      if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-        const inside = promptPart.slice(3, -3).trim();
-        if (inside.startsWith("#")) {
-          promptPart = inside;
-        }
-      }
+      promptPart = unwrapFencedHeading(promptPart);
       return {
         prompt: promptPart,
         response: bodyContent.trim(),
@@ -641,12 +646,7 @@
       return null;
     }
 
-    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-      const inside = promptPart.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        promptPart = inside;
-      }
-    }
+    promptPart = unwrapFencedHeading(promptPart);
 
     return {
       prompt: promptPart,
@@ -660,12 +660,7 @@
     const paragraphs = chunkBody.split(/\n\s*\n/);
     if (paragraphs.length <= 1) {
       let promptPart = chunkBody;
-      if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-        const inside = promptPart.slice(3, -3).trim();
-        if (inside.startsWith("#")) {
-          promptPart = inside;
-        }
-      }
+      promptPart = unwrapFencedHeading(promptPart);
       return { prompt: promptPart, response: "", sources };
     }
 
@@ -696,12 +691,7 @@
       responsePart = paragraphs.slice(1).join("\n\n").trim();
     }
 
-    if (promptPart.startsWith("```") && promptPart.endsWith("```")) {
-      const inside = promptPart.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        promptPart = inside;
-      }
-    }
+    promptPart = unwrapFencedHeading(promptPart);
 
     return { prompt: promptPart, response: responsePart, sources };
   }
