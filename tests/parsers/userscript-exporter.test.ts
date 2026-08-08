@@ -10,12 +10,12 @@ function stripAllWS(s: string) {
 }
 
 function stripHtmlTags(text: string) {
-  return (text || "").replace(/<[^>]+>/g, "");
+  return (text || "").replace(/<\/?q>/gi, "");
 }
 
 function stripForMatch(text: string) {
   return (text || "")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<\/?q>/gi, "")
     .toLowerCase()
     .replace(/[^a-z0-9]/g, "");
 }

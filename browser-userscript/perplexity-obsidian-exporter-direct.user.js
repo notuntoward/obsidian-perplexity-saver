@@ -195,12 +195,12 @@
   }
 
   function stripHtmlTags(text) {
-    return (text || "").replace(/<[^>]+>/g, "");
+    return (text || "").replace(/<\/?q>/gi, "");
   }
 
   function stripForMatch(text) {
     return (text || "")
-      .replace(/<[^>]+>/g, "")
+      .replace(/<\/?q>/gi, "")
       .toLowerCase()
       .replace(/[^a-z0-9]/g, "");
   }
