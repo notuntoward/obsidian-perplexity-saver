@@ -1,4 +1,5 @@
 import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
+import { unwrapFencedHeading } from "../utils";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".
@@ -299,20 +300,6 @@ function splitSmcSection(section: string): {
 	return { promptText, responseText, sourceListText };
 }
 
-function unwrapFencedHeading(text: string): string {
-	let trimmed = text.trim();
-	if (trimmed.startsWith("```")) {
-		const match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
-		if (match) {
-			const inside = match[1].trim();
-			if (inside.startsWith("#")) {
-				const rest = trimmed.slice(match[0].length).trim();
-				return rest ? `${inside}\n\n${rest}` : inside;
-			}
-		}
-	}
-	return trimmed;
-}
 
 function splitStockSection(section: string): {
 	promptText: string;
@@ -369,8 +356,22 @@ function splitStockSection(section: string): {
 	// follows the question), treat the heading line as the prompt and
 	// everything after it (if any) as the response.
 	if (startsWithH1) {
-		const firstNewline = bodyText.indexOf("\n");
-		if (firstNewline === -1) {
+		let firstNewline = bodyText.indexOf("\n");
+		if (bodyText.startsWith("```") && firstNewline !== -1) {
+			const nextNewline = bodyText.indexOf("\n", firstNewline + 1);
+			if (nextNewline !== -1) {
+				const afterNext = bodyText.slice(nextNewline + 1).trim();
+				if (afterNext === "```") {
+					firstNewline = bodyText.length;
+				} else {
+					firstNewline = nextNewline;
+				}
+			} else {
+				firstNewline = bodyText.length;
+			}
+		}
+
+		if (firstNewline === -1 || firstNewline === bodyText.length) {
 			return { promptText: unwrapFencedHeading(bodyText), responseText: "", sourceListText };
 		}
 		let promptText = bodyText.slice(0, firstNewline).trim();

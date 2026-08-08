@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import { unwrapFencedHeading } from "../../src/utils";
 
 // Let's implement the core userscript matching functions locally for testing
 const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
@@ -19,20 +20,6 @@ function stripForMatch(text: string) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-function unwrapFencedHeading(text: string) {
-  let trimmed = (text || "").trim();
-  if (trimmed.startsWith("```")) {
-    const match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
-    if (match) {
-      const inside = match[1].trim();
-      if (inside.startsWith("#")) {
-        const rest = trimmed.slice(match[0].length).trim();
-        return rest ? `${inside}\n\n${rest}` : inside;
-      }
-    }
-  }
-  return trimmed;
-}
 
 function buildComparableWithMap(text: string) {
   let stripped = "";
@@ -151,7 +138,7 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   // promptPart is a complete fenced code block.
   if (chunkBody.startsWith("```")) {
     const remaining = chunkBody.slice(originalEndIdx);
-    const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```[ \t]*(?:\n|$)/);
+    const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
     if (closeMatch) {
       originalEndIdx += closeMatch[0].length;
     }
@@ -384,6 +371,30 @@ AI Response here.`;
     // For textWithoutTags: "Hello World!" -> index 6 is 'W'
     expect(compWithTags.map[5]).toBe(9);
     expect(compWithoutTags.map[5]).toBe(6);
+  });
+
+  it("handles robust variant matching: language tags, immediate trailing text, and missing closing fences", () => {
+    // Case 1: Language-tagged fence with immediate trailing response
+    const chunk1 = "```markdown\n# <q>Quote</q> Follow up\n```The response is here.";
+    const domPrompt1 = "Quote Follow up";
+    const title1 = "<q>Quote</q> Follow up";
+    const result1 = splitPromptFromResponse(chunk1, domPrompt1, 2, title1);
+    expect(result1).not.toBeNull();
+    if (result1) {
+      expect(result1.prompt).toBe("# <q>Quote</q> Follow up");
+      expect(result1.response).toBe("The response is here.");
+    }
+
+    // Case 2: Missing closing fence fallback
+    const chunk2 = "```\n# <q>Quote</q> Follow up";
+    const domPrompt2 = "Quote Follow up";
+    const title2 = "<q>Quote</q> Follow up";
+    const result2 = splitPromptFromResponseFallback(chunk2, 2);
+    expect(result2).not.toBeNull();
+    if (result2) {
+      expect(result2.prompt).toBe("# <q>Quote</q> Follow up");
+      expect(result2.response).toBe("");
+    }
   });
 });
 

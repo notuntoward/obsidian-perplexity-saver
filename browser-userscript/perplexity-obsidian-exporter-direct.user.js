@@ -207,12 +207,22 @@
   function unwrapFencedHeading(text) {
     let trimmed = (text || "").trim();
     if (trimmed.startsWith("```")) {
-      const match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
+      // 1. Try matching with closing backticks (possibly followed by other content)
+      let match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
       if (match) {
         const inside = match[1].trim();
         if (inside.startsWith("#")) {
           const rest = trimmed.slice(match[0].length).trim();
           return rest ? `${inside}\n\n${rest}` : inside;
+        }
+      }
+
+      // 2. Fallback: match without closing backticks (the whole remaining text is the inside)
+      match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*)$/);
+      if (match) {
+        const inside = match[1].trim();
+        if (inside.startsWith("#")) {
+          return inside;
         }
       }
     }
@@ -642,7 +652,7 @@
     // promptPart is a complete fenced code block.
     if (chunkBody.startsWith("```")) {
       const remaining = chunkBody.slice(originalEndIdx);
-      const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```[ \t]*(?:\n|$)/);
+      const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
       if (closeMatch) {
         originalEndIdx += closeMatch[0].length;
       }

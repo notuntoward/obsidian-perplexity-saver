@@ -432,4 +432,35 @@ The Tax Foundation hasn't published a newer "tax burden" estimate since the 2022
 		expect(dialog.turns[2].rawText).toContain("# Find an up to date comparison");
 		expect(dialog.turns[2].rawText).not.toContain("```");
 	});
+
+	it("unwraps language-tagged fenced code blocks and fallback when closing fence is missing", () => {
+		// 1. Language-tagged fence
+		const raw1 = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`markdown
+# <q>Quote</q> Follow up
+\`\`\`
+
+AI response 2.`;
+		const d1 = parsePerplexityDialog(raw1);
+		expect(d1.turns[2].rawText).toBe("> Quote\n\n# Follow up");
+
+		// 2. Missing closing fence (fallback)
+		const raw2 = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>Quote</q> Follow up`;
+		const d2 = parsePerplexityDialog(raw2);
+		expect(d2.turns[2].rawText).toBe("> Quote\n\n# Follow up");
+	});
 });
