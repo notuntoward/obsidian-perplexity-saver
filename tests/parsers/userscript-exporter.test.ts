@@ -591,10 +591,13 @@ describe("Userscript Exporter progress prompt suppression", () => {
   const getDismissPerplexityToastsBody = (): string => {
     const userscriptPath = path.join(__dirname, "../../browser-userscript/perplexity-obsidian-exporter-direct.user.js");
     const content = fs.readFileSync(userscriptPath, "utf-8");
-    const startIdx = content.indexOf("function dismissPerplexityToasts(");
-    if (startIdx === -1) {
-      throw new Error("Could not find dismissPerplexityToasts function in userscript");
+
+    // Find the declaration - supports function declaration or arrow function assignment flexibly
+    const match = content.match(/(?:function|const)\s+dismissPerplexityToasts\s*[\(=]/);
+    if (!match || match.index === undefined) {
+      throw new Error("Could not find dismissPerplexityToasts declaration in userscript");
     }
+    const startIdx = match.index;
 
     // Find the opening brace of the function
     const openBraceIdx = content.indexOf("{", startIdx);
@@ -615,7 +618,14 @@ describe("Userscript Exporter progress prompt suppression", () => {
       endIdx++;
     }
 
-    return content.slice(startIdx, endIdx);
+    const snippet = content.slice(startIdx, endIdx);
+
+    // Defensive shape assertion
+    if (!snippet.includes("performSuppression") || !snippet.includes("textsToSuppress")) {
+      throw new Error("Extracted snippet does not match expected dismissPerplexityToasts shape: " + snippet);
+    }
+
+    return snippet;
   };
 
   it("identifies export downloads correctly", () => {
@@ -645,28 +655,21 @@ describe("Userscript Exporter progress prompt suppression", () => {
     // Prepare mock element tree
     const mockToastsRemoved: string[] = [];
 
-    const createMockElement = (id: string, textContent: string, closestSelectorMatches: Record<string, any> = {}, children: any[] = []) => {
-      const el = {
+    const createMockElement = (id: string, textContent: string) => {
+      return {
         id,
         textContent,
-        children,
         style: { display: "block" },
         remove() {
           mockToastsRemoved.push(id);
-        },
-        closest(selector: string) {
-          if (closestSelectorMatches[selector]) {
-            return closestSelectorMatches[selector];
-          }
-          return null;
         }
       };
-      return el;
     };
 
     // Prepare mock element tree (toast containers directly)
     const toast1Container = createMockElement("toast1-container", "Exporting thread...");
     const toast2Container = createMockElement("toast2-container", "Export succeeded");
+    const unrelatedToastContainer = createMockElement("toast3-container", "Unrelated notification");
 
     // An element containing matching text, but not matching any toast selector
     const safeThreadMessage = createMockElement("safe-thread-message", "User discussing: Exporting thread...");
@@ -683,7 +686,7 @@ describe("Userscript Exporter progress prompt suppression", () => {
       querySelectorAll(selector: string) {
         // Verify that only the actual toast selectors are queried
         if (selector.includes("data-sonner-toast") || selector.includes("role='status'")) {
-          return [toast1Container, toast2Container];
+          return [toast1Container, toast2Container, unrelatedToastContainer];
         }
         return [];
       }
@@ -740,7 +743,11 @@ describe("Userscript Exporter progress prompt suppression", () => {
     expect(mockToastsRemoved).toContain("toast1-container");
     expect(mockToastsRemoved).toContain("toast2-container");
 
-    // The safe element was NOT touched or removed
+    // The unrelated toast container was NOT suppressed or removed
+    expect(unrelatedToastContainer.style.display).toBe("block");
+    expect(mockToastsRemoved).not.toContain("toast3-container");
+
+    // The safe element was NOT touched or removed (not even queried)
     expect(safeThreadMessage.style.display).toBe("block");
     expect(mockToastsRemoved).not.toContain("safe-thread-message");
   });

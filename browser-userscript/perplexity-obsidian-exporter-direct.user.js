@@ -785,22 +785,27 @@
 
   function dismissPerplexityToasts() {
     // 1. Dispatch Escape keydown and keyup events on document and active element with full backwards-compatibility options
-    const opts = {
-      key: "Escape",
-      code: "Escape",
-      keyCode: 27,
-      which: 27,
-      bubbles: true,
-      cancelable: true
+    const createEvent = (type) => {
+      const e = new KeyboardEvent(type, {
+        key: "Escape",
+        code: "Escape",
+        bubbles: true,
+        cancelable: true
+      });
+      try {
+        Object.defineProperty(e, "keyCode", { get: () => 27, configurable: true });
+        Object.defineProperty(e, "which", { get: () => 27, configurable: true });
+      } catch (_) {}
+      return e;
     };
 
     try {
       const activeEl = document.activeElement || document.body || document;
-      activeEl.dispatchEvent(new KeyboardEvent("keydown", opts));
-      activeEl.dispatchEvent(new KeyboardEvent("keyup", opts));
+      activeEl.dispatchEvent(createEvent("keydown"));
+      activeEl.dispatchEvent(createEvent("keyup"));
       if (activeEl !== document) {
-        document.dispatchEvent(new KeyboardEvent("keydown", opts));
-        document.dispatchEvent(new KeyboardEvent("keyup", opts));
+        document.dispatchEvent(createEvent("keydown"));
+        document.dispatchEvent(createEvent("keyup"));
       }
     } catch (e) {
       console.warn("[PPLX Obsidian Exporter] KeyboardEvent dispatch failed:", e);
