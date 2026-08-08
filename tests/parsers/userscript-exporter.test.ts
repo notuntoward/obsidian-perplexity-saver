@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
+import { unwrapFencedHeading } from "../../src/utils";
 
 // Let's implement the core userscript matching functions locally for testing
 const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
@@ -19,16 +20,6 @@ function stripForMatch(text: string) {
     .replace(/[^a-z0-9]/g, "");
 }
 
-function unwrapFencedHeading(text: string) {
-  const trimmed = (text || "").trim();
-  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-    const inside = trimmed.slice(3, -3).trim();
-    if (inside.startsWith("#")) {
-      return inside;
-    }
-  }
-  return trimmed;
-}
 
 function buildComparableWithMap(text: string) {
   let stripped = "";
@@ -140,7 +131,18 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
     return null;
   }
 
-  const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+  let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+
+  // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
+  // but before the response starts, we can consume it as part of the split so that
+  // promptPart is a complete fenced code block.
+  if (chunkBody.startsWith("```")) {
+    const remaining = chunkBody.slice(originalEndIdx);
+    const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
+    if (closeMatch) {
+      originalEndIdx += closeMatch[0].length;
+    }
+  }
 
   // Scan forward for the first alphanumeric character of the response
   const remainingText = chunkBody.slice(originalEndIdx);
@@ -339,6 +341,19 @@ AI Response here.`;
     }
   });
 
+  it("correctly splits and unwraps a fenced prompt with trailing user text (Tax Foundation case)", () => {
+    const chunk = "```\n# <q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison\n```\n\nThe Tax Foundation hasn't published a newer...";
+    const domPromptText = "The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th) Find an up to date comparison";
+    const title = "<q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison";
+
+    const result = splitPromptFromResponse(chunk, domPromptText, 2, title);
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result.prompt).toBe("# <q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison");
+      expect(result.response).toBe("The Tax Foundation hasn't published a newer...");
+    }
+  });
+
   it("ignores HTML tags like <q> in buildComparableWithMap and stripForMatch", () => {
     const textWithTags = "Hello <q>World</q>!";
     const textWithoutTags = "Hello World!";
@@ -356,6 +371,30 @@ AI Response here.`;
     // For textWithoutTags: "Hello World!" -> index 6 is 'W'
     expect(compWithTags.map[5]).toBe(9);
     expect(compWithoutTags.map[5]).toBe(6);
+  });
+
+  it("handles robust variant matching: language tags, immediate trailing text, and missing closing fences", () => {
+    // Case 1: Language-tagged fence with immediate trailing response
+    const chunk1 = "```markdown\n# <q>Quote</q> Follow up\n```The response is here.";
+    const domPrompt1 = "Quote Follow up";
+    const title1 = "<q>Quote</q> Follow up";
+    const result1 = splitPromptFromResponse(chunk1, domPrompt1, 2, title1);
+    expect(result1).not.toBeNull();
+    if (result1) {
+      expect(result1.prompt).toBe("# <q>Quote</q> Follow up");
+      expect(result1.response).toBe("The response is here.");
+    }
+
+    // Case 2: Missing closing fence fallback
+    const chunk2 = "```\n# <q>Quote</q> Follow up";
+    const domPrompt2 = "Quote Follow up";
+    const title2 = "<q>Quote</q> Follow up";
+    const result2 = splitPromptFromResponseFallback(chunk2, 2);
+    expect(result2).not.toBeNull();
+    if (result2) {
+      expect(result2.prompt).toBe("# <q>Quote</q> Follow up");
+      expect(result2.response).toBe("");
+    }
   });
 });
 

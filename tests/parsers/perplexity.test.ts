@@ -331,6 +331,26 @@ describe("parsePerplexityDialog — question-only export (no AI response text)",
 		expect(dialog.turns[1].role).toBe("prompt");
 		expect(dialog.turns[1].rawText).toContain("Is there an extension for it in vscode");
 	});
+
+	it("unwraps fenced code blocks surrounding prompts correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-07 19:44 PDT*
+
+# Question 1
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>Quote here</q> My follow up question
+\`\`\`
+
+AI response 2.`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(4);
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+	});
 });
 
 describe("parsePerplexityDialog — annotated format", () => {
@@ -367,5 +387,80 @@ Here’s a quick comparison of the main PNW states often used in the core Pacifi
 			title: undefined,
 		});
 		expect(dialog.turns[1].citations[1].url).toBe("https://www.census.gov/quickfacts/fact/table/WA/PST045225");
+	});
+
+	it("unwraps fenced code blocks surrounding prompts in annotated format correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-07 19:44 PDT*
+
+---
+
+<!-- PPLX-TURN 1 -->
+<!-- PPLX-ROLE: prompt -->
+\`\`\`
+# <q>Quote here</q> My follow up question
+\`\`\`
+
+<!-- PPLX-ROLE: ai -->
+AI response 2.
+
+<!-- PPLX-ROLE: sources -->
+(none)`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(2);
+		expect(dialog.turns[0].role).toBe("prompt");
+		expect(dialog.turns[0].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+	});
+
+	it("unwraps fenced code blocks with quotes and user text correctly (Tax Foundation case)", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/tax) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>The Tax Foundation's most recent tax burden study (2022) puts Idaho at 10.7% of income (ranked 29th) and Washington at 10.7% (ranked 30th)</q> Find an up to date comparison
+\`\`\`
+
+The Tax Foundation hasn't published a newer "tax burden" estimate since the 2022 calendar-year study — that 10.7%/10.7% figure I cited earlier is still their most current one of that specific type. But two other up-to-date data points give a clearer 2026 picture, and they both point the same direction: toward Idaho having a real, not marginal, advantage.`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(4);
+		expect(dialog.turns[2].role).toBe("prompt");
+		expect(dialog.turns[2].rawText).toContain("> The Tax Foundation's most recent tax burden study (2022)");
+		expect(dialog.turns[2].rawText).toContain("# Find an up to date comparison");
+		expect(dialog.turns[2].rawText).not.toContain("```");
+	});
+
+	it("unwraps language-tagged fenced code blocks and fallback when closing fence is missing", () => {
+		// 1. Language-tagged fence
+		const raw1 = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`markdown
+# <q>Quote</q> Follow up
+\`\`\`
+
+AI response 2.`;
+		const d1 = parsePerplexityDialog(raw1);
+		expect(d1.turns[2].rawText).toBe("> Quote\n\n# Follow up");
+
+		// 2. Missing closing fence (fallback)
+		const raw2 = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-08*
+# Hello
+
+AI response 1.
+
+---
+
+\`\`\`
+# <q>Quote</q> Follow up`;
+		const d2 = parsePerplexityDialog(raw2);
+		expect(d2.turns[2].rawText).toBe("> Quote\n\n# Follow up");
 	});
 });

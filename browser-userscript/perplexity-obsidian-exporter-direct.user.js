@@ -205,11 +205,25 @@
   }
 
   function unwrapFencedHeading(text) {
-    const trimmed = (text || "").trim();
-    if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-      const inside = trimmed.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        return inside;
+    let trimmed = (text || "").trim();
+    if (trimmed.startsWith("```")) {
+      // 1. Try matching with closing backticks (possibly followed by other content)
+      let match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
+      if (match) {
+        const inside = match[1].trim();
+        if (inside.startsWith("#")) {
+          const rest = trimmed.slice(match[0].length).trim();
+          return rest ? `${inside}\n\n${rest}` : inside;
+        }
+      }
+
+      // 2. Fallback: match without closing backticks (the whole remaining text is the inside)
+      match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*)$/);
+      if (match) {
+        const inside = match[1].trim();
+        if (inside.startsWith("#")) {
+          return inside;
+        }
       }
     }
     return trimmed;
@@ -631,7 +645,18 @@
       return null;
     }
 
-    const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+    let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+
+    // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
+    // but before the response starts, we can consume it as part of the split so that
+    // promptPart is a complete fenced code block.
+    if (chunkBody.startsWith("```")) {
+      const remaining = chunkBody.slice(originalEndIdx);
+      const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
+      if (closeMatch) {
+        originalEndIdx += closeMatch[0].length;
+      }
+    }
 
     // Scan forward for the first alphanumeric character of the response
     const remainingText = chunkBody.slice(originalEndIdx);

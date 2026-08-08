@@ -1,4 +1,5 @@
 import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
+import { unwrapFencedHeading } from "../utils";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".
@@ -112,7 +113,7 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 
 		for (const r of roles) {
 			if (r.role === "prompt") {
-				promptText = stripAnnotations(r.content);
+				promptText = unwrapFencedHeading(stripAnnotations(r.content));
 			} else if (r.role === "ai") {
 				responseText = stripAnnotations(r.content);
 			} else if (r.role === "sources") {
@@ -299,6 +300,7 @@ function splitSmcSection(section: string): {
 	return { promptText, responseText, sourceListText };
 }
 
+
 function splitStockSection(section: string): {
 	promptText: string;
 	responseText: string;
@@ -339,12 +341,13 @@ function splitStockSection(section: string): {
 	//     prompt).
 	// If neither is present, the whole body is treated as the response
 	// (e.g. a pasted response with no prompt and no headings).
-	const startsWithH1 = /^#\s+\S/m.test(bodyText);
+	const startsWithH1 = /^#\s+\S/m.test(bodyText) || /^```\n#\s+\S/m.test(bodyText);
 	const hasResponseHeading = /^##\s+\S/m.test(bodyText);
 	const firstBlankMatch = bodyText.match(/\n\s*\n/);
 	if ((startsWithH1 || hasResponseHeading) && firstBlankMatch && firstBlankMatch.index !== undefined) {
-		const promptText = bodyText.slice(0, firstBlankMatch.index).trim();
+		let promptText = bodyText.slice(0, firstBlankMatch.index).trim();
 		const responseText = bodyText.slice(firstBlankMatch.index + firstBlankMatch[0].length).trim();
+		promptText = unwrapFencedHeading(promptText);
 		return { promptText, responseText, sourceListText };
 	}
 
@@ -353,13 +356,30 @@ function splitStockSection(section: string): {
 	// follows the question), treat the heading line as the prompt and
 	// everything after it (if any) as the response.
 	if (startsWithH1) {
-		const firstNewline = bodyText.indexOf("\n");
-		if (firstNewline === -1) {
-			return { promptText: bodyText, responseText: "", sourceListText };
+		let firstNewline = bodyText.indexOf("\n");
+		if (bodyText.startsWith("```") && firstNewline !== -1) {
+			const nextNewline = bodyText.indexOf("\n", firstNewline + 1);
+			if (nextNewline !== -1) {
+				const afterNext = bodyText.slice(nextNewline + 1).trim();
+				if (afterNext === "```") {
+					firstNewline = bodyText.length;
+				} else {
+					firstNewline = nextNewline;
+				}
+			} else {
+				firstNewline = bodyText.length;
+			}
 		}
+
+		if (firstNewline === -1 || firstNewline === bodyText.length) {
+			return { promptText: unwrapFencedHeading(bodyText), responseText: "", sourceListText };
+		}
+		let promptText = bodyText.slice(0, firstNewline).trim();
+		const responseText = bodyText.slice(firstNewline).trim();
+		promptText = unwrapFencedHeading(promptText);
 		return {
-			promptText: bodyText.slice(0, firstNewline).trim(),
-			responseText: bodyText.slice(firstNewline).trim(),
+			promptText,
+			responseText,
 			sourceListText,
 		};
 	}
