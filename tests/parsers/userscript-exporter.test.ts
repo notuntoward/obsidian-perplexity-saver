@@ -20,11 +20,15 @@ function stripForMatch(text: string) {
 }
 
 function unwrapFencedHeading(text: string) {
-  const trimmed = (text || "").trim();
-  if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-    const inside = trimmed.slice(3, -3).trim();
-    if (inside.startsWith("#")) {
-      return inside;
+  let trimmed = (text || "").trim();
+  if (trimmed.startsWith("```")) {
+    const match = trimmed.match(/^```[a-zA-Z-]*\n([\s\S]*?)\n```/);
+    if (match) {
+      const inside = match[1].trim();
+      if (inside.startsWith("#")) {
+        const rest = trimmed.slice(match[0].length).trim();
+        return rest ? `${inside}\n\n${rest}` : inside;
+      }
     }
   }
   return trimmed;

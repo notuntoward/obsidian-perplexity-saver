@@ -388,4 +388,26 @@ Here’s a quick comparison of the main PNW states often used in the core Pacifi
 		});
 		expect(dialog.turns[1].citations[1].url).toBe("https://www.census.gov/quickfacts/fact/table/WA/PST045225");
 	});
+
+	it("unwraps fenced code blocks surrounding prompts in annotated format correctly", () => {
+		const raw = `[Perplexity](https://www.perplexity.ai/search/x) · *2026-08-07 19:44 PDT*
+
+---
+
+<!-- PPLX-TURN 1 -->
+<!-- PPLX-ROLE: prompt -->
+\`\`\`
+# <q>Quote here</q> My follow up question
+\`\`\`
+
+<!-- PPLX-ROLE: ai -->
+AI response 2.
+
+<!-- PPLX-ROLE: sources -->
+(none)`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(2);
+		expect(dialog.turns[0].role).toBe("prompt");
+		expect(dialog.turns[0].rawText).toMatch(/^> Quote here\n\n# My follow up question/);
+	});
 });
