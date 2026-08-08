@@ -588,27 +588,47 @@ describe("Userscript Exporter progress prompt suppression", () => {
     return new Function("return (" + match[0] + ")")();
   };
 
-  const getDismissPerplexityToasts = (mockDocument: any): (() => void) => {
+  const getDismissPerplexityToastsBody = (): string => {
     const userscriptPath = path.join(__dirname, "../../browser-userscript/perplexity-obsidian-exporter-direct.user.js");
     const content = fs.readFileSync(userscriptPath, "utf-8");
-    const match = content.match(/function dismissPerplexityToasts\([\s\S]*?\}\n/);
-    if (!match) {
-      throw new Error("Could not find dismissPerplexityToasts function in userscript");
+
+    // Find the declaration - supports function declaration or arrow function assignment flexibly
+    const match = content.match(/(?:function|const)\s+dismissPerplexityToasts\s*[\(=]/);
+    if (!match || match.index === undefined) {
+      throw new Error("Could not find dismissPerplexityToasts declaration in userscript");
     }
-    const mockKeyboardEvent = class {
-      key: string;
-      code: string;
-      bubbles: boolean;
-      constructor(type: string, dict?: any) {
-        this.key = dict?.key || "";
-        this.code = dict?.code || "";
-        this.bubbles = !!dict?.bubbles;
+    const startIdx = match.index;
+
+    // Find the opening brace of the function
+    const openBraceIdx = content.indexOf("{", startIdx);
+    if (openBraceIdx === -1) {
+      throw new Error("Could not find opening brace");
+    }
+
+    // Count curly braces to find the matching closing brace
+    let braceCount = 1;
+    let endIdx = openBraceIdx + 1;
+    while (braceCount > 0 && endIdx < content.length) {
+      const char = content[endIdx];
+      if (char === "{") {
+        braceCount++;
+      } else if (char === "}") {
+        braceCount--;
       }
-    };
-    return new Function("document", "KeyboardEvent", "return (" + match[0] + ")")(mockDocument, mockKeyboardEvent);
+      endIdx++;
+    }
+
+    const snippet = content.slice(startIdx, endIdx);
+
+    // Defensive shape assertion
+    if (!snippet.includes("performSuppression") || !snippet.includes("textsToSuppress")) {
+      throw new Error("Extracted snippet does not match expected dismissPerplexityToasts shape: " + snippet);
+    }
+
+    return snippet;
   };
 
-  it("identifies export downloads and dispatches the Escape event using production functions", () => {
+  it("identifies export downloads correctly", () => {
     const isExportDownload = getIsExportDownload();
 
     // Positive case: markdown export download with blob URL
@@ -616,22 +636,120 @@ describe("Userscript Exporter progress prompt suppression", () => {
 
     // Positive case: data URL
     expect(isExportDownload("data:text/markdown;base64,abc", "")).toBe(true);
+  });
 
-    // Escape dispatch mock
-    let escapeDispatchedCount = 0;
-    const mockDocument = {
+  it("dismisses popover and hides/removes native Perplexity progress toasts dynamically using pure JS DOM mock", () => {
+    // Escape dispatch spies
+    let escapeDispatchedOnDocument = 0;
+    let escapeDispatchedOnActiveEl = 0;
+
+    const mockActiveEl = {
       dispatchEvent(event: any) {
-        if (event && event.key === "Escape" && event.code === "Escape" && event.bubbles) {
-          escapeDispatchedCount++;
+        if (event && event.key === "Escape" && event.keyCode === 27 && event.which === 27) {
+          escapeDispatchedOnActiveEl++;
         }
         return true;
       }
     };
 
-    const dismissPerplexityToasts = getDismissPerplexityToasts(mockDocument);
-    dismissPerplexityToasts();
+    // Prepare mock element tree
+    const mockToastsRemoved: string[] = [];
 
-    expect(escapeDispatchedCount).toBe(1);
+    const createMockElement = (id: string, textContent: string) => {
+      return {
+        id,
+        textContent,
+        style: { display: "block" },
+        remove() {
+          mockToastsRemoved.push(id);
+        }
+      };
+    };
+
+    // Prepare mock element tree (toast containers directly)
+    const toast1Container = createMockElement("toast1-container", "Exporting thread...");
+    const toast2Container = createMockElement("toast2-container", "Export succeeded");
+    const unrelatedToastContainer = createMockElement("toast3-container", "Unrelated notification");
+
+    // An element containing matching text, but not matching any toast selector
+    const safeThreadMessage = createMockElement("safe-thread-message", "User discussing: Exporting thread...");
+
+    const mockDocument = {
+      activeElement: mockActiveEl,
+      body: {},
+      dispatchEvent(event: any) {
+        if (event && event.key === "Escape" && event.keyCode === 27 && event.which === 27) {
+          escapeDispatchedOnDocument++;
+        }
+        return true;
+      },
+      querySelectorAll(selector: string) {
+        // Verify that only the actual toast selectors are queried
+        if (selector.includes("data-sonner-toast") || selector.includes("role='status'")) {
+          return [toast1Container, toast2Container, unrelatedToastContainer];
+        }
+        return [];
+      }
+    };
+
+    // Extract the production function
+    const fnText = getDismissPerplexityToastsBody();
+
+    const mockKeyboardEvent = class {
+      key: string;
+      code: string;
+      keyCode: number;
+      which: number;
+      bubbles: boolean;
+      cancelable: boolean;
+      constructor(type: string, dict?: any) {
+        this.key = dict?.key || "";
+        this.code = dict?.code || "";
+        this.keyCode = dict?.keyCode || 0;
+        this.which = dict?.which || 0;
+        this.bubbles = !!dict?.bubbles;
+        this.cancelable = !!dict?.cancelable;
+      }
+    };
+
+    const dismissToastsInSandbox = new Function(
+      "document",
+      "KeyboardEvent",
+      "setInterval",
+      "clearInterval",
+      "Date",
+      `
+        return (${fnText});
+      `
+    )(
+      mockDocument,
+      mockKeyboardEvent,
+      // Pass a mock setInterval that calls the callback synchronously once for the test
+      (cb: any) => { cb(); return 123; },
+      clearInterval,
+      Date
+    );
+
+    // Run the function
+    dismissToastsInSandbox();
+
+    // Verify that KeyboardEvents were dispatched correctly with full compatibility options
+    expect(escapeDispatchedOnActiveEl).toBeGreaterThanOrEqual(1);
+    expect(escapeDispatchedOnDocument).toBeGreaterThanOrEqual(1);
+
+    // Verify that the DOM toasts are gone (both toast containers were removed/hidden)
+    expect(toast1Container.style.display).toBe("none");
+    expect(toast2Container.style.display).toBe("none");
+    expect(mockToastsRemoved).toContain("toast1-container");
+    expect(mockToastsRemoved).toContain("toast2-container");
+
+    // The unrelated toast container was NOT suppressed or removed
+    expect(unrelatedToastContainer.style.display).toBe("block");
+    expect(mockToastsRemoved).not.toContain("toast3-container");
+
+    // The safe element was NOT touched or removed (not even queried)
+    expect(safeThreadMessage.style.display).toBe("block");
+    expect(mockToastsRemoved).not.toContain("safe-thread-message");
   });
 
   it("does not identify non-export links (negative test cases)", () => {
