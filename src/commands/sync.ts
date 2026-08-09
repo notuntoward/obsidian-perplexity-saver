@@ -28,7 +28,14 @@ export async function syncDialogFromClipboard(
 	file: TFile,
 	headlineOptions: HeadlineOptions,
 	autoFetchSourceTitles: boolean = true,
-	sourceTitleMaxChars: number = 100
+	sourceTitleMaxChars: number = 100,
+	relinkOptions?: {
+		autoRelinkSources?: boolean;
+		zoteroPort?: number;
+		litNotesFolder?: string;
+		minTitleMatchScore?: number;
+		zoteroClient?: any;
+	}
 ): Promise<SyncDialogResult> {
 	const clipboard = await navigator.clipboard.readText();
 	if (!clipboard) {
@@ -97,7 +104,22 @@ export async function syncDialogFromClipboard(
 	});
 
 	const newTurnsChunk = extractTurnsBlock(newBody, nextLocalTurnNumber);
-	const updated = spliceIntoNote(existingText, newTurnsChunk, allSourceLines);
+	let updated = spliceIntoNote(existingText, newTurnsChunk, allSourceLines);
+
+	if (relinkOptions?.autoRelinkSources) {
+		const { autoRelinkSourcesInNote } = await import("../zotero/relinker");
+		updated = await autoRelinkSourcesInNote(
+			app,
+			updated,
+			{
+				autoRelinkSources: relinkOptions.autoRelinkSources,
+				zoteroPort: relinkOptions.zoteroPort ?? 23119,
+				litNotesFolder: relinkOptions.litNotesFolder ?? "",
+				minTitleMatchScore: relinkOptions.minTitleMatchScore ?? 95,
+			},
+			relinkOptions.zoteroClient
+		);
+	}
 
 	await app.vault.modify(file, updated);
 
@@ -159,7 +181,12 @@ export function registerSyncCommand(
 		settings: {
 			autoFetchSourceTitles: boolean;
 			sourceTitleMaxChars: number;
+			autoRelinkSources: boolean;
+			zoteroPort: number;
+			litNotesFolder: string;
+			minTitleMatchScore: number;
 		};
+		zoteroClient?: any;
 	}
 ): void {
 	plugin.addCommand({
@@ -176,7 +203,14 @@ export function registerSyncCommand(
 				file,
 				plugin.headlineOptions(),
 				plugin.settings.autoFetchSourceTitles,
-				plugin.settings.sourceTitleMaxChars
+				plugin.settings.sourceTitleMaxChars,
+				{
+					autoRelinkSources: plugin.settings.autoRelinkSources,
+					zoteroPort: plugin.settings.zoteroPort,
+					litNotesFolder: plugin.settings.litNotesFolder,
+					minTitleMatchScore: plugin.settings.minTitleMatchScore,
+					zoteroClient: plugin.zoteroClient,
+				}
 			);
 			if (!result.success) {
 				new Notice(result.error ?? "Sync failed.");

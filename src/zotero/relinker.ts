@@ -21,6 +21,41 @@ export interface RelinkResult {
 }
 
 /**
+ * Automatically relinks sources in note text if autoRelinkSources setting is enabled.
+ * Catches any connection/Zotero errors and displays a Notice without blocking the main workflow.
+ */
+export async function autoRelinkSourcesInNote(
+	app: App,
+	noteText: string,
+	settings: {
+		autoRelinkSources: boolean;
+		zoteroPort: number;
+		litNotesFolder: string;
+		minTitleMatchScore: number;
+	},
+	zoteroClient?: ZoteroClient
+): Promise<string> {
+	if (!settings.autoRelinkSources) {
+		return noteText;
+	}
+
+	try {
+		const result = await relinkSourcesInNote(app, noteText, {
+			zoteroPort: settings.zoteroPort,
+			litNotesFolder: settings.litNotesFolder,
+			minTitleMatchScore: settings.minTitleMatchScore,
+			zoteroClient,
+		});
+		return result.updatedText;
+	} catch (err: any) {
+		console.warn("Auto-relinking failed:", err);
+		const { Notice } = await import("obsidian");
+		new Notice("Auto-relinking with Zotero failed: Zotero may not be running.");
+		return noteText;
+	}
+}
+
+/**
  * Relink sources in an AI note's text by checking Zotero and Obsidian literature notes.
  */
 export async function relinkSourcesInNote(

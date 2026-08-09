@@ -22,6 +22,11 @@ interface CreateNoteParams {
 	autoFetchSourceTitles?: boolean;
 	sourceTitleMaxChars?: number;
 	prefetchedDialogPromise?: Promise<DialogFile>;
+	autoRelinkSources?: boolean;
+	zoteroPort?: number;
+	litNotesFolder?: string;
+	minTitleMatchScore?: number;
+	zoteroClient?: any;
 }
 
 interface CreateNoteSuccess {
@@ -85,6 +90,22 @@ export async function createPerplexityNote(
 
 	const { body } = buildNoteBody(dialog, { collapseBlankLines, collapsePromptCallouts, headlineOptions });
 
+	let finalBody = body;
+	if (params.autoRelinkSources) {
+		const { autoRelinkSourcesInNote } = await import("./zotero/relinker");
+		finalBody = await autoRelinkSourcesInNote(
+			app,
+			body,
+			{
+				autoRelinkSources: params.autoRelinkSources,
+				zoteroPort: params.zoteroPort ?? 23119,
+				litNotesFolder: params.litNotesFolder ?? "",
+				minTitleMatchScore: params.minTitleMatchScore ?? 95,
+			},
+			params.zoteroClient
+		);
+	}
+
 	const activeFolderPath = activeFile.parent ? activeFile.parent.path : "";
 	const folderPath = normalizePath(
 		activeFolderPath ? `${activeFolderPath}/${searchesFolder}` : searchesFolder
@@ -102,7 +123,7 @@ export async function createPerplexityNote(
 		return { success: false, error: "A note with that name already exists. Pick a different name." };
 	}
 
-	const newFile = await createDialogNote(app, newNotePath, body, {
+	const newFile = await createDialogNote(app, newNotePath, finalBody, {
 		"ai-dialog-format": "v1",
 		"ai-source-vendor": dialog.sourceVendor,
 		"ai-source-url": dialog.sourceUrl,

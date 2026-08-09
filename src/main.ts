@@ -66,6 +66,10 @@ interface PerplexitySaverSettings {
 	 * Minimum title fuzzy match score (0-100) for matching sources to Zotero items.
 	 */
 	minTitleMatchScore: number;
+	/**
+	 * Automatically relink sources with Zotero and Obsidian literature notes when importing/syncing.
+	 */
+	autoRelinkSources: boolean;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -81,6 +85,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	zoteroPort: 23119,
 	litNotesFolder: "lit/lit_notes",
 	minTitleMatchScore: 95,
+	autoRelinkSources: false,
 };
 
 interface InlineInputData {
@@ -290,6 +295,11 @@ class InlineInputWidget extends WidgetType {
 			autoFetchSourceTitles: this.plugin.settings.autoFetchSourceTitles,
 			sourceTitleMaxChars: this.plugin.settings.sourceTitleMaxChars,
 			prefetchedDialogPromise,
+			autoRelinkSources: this.plugin.settings.autoRelinkSources,
+			zoteroPort: this.plugin.settings.zoteroPort,
+			litNotesFolder: this.plugin.settings.litNotesFolder,
+			minTitleMatchScore: this.plugin.settings.minTitleMatchScore,
+			zoteroClient: this.plugin.zoteroClient,
 		});
 
 		if (!result.success) {
@@ -520,6 +530,18 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		// "Zotero & Literature Note Relinking" group
 		containerEl.createEl("h3", { text: "Zotero & Literature Note Relinking" });
+
+		new Setting(containerEl)
+			.setName("Auto-relink sources")
+			.setDesc("Automatically run Zotero relinking when importing or syncing new turns.")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.autoRelinkSources)
+					.onChange(async (value) => {
+						this.plugin.settings.autoRelinkSources = value;
+						await this.plugin.saveSettings();
+					})
+			);
 
 		new Setting(containerEl)
 			.setName("Zotero HTTP Port")
