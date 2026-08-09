@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
-import { unwrapFencedHeading } from "../../src/utils";
 
 // Let's implement the core userscript matching functions locally for testing
 const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
@@ -809,14 +808,20 @@ describe("Userscript Exporter progress prompt suppression", () => {
     const mockToastsRemoved: string[] = [];
 
     const createMockElement = (id: string, textContent: string) => {
-      return {
+      const el = {
         id,
         textContent,
-        style: { display: "block" },
+        style: {
+          display: "block",
+          setProperty(prop: string, val: string) {
+            if (prop === "display") this.display = val;
+          }
+        },
         remove() {
           mockToastsRemoved.push(id);
         }
       };
+      return el;
     };
 
     // Prepare mock element tree (toast containers directly)
@@ -890,19 +895,68 @@ describe("Userscript Exporter progress prompt suppression", () => {
     expect(escapeDispatchedOnActiveEl).toBeGreaterThanOrEqual(1);
     expect(escapeDispatchedOnDocument).toBeGreaterThanOrEqual(1);
 
-    // Verify that the DOM toasts are gone (both toast containers were removed/hidden)
+    // Verify that the DOM toasts are hidden via CSS display: none
     expect(toast1Container.style.display).toBe("none");
     expect(toast2Container.style.display).toBe("none");
-    expect(mockToastsRemoved).toContain("toast1-container");
-    expect(mockToastsRemoved).toContain("toast2-container");
 
-    // The unrelated toast container was NOT suppressed or removed
+    // The unrelated toast container was NOT suppressed
     expect(unrelatedToastContainer.style.display).toBe("block");
-    expect(mockToastsRemoved).not.toContain("toast3-container");
 
-    // The safe element was NOT touched or removed (not even queried)
+    // The safe element was NOT touched
     expect(safeThreadMessage.style.display).toBe("block");
-    expect(mockToastsRemoved).not.toContain("safe-thread-message");
+  });
+
+  it("suppresses toasts case-insensitively and handles diverse toast text patterns", () => {
+    const mockToastsRemoved: string[] = [];
+    const createMockElement = (id: string, textContent: string) => ({
+      id,
+      textContent,
+      style: {
+        display: "block",
+        setProperty(prop: string, val: string) {
+          if (prop === "display") this.display = val;
+        }
+      },
+      remove() {
+        mockToastsRemoved.push(id);
+      }
+    });
+
+    const uppercaseToast = createMockElement("toast-upper", "EXPORTING THREAD...");
+    const mixedCaseToast = createMockElement("toast-mixed", "Export Succeeded");
+
+    const mockDocument = {
+      activeElement: { dispatchEvent: () => true },
+      body: {},
+      dispatchEvent: () => true,
+      querySelectorAll(selector: string) {
+        if (selector.includes("data-sonner-toast") || selector.includes("role='status'")) {
+          return [uppercaseToast, mixedCaseToast];
+        }
+        return [];
+      }
+    };
+
+    const fnText = getDismissPerplexityToastsBody();
+    const dismissToastsInSandbox = new Function(
+      "document",
+      "KeyboardEvent",
+      "setInterval",
+      "clearInterval",
+      "Date",
+      `return (${fnText});`
+    )(
+      mockDocument,
+      class { constructor() {} },
+      (cb: any) => { cb(); return 123; },
+      () => {},
+      Date
+    );
+
+    dismissToastsInSandbox();
+
+    expect(uppercaseToast.style.display).toBe("none");
+    expect(mixedCaseToast.style.display).toBe("none");
   });
 
   it("does not identify non-export links (negative test cases)", () => {
@@ -918,3 +972,4 @@ describe("Userscript Exporter progress prompt suppression", () => {
     expect(isExportDownload("https://www.perplexity.ai/abc-123.pdf", "file.pdf")).toBe(false);
   });
 });
+

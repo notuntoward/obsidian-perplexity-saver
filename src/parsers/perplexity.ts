@@ -1,5 +1,4 @@
 import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
-import { unwrapFencedHeading } from "../utils";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".

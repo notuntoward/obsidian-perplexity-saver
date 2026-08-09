@@ -22,6 +22,9 @@
     try {
       if (obj instanceof Blob) {
         blobRegistry.set(url, obj);
+        try {
+          dismissPerplexityToasts();
+        } catch (_) {}
       }
     } catch (_) {}
     return url;
@@ -893,21 +896,68 @@
       console.warn("[PPLX Obsidian Exporter] KeyboardEvent dispatch failed:", e);
     }
 
-    // 2. Scan the DOM for progress texts inside toast containers and hide/remove them
-    const textsToSuppress = ["Exporting thread", "Export succeeded", "Exporting..."];
+    // 2. Scan the DOM for progress texts inside toast containers and hide them via CSS (without removing DOM nodes to prevent React crashes)
+    const textsToSuppress = [
+      "exporting thread",
+      "export succeeded",
+      "exporting...",
+      "exporting",
+      "export failed",
+      "export completed",
+      "export ready",
+      "exporting conversation",
+      "exporting chat"
+    ];
+
+    const hideElement = (el) => {
+      if (!el) return;
+      try {
+        if (el.style) {
+          if (typeof el.style.setProperty === "function") {
+            el.style.setProperty("display", "none", "important");
+            el.style.setProperty("opacity", "0", "important");
+            el.style.setProperty("visibility", "hidden", "important");
+            el.style.setProperty("pointer-events", "none", "important");
+          }
+          el.style.display = "none";
+        }
+      } catch (_) {}
+    };
 
     const performSuppression = () => {
       try {
         const toastContainers = document.querySelectorAll(
-          "[data-sonner-toast], [data-radix-toast], [role='status'], [role='alert'], .toast, .notification"
+          "[data-sonner-toast], [data-radix-toast], [role='status'], [role='alert'], [role='region'], [role='log'], [aria-live], .toast, .notification, [class*='toast'], [class*='Toast'], [class*='notification'], [class*='Notification'], [class*='snackbar'], [class*='Snackbar'], [class*='banner'], ol[aria-label] li, ul[aria-label] li, div[class*='fixed'], div[class*='absolute'], div[class*='sticky']"
         );
+
         for (const container of toastContainers) {
-          const text = container.textContent || "";
-          if (textsToSuppress.some(t => text.includes(t))) {
-            container.style.display = "none";
-            try {
-              container.remove();
-            } catch (_) {}
+          if (!container) continue;
+
+          // Never touch root elements or whole document
+          if (container === document.body || container === document.documentElement || container.id === "__next" || container.id === "app") {
+            continue;
+          }
+
+          // Do not touch actual chat turn messages or markdown prose paragraphs
+          if (typeof container.closest === "function" && container.closest("[data-message-author-role], .prose, [data-testid='user-message'], [data-testid='assistant-message']")) {
+            continue;
+          }
+
+          const text = (container.textContent || "").toLowerCase();
+          // Toasts are small notification items; skip large content blocks
+          if (text.length > 400) continue;
+
+          if (textsToSuppress.some(t => text.includes(t.toLowerCase()))) {
+            const card = (typeof container.closest === "function" && container.closest(
+              "[data-sonner-toast], [data-radix-toast], [role='status'], [role='alert'], [role='region'], [role='log'], .toast, .notification, [class*='toast'], [class*='Toast'], [class*='notification'], [class*='Notification'], li, div[class*='fixed'], div[class*='absolute'], div[class*='sticky'], div[class*='shadow'], div[class*='rounded']"
+            )) || container;
+
+            if (card !== document.body && card !== document.documentElement && card.id !== "__next" && card.id !== "app") {
+              hideElement(card);
+            }
+            if (card !== container) {
+              hideElement(container);
+            }
           }
         }
       } catch (e) {
@@ -918,11 +968,26 @@
     // Run immediately
     performSuppression();
 
-    // Poll for the next 1.5 seconds to suppress asynchronously spawned toasts
+    // Setup MutationObserver for real-time suppression of dynamically injected toasts
+    try {
+      if (typeof MutationObserver !== "undefined" && document.body) {
+        const observer = new MutationObserver(() => {
+          performSuppression();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+        setTimeout(() => {
+          try {
+            observer.disconnect();
+          } catch (_) {}
+        }, 10000);
+      }
+    } catch (_) {}
+
+    // Poll for the next 10 seconds to suppress asynchronously spawned toasts
     const start = Date.now();
     const interval = setInterval(() => {
       performSuppression();
-      if (Date.now() - start > 1500) {
+      if (Date.now() - start > 10000) {
         clearInterval(interval);
       }
     }, 50);
@@ -978,4 +1043,28 @@
     return OrigAnchorClick.call(this);
   };
 
+  // Listen for Enter key on inputs containing export commands to trigger suppression immediately
+  try {
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const activeEl = document.activeElement;
+        if (activeEl && (activeEl.tagName === "TEXTAREA" || activeEl.tagName === "INPUT" || activeEl.isContentEditable)) {
+          const val = (activeEl.value || activeEl.textContent || "").toLowerCase();
+          if (val.includes("export")) {
+            dismissPerplexityToasts();
+          }
+        }
+      }
+    }, true);
+  } catch (_) {}
+
+  // Proactively run toast suppression & setup global observer immediately on userscript load
+  try {
+    dismissPerplexityToasts();
+  } catch (_) {}
+
 })();
+
+
+
+
