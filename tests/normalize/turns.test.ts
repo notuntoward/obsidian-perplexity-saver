@@ -6,6 +6,8 @@ import {
 	demoteHeadingsBelow,
 	stripHeadingMarkers,
 	assignTurnIds,
+	deduplicateSameTurnCitations,
+	deduplicateDialogCitations,
 } from "../../src/normalize/turns";
 import { DialogTurn } from "../../src/parsers/types";
 
@@ -146,5 +148,75 @@ describe("getSurvivingTurnIds", () => {
 
 	it("returns empty set when no turns present", () => {
 		expect(getSurvivingTurnIds("just text").size).toBe(0);
+	});
+});
+
+describe("deduplicateSameTurnCitations", () => {
+	it("does nothing for non-ai turns", () => {
+		const turn: DialogTurn = {
+			role: "prompt",
+			rawText: "Search Google [1] or [2]",
+			citations: [
+				{ origNum: "1", url: "https://google.com" },
+				{ origNum: "2", url: "https://google.com" },
+			],
+		};
+		deduplicateSameTurnCitations(turn);
+		expect(turn.citations).toHaveLength(2);
+		expect(turn.rawText).toBe("Search Google [1] or [2]");
+	});
+
+	it("deduplicates same-turn citations and renumbers footnotes in rawText", () => {
+		const turn: DialogTurn = {
+			role: "ai",
+			rawText: "This is a statement [2] and another statement [5]. Here is a footnote [^9]. We also refer to [2] again.",
+			citations: [
+				{ origNum: "2", url: "https://google.com", title: "Google" },
+				{ origNum: "5", url: "https://google.com", title: "Google Corp" },
+				{ origNum: "9", url: "https://yahoo.com" },
+			],
+		};
+		deduplicateSameTurnCitations(turn);
+
+		expect(turn.citations).toEqual([
+			{ origNum: "1", url: "https://google.com", title: "Google" },
+			{ origNum: "2", url: "https://yahoo.com", title: undefined },
+		]);
+		expect(turn.rawText).toBe(
+			"This is a statement [1] and another statement [1]. Here is a footnote [^2]. We also refer to [1] again."
+		);
+	});
+
+	it("merges titles when the duplicate has a title but the first seen citation does not", () => {
+		const turn: DialogTurn = {
+			role: "ai",
+			rawText: "Check [1] and [2].",
+			citations: [
+				{ origNum: "1", url: "https://google.com" },
+				{ origNum: "2", url: "https://google.com", title: "Google Title" },
+			],
+		};
+		deduplicateSameTurnCitations(turn);
+		expect(turn.citations).toEqual([
+			{ origNum: "1", url: "https://google.com", title: "Google Title" },
+		]);
+		expect(turn.rawText).toBe("Check [1] and [1].");
+	});
+
+	it("safely handles multi-digit and out-of-order renumberings without collisions", () => {
+		const turn: DialogTurn = {
+			role: "ai",
+			rawText: "Ref 12 is [12] and ref 1 is [1].",
+			citations: [
+				{ origNum: "12", url: "https://yahoo.com" },
+				{ origNum: "1", url: "https://google.com" },
+			],
+		};
+		deduplicateSameTurnCitations(turn);
+		expect(turn.citations).toEqual([
+			{ origNum: "1", url: "https://yahoo.com", title: undefined },
+			{ origNum: "2", url: "https://google.com", title: undefined },
+		]);
+		expect(turn.rawText).toBe("Ref 12 is [1] and ref 1 is [2].");
 	});
 });

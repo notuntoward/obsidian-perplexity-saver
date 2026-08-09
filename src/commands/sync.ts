@@ -2,7 +2,7 @@ import { App, Editor, MarkdownView, Notice, TFile } from "obsidian";
 import { detectAndParse } from "../parsers/detect";
 import { buildNoteBody, extractSourcesSection } from "../normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, updateFrontMatter } from "../normalize/frontmatter";
-import { getNextTurnIndex, groupLogicalTurns } from "../normalize/turns";
+import { getNextTurnIndex, groupLogicalTurns, deduplicateDialogCitations } from "../normalize/turns";
 import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
@@ -62,6 +62,8 @@ export async function syncDialogFromClipboard(
 	if (dialog.turns.length === 0) {
 		return { success: false, error: "Clipboard did not contain any recognizable turns." };
 	}
+
+	deduplicateDialogCitations(dialog);
 
 	const clipboardLogicalTurns = groupLogicalTurns(dialog.turns);
 	const newLogicalTurns = clipboardLogicalTurns.slice(syncedCount);

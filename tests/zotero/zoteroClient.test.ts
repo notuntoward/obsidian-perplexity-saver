@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { normalizeUrl, extractCitekeyFromExtra, ZoteroClient } from "../../src/zotero/zoteroClient";
+import { extractCitekeyFromExtra, ZoteroClient } from "../../src/zotero/zoteroClient";
+import { normalizeUrl } from "../../src/utils";
 
 describe("zoteroClient - normalizeUrl", () => {
 	it("lowercases host and path and strips trailing slash", () => {

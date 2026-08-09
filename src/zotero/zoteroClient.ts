@@ -1,6 +1,7 @@
 import http from "http";
 import { requestUrl } from "obsidian";
 import { matchTitles } from "./matcher";
+import { normalizeUrl } from "../utils";
 
 export interface ZoteroItemData {
 	zotkey: string;
@@ -66,45 +67,6 @@ function nodeRequest(
 }
 
 /**
- * Normalize a URL according to refwrangle rules:
- * Lowercase protocol & host, strip trailing slashes from path.
- */
-export function normalizeUrl(url: string): string {
-	if (!url) return "";
-	try {
-		let cleaned = url.toLowerCase().trim();
-		// Normalize protocol: http:// -> https://
-		if (cleaned.startsWith("http://")) {
-			cleaned = "https://" + cleaned.substring(7);
-		}
-		const parsed = new URL(cleaned);
-		let path = parsed.pathname;
-		while (path.length > 1 && path.endsWith("/")) {
-			path = path.slice(0, -1);
-		}
-
-		// ArXiv URL canonicalization: /pdf/1805.09785.pdf, /html/1805.09785v1 -> /abs/1805.09785
-		const arxivMatch =
-			/^\/(?:abs|pdf|html)\/(\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?(?:\.pdf)?$/i.exec(
-				path
-			);
-		if (parsed.hostname.includes("arxiv.org") && arxivMatch) {
-			path = "/abs/" + arxivMatch[1];
-		}
-
-		return `${parsed.protocol}//${parsed.host}${path}${parsed.search}${parsed.hash}`;
-	} catch {
-		// Fallback for non-standard URLs
-		let cleaned = url.toLowerCase().trim();
-		if (cleaned.startsWith("http://")) {
-			cleaned = "https://" + cleaned.substring(7);
-		}
-		while (cleaned.endsWith("/")) {
-			cleaned = cleaned.slice(0, -1);
-		}
-		return cleaned;
-	}
-}
 
 /**
  * Extract Better BibTeX / Zotero Citation Key from an item's extra field.

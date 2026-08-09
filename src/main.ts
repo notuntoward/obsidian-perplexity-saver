@@ -14,6 +14,7 @@ import { resolveSourceTitles } from "./scraper";
 import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
 import { DialogFile } from "./parsers/types";
 import { ZoteroClient } from "./zotero/zoteroClient";
+import { deduplicateDialogCitations } from "./normalize/turns";
 
 interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -154,6 +155,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			if (this.settings.autoFetchSourceTitles) {
 				const { body: stripped } = stripLeadingFrontmatterIfPresent(noteContent);
 				const dialog = detectAndParse(stripped);
+				deduplicateDialogCitations(dialog);
 				prefetchedDialogPromise = (async () => {
 					try {
 						await resolveSourceTitles(dialog, {

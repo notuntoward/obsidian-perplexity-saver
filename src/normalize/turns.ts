@@ -1,4 +1,5 @@
-import { DialogTurn, NoteRole } from "../parsers/types";
+import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "../parsers/types";
+import { normalizeUrl } from "../utils";
 
 /**
  * Render one turn as a markdown block. Each turn has ONE heading (the
@@ -190,4 +191,75 @@ export function getSurvivingTurnIds(noteText: string): Set<number> {
 		ids.add(parseInt(m[1], 10));
 	}
 	return ids;
+}
+
+/**
+ * Deduplicates same-turn citations for an AI turn, and renumbers footnote references
+ * sequentially starting from 1 in the turn's rawText.
+ */
+export function deduplicateSameTurnCitations(turn: DialogTurn): void {
+	if (turn.role !== "ai" || !turn.citations || turn.citations.length === 0) {
+		return;
+	}
+
+	const uniqueCitations: ParsedCitation[] = [];
+	const seenUrls = new Map<string, string>(); // normalizedUrl -> new origNum
+	const oldNumToNewNum = new Map<string, string>(); // old origNum -> new origNum
+
+	let newNumCounter = 1;
+	for (const citation of turn.citations) {
+		const normalizedUrl = normalizeUrl(citation.url);
+		let newNum = seenUrls.get(normalizedUrl);
+		if (!newNum) {
+			newNum = String(newNumCounter++);
+			seenUrls.set(normalizedUrl, newNum);
+			uniqueCitations.push({
+				origNum: newNum,
+				url: citation.url,
+				title: citation.title,
+			});
+		} else {
+			// Merge titles: if the existing citation has no title, adopt the duplicate's title
+			const existing = uniqueCitations.find((c) => c.origNum === newNum);
+			if (existing && !existing.title && citation.title) {
+				existing.title = citation.title;
+			}
+		}
+		oldNumToNewNum.set(citation.origNum, newNum);
+	}
+
+	turn.citations = uniqueCitations;
+
+	// Renumber footnotes in turn's rawText using temp placeholders to avoid collisions
+	let text = turn.rawText;
+
+	// 1. Replace [^num] with a temp token
+	text = text.replace(/\[\^(\d+)\]/g, (match, num) => {
+		const newNum = oldNumToNewNum.get(num);
+		if (!newNum) return match;
+		return `[^TEMP_${newNum}_TEMP]`;
+	});
+
+	// 2. Replace [num] with a temp token
+	text = text.replace(/\[(\d+)\]/g, (match, num) => {
+		const newNum = oldNumToNewNum.get(num);
+		if (!newNum) return match;
+		return `[TEMP_${newNum}_TEMP]`;
+	});
+
+	// 3. Convert temp tokens to final new values
+	text = text.replace(/\[\^TEMP_(\d+)_TEMP\]/g, "[^$1]");
+	text = text.replace(/\[TEMP_(\d+)_TEMP\]/g, "[$1]");
+
+	turn.rawText = text;
+}
+
+/**
+ * Iterate over all turns in a dialog file and deduplicate same-turn citations.
+ */
+export function deduplicateDialogCitations(dialog: DialogFile): void {
+	if (!dialog.turns) return;
+	for (const turn of dialog.turns) {
+		deduplicateSameTurnCitations(turn);
+	}
 }

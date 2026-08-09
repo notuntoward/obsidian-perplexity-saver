@@ -4,7 +4,7 @@ import { buildNoteBody } from "./normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, createDialogNote } from "./normalize/frontmatter";
 import { HeadlineOptions } from "./normalize/headlines";
 import { sanitizeFilename } from "./utils";
-import { groupLogicalTurns } from "./normalize/turns";
+import { groupLogicalTurns, deduplicateDialogCitations } from "./normalize/turns";
 import { DialogFile } from "./parsers/types";
 
 import { resolveSourceTitles } from "./scraper";
@@ -73,6 +73,8 @@ export async function createPerplexityNote(
 	if (!dialog) {
 		dialog = detectAndParse(stripped);
 	}
+
+	deduplicateDialogCitations(dialog);
 
 	if (needResolveSourceTitles && autoFetchSourceTitles) {
 		await resolveSourceTitles(dialog, {

@@ -77,7 +77,7 @@ first answer[^1_1]
 		expect(written).toMatch(/## second question \^turn-2$/m);
 		expect(written).toMatch(/> \[!Prompt\]\+\n> second question/);
 		expect(written).toContain("second question");
-		expect(written).toContain("second answer[^2_2]");
+		expect(written).toContain("second answer[^2_1]");
 		expect(written).toContain("first question");
 		expect(written).toContain("first answer[^1_1]");
 	});
