@@ -328,18 +328,6 @@ export class ZoteroClient {
 			const currentVersion = await this.getLibraryVersion();
 
 			if (currentVersion !== null && currentVersion === this.lastLibraryVersion) {
-				// Enrich any cached items that might have fallback citekey === zotkey
-				const hasFallbackCitekeys = this.cachedItems.some((i) => i.citekey === i.zotkey);
-				if (hasFallbackCitekeys) {
-					const nativeMap = await this.getNativeCitekeyMap();
-					if (nativeMap.size > 0) {
-						for (const item of this.cachedItems) {
-							if (item.citekey === item.zotkey && nativeMap.has(item.zotkey)) {
-								item.citekey = nativeMap.get(item.zotkey)!;
-							}
-						}
-					}
-				}
 				opts.onProgress?.(
 					`Zotero library unchanged (v${currentVersion}). Using cached ${this.cachedItems.length} items...`
 				);

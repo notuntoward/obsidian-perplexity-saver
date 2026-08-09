@@ -77,4 +77,27 @@ describe("zoteroClient - findItemByUrl and findItemByTitle", () => {
 		expect(byTitle).toBeDefined();
 		expect(byTitle?.item.zotkey).toBe("ZOT123");
 	});
+
+	it("uses cached items without calling getNativeCitekeyMap when library version matches", async () => {
+		const client = new ZoteroClient();
+		const cached = [
+			{
+				zotkey: "ZOT123",
+				citekey: "smith2024",
+				title: "Title",
+				url: "https://example.com/a",
+				normalizedUrl: "https://example.com/a",
+			},
+		];
+		(client as any).cachedItems = cached;
+		(client as any).lastLibraryVersion = 42;
+
+		const getLibraryVersionSpy = vi.spyOn(client, "getLibraryVersion").mockResolvedValue(42);
+		const getNativeCitekeyMapSpy = vi.spyOn(client as any, "getNativeCitekeyMap");
+
+		const items = await client.getItems({ forceRefresh: false });
+		expect(items).toBe(cached);
+		expect(getLibraryVersionSpy).toHaveBeenCalled();
+		expect(getNativeCitekeyMapSpy).not.toHaveBeenCalled();
+	});
 });
