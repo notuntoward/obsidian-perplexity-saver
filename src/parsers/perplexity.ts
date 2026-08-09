@@ -1,4 +1,5 @@
 import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
+import { unwrapFencedHeading } from "../utils";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".
@@ -112,7 +113,7 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 
 		for (const r of roles) {
 			if (r.role === "prompt") {
-				promptText = stripAnnotations(r.content);
+				promptText = unwrapFencedHeading(stripAnnotations(r.content));
 			} else if (r.role === "ai") {
 				responseText = stripAnnotations(r.content);
 			} else if (r.role === "sources") {
@@ -205,17 +206,46 @@ function extractSourceMetadata(section: string): string | undefined {
 
 export function unwrapFencedHeading(text: string): string {
 	let trimmed = (text || "").trim();
-	if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-		const inside = trimmed.slice(3, -3).trim();
-		if (inside.startsWith("#")) {
-			return inside;
+	if (trimmed.startsWith("```")) {
+		// 1. Try greedy match when full string is wrapped in backticks (safely preserving nested code blocks)
+		let match = trimmed.match(/^```(\S*)\r?\n([\s\S]*)\r?\n```$/);
+		if (match) {
+			const inside = match[2].trim();
+			if (inside.startsWith("#")) {
+				return inside;
+			}
 		}
-	}
-	const fencedHeadingMatch = trimmed.match(/^```[ \t]*\r?\n+(#[\s\S]*?)\r?\n+```[ \t]*(?:\r?\n+|$)/);
-	if (fencedHeadingMatch) {
-		const headingContent = fencedHeadingMatch[1].trim();
-		const rest = trimmed.slice(fencedHeadingMatch[0].length).trim();
-		return rest ? `${headingContent}\n\n${rest}` : headingContent;
+
+		// 2. Try matching leading fenced heading block followed by trailing text (skipping inner code blocks inside unclosed <q> tags)
+		const lines = trimmed.split("\n");
+		let fenceEndIdx = -1;
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim().startsWith("```")) {
+				const candidateInside = lines.slice(1, i).join("\n").trim();
+				if (candidateInside.startsWith("#")) {
+					if (candidateInside.includes("<q>") && !candidateInside.includes("</q>")) {
+						continue; // skip inner code blocks inside <q>...</q>
+					}
+					fenceEndIdx = i;
+					break;
+				}
+			}
+		}
+
+		if (fenceEndIdx !== -1) {
+			const inside = lines.slice(1, fenceEndIdx).join("\n").trim();
+			const rest = lines.slice(fenceEndIdx + 1).join("\n").trim();
+			return rest ? `${inside}\n\n${rest}` : inside;
+		}
+
+		// 3. Fallback: match without closing backticks (e.g. unclosed fence at EOF)
+		match = trimmed.match(/^```(\S*)\r?\n([\s\S]*)$/);
+		if (match) {
+			const inside = match[2].trim();
+			if (inside.startsWith("#")) {
+				return inside;
+			}
+		}
 	}
 	return trimmed;
 }
@@ -317,12 +347,14 @@ function splitSmcSection(section: string): {
 	return { promptText, responseText, sourceListText };
 }
 
+
 function splitStockSection(section: string): {
 	promptText: string;
 	responseText: string;
 	sourceListText: string;
 } {
 	let { body: bodyText } = stripMetadataLine(section);
+	bodyText = unwrapFencedHeading(bodyText);
 	let sourceListText = "";
 
 	// Split off the trailing # Citations: or # Sources: block, if present.
@@ -357,27 +389,23 @@ function splitStockSection(section: string): {
 	//     prompt).
 	// If neither is present, the whole body is treated as the response
 	// (e.g. a pasted response with no prompt and no headings).
-	const startsWithH1 = /^#\s+\S/m.test(bodyText);
+	const startsWithH1 = /^#\s+\S/m.test(bodyText) || /^```\S*\n#\s+\S/m.test(bodyText);
 	const hasResponseHeading = /^##\s+\S/m.test(bodyText);
 	const firstBlankMatch = bodyText.match(/\n\s*\n/);
 	if ((startsWithH1 || hasResponseHeading) && firstBlankMatch && firstBlankMatch.index !== undefined) {
-		const promptText = bodyText.slice(0, firstBlankMatch.index).trim();
+		let promptText = bodyText.slice(0, firstBlankMatch.index).trim();
 		const responseText = bodyText.slice(firstBlankMatch.index + firstBlankMatch[0].length).trim();
+		promptText = unwrapFencedHeading(promptText);
 		return { promptText, responseText, sourceListText };
 	}
 
 	// Perplexity echoes the user's question as a level-1 (# ) heading. If
 	// there is no blank line to split on (i.e. no AI response text
-	// follows the question), treat the heading line as the prompt and
-	// everything after it (if any) as the response.
+	// follows the question), treat the entire heading line as the prompt.
 	if (startsWithH1) {
-		const firstNewline = bodyText.indexOf("\n");
-		if (firstNewline === -1) {
-			return { promptText: bodyText, responseText: "", sourceListText };
-		}
 		return {
-			promptText: bodyText.slice(0, firstNewline).trim(),
-			responseText: bodyText.slice(firstNewline).trim(),
+			promptText: unwrapFencedHeading(bodyText),
+			responseText: "",
 			sourceListText,
 		};
 	}

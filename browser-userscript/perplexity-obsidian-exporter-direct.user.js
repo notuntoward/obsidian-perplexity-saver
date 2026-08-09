@@ -206,17 +206,46 @@
 
   function unwrapFencedHeading(text) {
     let trimmed = (text || "").trim();
-    if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
-      const inside = trimmed.slice(3, -3).trim();
-      if (inside.startsWith("#")) {
-        return inside;
+    if (trimmed.startsWith("```")) {
+      // 1. Try greedy match when full string is wrapped in backticks (safely preserving nested code blocks)
+      let match = trimmed.match(/^```(\S*)\r?\n([\s\S]*)\r?\n```$/);
+      if (match) {
+        const inside = match[2].trim();
+        if (inside.startsWith("#")) {
+          return inside;
+        }
       }
-    }
-    const fencedHeadingMatch = trimmed.match(/^```[ \t]*\r?\n+(#[\s\S]*?)\r?\n+```[ \t]*(?:\r?\n+|$)/);
-    if (fencedHeadingMatch) {
-      const headingContent = fencedHeadingMatch[1].trim();
-      const rest = trimmed.slice(fencedHeadingMatch[0].length).trim();
-      return rest ? `${headingContent}\n\n${rest}` : headingContent;
+
+      // 2. Try matching leading fenced heading block followed by trailing text (skipping inner code blocks inside unclosed <q> tags)
+      const lines = trimmed.split("\n");
+      let fenceEndIdx = -1;
+      for (let i = 1; i < lines.length; i++) {
+        if (lines[i].trim().startsWith("```")) {
+          const candidateInside = lines.slice(1, i).join("\n").trim();
+          if (candidateInside.startsWith("#")) {
+            if (candidateInside.includes("<q>") && !candidateInside.includes("</q>")) {
+              continue; // skip inner code blocks inside <q>...</q>
+            }
+            fenceEndIdx = i;
+            break;
+          }
+        }
+      }
+
+      if (fenceEndIdx !== -1) {
+        const inside = lines.slice(1, fenceEndIdx).join("\n").trim();
+        const rest = lines.slice(fenceEndIdx + 1).join("\n").trim();
+        return rest ? `${inside}\n\n${rest}` : inside;
+      }
+
+      // 3. Fallback: match without closing backticks (e.g. unclosed fence at EOF)
+      match = trimmed.match(/^```(\S*)\r?\n([\s\S]*)$/);
+      if (match) {
+        const inside = match[2].trim();
+        if (inside.startsWith("#")) {
+          return inside;
+        }
+      }
     }
     return trimmed;
   }
@@ -638,7 +667,18 @@
       return null;
     }
 
-    const originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+    let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+
+    // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
+    // but before the response starts, we can consume it as part of the split so that
+    // promptPart is a complete fenced code block.
+    if (chunkBody.startsWith("```")) {
+      const remaining = chunkBody.slice(originalEndIdx);
+      const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
+      if (closeMatch) {
+        originalEndIdx += closeMatch[0].length;
+      }
+    }
 
     // Scan forward for the first alphanumeric character of the response
     const remainingText = chunkBody.slice(originalEndIdx);
