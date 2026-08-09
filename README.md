@@ -261,8 +261,8 @@ This compiles the code into `main.js`. Copy `manifest.json`, the compiled `main.
 
 # Credits
 
-- Source titles inspired by [Auto Link Title](https://github.com/zolrath/obsidian-auto-link-title) by zolrath
 - Thanks to [Tampermonkey](https://www.tampermonkey.net/) chrome extension
+- Zotero connections inspired by [Zotero Bridge](https://github.com/vanakat/zotero-bridge) by vanakat
 
 # Deprecated Workflows & Legacy Interfaces
 

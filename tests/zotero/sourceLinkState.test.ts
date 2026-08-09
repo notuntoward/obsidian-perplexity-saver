@@ -14,7 +14,7 @@ describe("renderSourceLine", () => {
 
 	it("renders a lit-note source", () => {
 		const line = renderSourceLine("1_5", { kind: "lit-note", citekey: "smith2024" }, [1], "https://example.com/w");
-		expect(line).toBe("[^1_5]: [[smith2024]]");
+		expect(line).toBe("[^1_5]: **[[smith2024]]**");
 	});
 });
 
@@ -39,13 +39,37 @@ describe("parseSourceLine", () => {
 		});
 	});
 
-	it("parses a lit-note source", () => {
-		const line = "[^3_5]: [[smith2024]]";
+	it("parses a lit-note source in bold format", () => {
+		const line = "[^3_5]: **[[smith2024]]**";
 		expect(parseSourceLine(line)).toEqual({
 			id: "3_5",
 			state: { kind: "lit-note", citekey: "smith2024" },
 			turnIds: [3],
 			rawUrl: "",
+		});
+	});
+
+	it("parses a zotero-item source in bold format", () => {
+		const line = "[^2_1]: **[smith2024\u2794KEY1](zotero://select/library/items/KEY1)**";
+		expect(parseSourceLine(line)).toEqual({
+			id: "2_1",
+			state: { kind: "zotero-item", citekey: "smith2024", zotkey: "KEY1" },
+			turnIds: [2],
+			rawUrl: "",
+		});
+	});
+
+	it("parses a raw source line with nested brackets in title", () => {
+		const line = "[^1_10]: [[1805.09785] Entropy and mutual information](https://arxiv.org/abs/1805.09785)";
+		expect(parseSourceLine(line)).toEqual({
+			id: "1_10",
+			state: {
+				kind: "raw",
+				url: "https://arxiv.org/abs/1805.09785",
+				title: "[1805.09785] Entropy and mutual information",
+			},
+			turnIds: [1],
+			rawUrl: "https://arxiv.org/abs/1805.09785",
 		});
 	});
 

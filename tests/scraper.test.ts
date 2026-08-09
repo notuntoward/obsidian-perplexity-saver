@@ -9,8 +9,28 @@ if (typeof (global as any).DOMParser === "undefined") {
 		parseFromString(html: string, mimeType: string) {
 			return {
 				querySelector(selector: string) {
+					// Handle citation_title meta tag
+					if (selector.includes("citation_title")) {
+						const match = /<meta\s+[^>]*name=["']citation_title["'][^>]*content=["']([^"']*)["']/i.exec(html) ||
+							/<meta\s+[^>]*content=["']([^"']*)["'][^>]*name=["']citation_title["']/i.exec(html);
+						if (match) return { getAttribute: (name: string) => name === "content" ? match[1] : null };
+					}
+					// Handle dc.title meta tag
+					if (selector.includes("dc.title")) {
+						const match = /<meta\s+[^>]*name=["']dc\.title["'][^>]*content=["']([^"']*)["']/i.exec(html);
+						if (match) return { getAttribute: (name: string) => name === "content" ? match[1] : null };
+					}
+					// Handle og:title meta tag
+					if (selector.includes("og:title")) {
+						const match = /<meta\s+[^>]*property=["']og:title["'][^>]*content=["']([^"']*)["']/i.exec(html);
+						if (match) return { getAttribute: (name: string) => name === "content" ? match[1] : null };
+					}
+					// Handle twitter:title meta tag
+					if (selector.includes("twitter:title")) {
+						const match = /<meta\s+[^>]*name=["']twitter:title["'][^>]*content=["']([^"']*)["']/i.exec(html);
+						if (match) return { getAttribute: (name: string) => name === "content" ? match[1] : null };
+					}
 					if (selector === "title") {
-						// Extract content of <title>...</title>
 						const titleMatch = html.match(/<title([^>]*)>(.*?)<\/title>/i);
 						if (titleMatch) {
 							const attrs = titleMatch[1];
@@ -22,14 +42,13 @@ if (typeof (global as any).DOMParser === "undefined") {
 									if (name === "no-title" && noTitleMatch) return noTitleMatch[1];
 									return null;
 								},
-								getAttr(name: string) {
-									if (name === "no-title" && noTitleMatch) return noTitleMatch[1];
-									return null;
-								}
 							};
 						}
 					}
 					return null;
+				},
+				querySelectorAll(selector: string) {
+					return [];
 				}
 			};
 		}

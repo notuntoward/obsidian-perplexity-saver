@@ -27,8 +27,8 @@
 /** The three possible states a citation source can be in. */
 export type SourceLinkState =
 	| { kind: "raw"; url: string; title?: string }
-	| { kind: "zotero-item"; citekey: string; zotkey: string }
-	| { kind: "lit-note"; citekey: string };
+	| { kind: "zotero-item"; citekey: string; zotkey: string; title?: string }
+	| { kind: "lit-note"; citekey: string; title?: string };
 
 /** A fully parsed representation of one "# Sources" line. */
 export interface ParsedSourceLine {
@@ -62,10 +62,16 @@ export function renderSourceLine(
 
 function renderLinkText(state: SourceLinkState): string {
 	switch (state.kind) {
-		case "lit-note":
-			return `[[${state.citekey}]]`;
-		case "zotero-item":
-			return `[Zotero: ${state.citekey}](zotero://select/library/items/${state.zotkey})`;
+		case "lit-note": {
+			const label = state.title ? `${state.title} -> ${state.citekey}` : undefined;
+			return label ? `**[[${state.citekey}|${label}]]**` : `**[[${state.citekey}]]**`;
+		}
+		case "zotero-item": {
+			const label = state.title
+				? `${state.title} -> ${state.zotkey}`
+				: `${state.citekey}\u2794${state.zotkey}`;
+			return `**[${label}](zotero://select/library/items/${state.zotkey})**`;
+		}
 		case "raw":
 			return state.title ? `[${state.title}](${state.url})` : `<${state.url}>`;
 	}
@@ -80,10 +86,10 @@ export function toBlockId(id: string): string {
 
 /**
  * Regex for parsing a rendered source line back into its parts.
- * Matches standard markdown footnote format: [^id]: <url> or [^id]: [title](url) or [^id]: [[citekey]]
+ * Matches standard markdown footnote format: [^id]: <url> or [^id]: [title](url) or [^id]: [[wikilink]] or bold variants
  */
 const SOURCE_LINE_RE =
-	/^\[\^(?<id>[^\]]+)\]:\s+(?:\[\[(?<citekey>[^\]]+)\]\]|\[(?<title>[^\]]*)\]\((?<url>[^)]+)\)|<(?<bareUrl>[^>]+)>)\s*$/;
+	/^\[\^(?<id>[^\]]+)\]:\s+(?:\*{0,2}\[\[(?<wikilink>[^\]]+)\]\]\*{0,2}|\*{0,2}\[(?<title>.*)\]\((?<url>https?:\/\/[^\s)]+|zotero:\/\/[^\s)]+)\)\*{0,2}|<(?<bareUrl>[^>]+)>)\s*$/;
 
 /**
  * Parse a "# Sources" line back into a structured object.
@@ -101,11 +107,40 @@ export function parseSourceLine(line: string): ParsedSourceLine | null {
 
 	let state: SourceLinkState;
 	let rawUrl = "";
-	if (g.citekey) {
-		state = { kind: "lit-note", citekey: g.citekey };
+	if (g.wikilink) {
+		const parts = g.wikilink.split("|");
+		const citekey = parts[0].trim();
+		let title: string | undefined = undefined;
+		if (parts[1]) {
+			const label = parts[1].trim();
+			const arrowIdx = label.lastIndexOf(" -> ");
+			title = arrowIdx !== -1 ? label.substring(0, arrowIdx).trim() : label;
+		}
+		state = title ? { kind: "lit-note", citekey, title } : { kind: "lit-note", citekey };
 	} else if (g.url) {
-		state = { kind: "raw", url: g.url, title: g.title || undefined };
-		rawUrl = g.url;
+		const zoteroMatch = /^zotero:\/\/select\/library\/items\/(?<zotkey>[^/]+)$/.exec(g.url);
+		if (zoteroMatch && zoteroMatch.groups) {
+			const zotkey = zoteroMatch.groups.zotkey;
+			let citekey = zotkey;
+			let title: string | undefined = undefined;
+			if (g.title) {
+				const arrowIdx = g.title.lastIndexOf(" -> ");
+				const unicodeArrowIdx = g.title.indexOf("\u2794");
+				if (arrowIdx !== -1) {
+					title = g.title.substring(0, arrowIdx).trim();
+					citekey = g.title.substring(arrowIdx + 4).trim();
+				} else if (unicodeArrowIdx !== -1) {
+					citekey = g.title.substring(0, unicodeArrowIdx).trim();
+					title = undefined;
+				} else {
+					title = g.title.trim();
+				}
+			}
+			state = { kind: "zotero-item", citekey, zotkey, title };
+		} else {
+			state = { kind: "raw", url: g.url, title: g.title || undefined };
+			rawUrl = g.url;
+		}
 	} else if (g.bareUrl) {
 		state = { kind: "raw", url: g.bareUrl };
 		rawUrl = g.bareUrl;

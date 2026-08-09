@@ -6,12 +6,14 @@ import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDia
 import { registerSyncCommand } from "./commands/sync";
 import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
+import { registerRelinkSourcesCommand } from "./commands/relink";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 import { detectAndParse } from "./parsers/detect";
 import { resolveSourceTitles } from "./scraper";
 import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
 import { DialogFile } from "./parsers/types";
+import { ZoteroClient } from "./zotero/zoteroClient";
 
 interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -51,6 +53,18 @@ interface PerplexitySaverSettings {
 	 * Maximum length of a fetched source link title.
 	 */
 	sourceTitleMaxChars: number;
+	/**
+	 * Local HTTP Port for Zotero 7 API communication.
+	 */
+	zoteroPort: number;
+	/**
+	 * Literature notes folder path in vault (defaults to lit/lit_notes from refwrangle).
+	 */
+	litNotesFolder: string;
+	/**
+	 * Minimum title fuzzy match score (0-100) for matching sources to Zotero items.
+	 */
+	minTitleMatchScore: number;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -63,6 +77,9 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	headlineLeadBias: 0.20,
 	autoFetchSourceTitles: true,
 	sourceTitleMaxChars: 100,
+	zoteroPort: 23119,
+	litNotesFolder: "lit/lit_notes",
+	minTitleMatchScore: 95,
 };
 
 interface InlineInputData {
@@ -80,10 +97,12 @@ const startPerplexityInput = StateEffect.define<InlineInputData>();
 const clearPerplexityInput = StateEffect.define<null>();
 
 export default class PerplexitySaverPlugin extends Plugin {
-	settings: PerplexitySaverSettings;
+	settings!: PerplexitySaverSettings;
+	zoteroClient!: ZoteroClient;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -99,6 +118,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerDeleteTurnCommand(this);
 		registerRemoveSourcesWithNoDialogCommand(this);
 		registerRemoveSourcesWithNoCiteCommand(this);
+		registerRelinkSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
 	}
@@ -495,5 +515,66 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 			const inputEl = sourceMaxCharsSetting.settingEl.querySelector("input");
 			if (inputEl) inputEl.setAttribute("disabled", "true");
 		}
+
+		// "Zotero & Literature Note Relinking" group
+		containerEl.createEl("h3", { text: "Zotero & Literature Note Relinking" });
+
+		new Setting(containerEl)
+			.setName("Zotero HTTP Port")
+			.setDesc("Local HTTP port for Zotero 7 API communication (defaults to 23119).")
+			.addText((text) => {
+				text
+					.setPlaceholder("23119")
+					.setValue(String(this.plugin.settings.zoteroPort))
+					.onChange(async (value) => {
+						const n = parseInt(value, 10);
+						if (!isNaN(n) && n > 0) {
+							this.plugin.settings.zoteroPort = n;
+							this.plugin.zoteroClient = new ZoteroClient({ port: n });
+							await this.plugin.saveSettings();
+						}
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Literature notes folder")
+			.setDesc(
+				"Vault folder where literature notes reside (e.g. lit/lit_notes). Leave blank to search anywhere in vault."
+			)
+			.addText((text) => {
+				text
+					.setPlaceholder("lit/lit_notes")
+					.setValue(this.plugin.settings.litNotesFolder)
+					.onChange(async (value) => {
+						this.plugin.settings.litNotesFolder = value.trim();
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Minimum title match score")
+			.setDesc("Minimum fuzzy similarity score (0-100) required to match an AI source title to a Zotero item.")
+			.addText((text) => {
+				text
+					.setPlaceholder("95")
+					.setValue(String(this.plugin.settings.minTitleMatchScore))
+					.onChange(async (value) => {
+						const n = parseInt(value, 10);
+						if (!isNaN(n) && n >= 0 && n <= 100) {
+							this.plugin.settings.minTitleMatchScore = n;
+							await this.plugin.saveSettings();
+						}
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Zotero library cache")
+			.setDesc("Clear in-memory cached Zotero library items to force a fresh fetch from Zotero on the next relink.")
+			.addButton((button) => {
+				button.setButtonText("Clear Cache").onClick(() => {
+					this.plugin.zoteroClient.clearCache();
+					new Notice("Zotero library cache cleared.");
+				});
+			});
 	}
 }

@@ -27,7 +27,82 @@ export function getUrlFinalSegment(url: string): string {
 }
 
 /**
- * Fetch and extract the page title for the given URL.
+ * Extract webpage title using Zotero Translator metadata hierarchy:
+ * 1. Highwire Press / Academic Metadata (citation_title)
+ * 2. Dublin Core (dc.title)
+ * 3. Open Graph (og:title)
+ * 4. Twitter Cards (twitter:title)
+ * 5. Schema.org JSON-LD (application/ld+json)
+ * 6. Fallback HTML <title> element
+ */
+export function extractZoteroTitleFromDoc(doc: Document): string | null {
+	// 1. Highwire Press / Google Scholar / Academic metadata
+	const citationTitle =
+		doc.querySelector('meta[name="citation_title" i]')?.getAttribute("content") ||
+		doc.querySelector('meta[property="citation_title" i]')?.getAttribute("content");
+	if (notBlank(citationTitle)) {
+		return citationTitle!.trim();
+	}
+
+	// 2. Dublin Core: dc.title / DC.title / DC.Title
+	const dcTitle =
+		doc.querySelector('meta[name="dc.title" i]')?.getAttribute("content") ||
+		doc.querySelector('meta[name="DC.title" i]')?.getAttribute("content") ||
+		doc.querySelector('meta[name="DC.Title" i]')?.getAttribute("content");
+	if (notBlank(dcTitle)) {
+		return dcTitle!.trim();
+	}
+
+	// 3. Open Graph: og:title
+	const ogTitle =
+		doc.querySelector('meta[property="og:title" i]')?.getAttribute("content") ||
+		doc.querySelector('meta[name="og:title" i]')?.getAttribute("content");
+	if (notBlank(ogTitle)) {
+		return ogTitle!.trim();
+	}
+
+	// 4. Twitter Cards: twitter:title
+	const twitterTitle =
+		doc.querySelector('meta[name="twitter:title" i]')?.getAttribute("content") ||
+		doc.querySelector('meta[property="twitter:title" i]')?.getAttribute("content");
+	if (notBlank(twitterTitle)) {
+		return twitterTitle!.trim();
+	}
+
+	// 5. Schema.org JSON-LD
+	try {
+		const jsonLdScripts = doc.querySelectorAll('script[type="application/ld+json"]');
+		for (let i = 0; i < jsonLdScripts.length; i++) {
+			const script = jsonLdScripts[i];
+			if (script.textContent) {
+				const data = JSON.parse(script.textContent);
+				const item = Array.isArray(data) ? data[0] : data;
+				const ldTitle = item?.headline || item?.name;
+				if (typeof ldTitle === "string" && notBlank(ldTitle)) {
+					return ldTitle.trim();
+				}
+			}
+		}
+	} catch {
+		// Ignore JSON-LD parsing errors
+	}
+
+	// 6. Fallback HTML <title> element
+	const titleEl = doc.querySelector("title");
+	if (notBlank(titleEl?.innerText)) {
+		return titleEl!.innerText.trim();
+	}
+
+	const noTitle = titleEl?.getAttribute("no-title");
+	if (notBlank(noTitle)) {
+		return noTitle!.trim();
+	}
+
+	return null;
+}
+
+/**
+ * Fetch and extract the page title for the given URL using Zotero Connector logic.
  */
 async function scrape(url: string): Promise<string> {
 	try {
@@ -39,22 +114,28 @@ async function scrape(url: string): Promise<string> {
 
 		const html = response.text;
 		const doc = new DOMParser().parseFromString(html, "text/html");
-		const title = doc.querySelector("title");
+		const extracted = extractZoteroTitleFromDoc(doc);
 
-		if (blank(title?.innerText)) {
-			// If site is javascript based and has a no-title attribute when unloaded, use it.
-			const noTitle = title?.getAttribute("no-title");
-			if (notBlank(noTitle)) {
-				return noTitle!;
-			}
-			return getUrlFinalSegment(url);
+		if (extracted) {
+			return extracted;
 		}
 
-		return title!.innerText.trim();
+		return getUrlFinalSegment(url);
 	} catch (ex) {
 		console.error("Error scraping URL:", url, ex);
 		return getUrlFinalSegment(url);
 	}
+}
+
+/**
+ * Clean scraped page title by stripping academic/arXiv ID bracket prefixes.
+ */
+export function cleanScrapedTitle(title: string): string {
+	if (!title) return "";
+	let cleaned = title.trim();
+	// Strip arXiv ID bracket prefixes like [1805.09785] or [math.NT/0203001]
+	cleaned = cleaned.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
+	return cleaned;
 }
 
 /**
@@ -70,10 +151,11 @@ export async function getPageTitle(
 	}
 
 	const rawTitle = await scrape(formattedUrl);
+	const cleanedTitle = cleanScrapedTitle(rawTitle);
 	if (options.maxChars !== undefined && options.maxChars > 0) {
-		return truncateAtWord(rawTitle, options.maxChars);
+		return truncateAtWord(cleanedTitle, options.maxChars);
 	}
-	return rawTitle;
+	return cleanedTitle;
 }
 
 /**
