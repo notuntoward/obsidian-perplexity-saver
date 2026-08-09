@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DialogFile } from "../../src/parsers/types";
 import { buildNoteBody, extractSourcesSection, collapseWhitespace } from "../../src/normalize/buildNote";
+import { deduplicateDialogCitations } from "../../src/normalize/turns";
 
 function dialog(turns: DialogFile["turns"]): DialogFile {
 	return { sourceVendor: "perplexity", turns };
@@ -42,6 +43,24 @@ describe("buildNoteBody", () => {
 		const { body } = buildNoteBody(d);
 		expect(body).toContain("first[^1_1] second[^1_1] third[^1_2]");
 		expect(body).not.toMatch(/\[1\]|\[2\]/);
+	});
+
+	it("builds a note with same-turn deduplicated citations and renumbered footnotes", () => {
+		const d = dialog([
+			{
+				role: "ai",
+				rawText: "first[1] second[2] third[1]",
+				citations: [
+					{ origNum: "1", url: "https://example.com/a" },
+					{ origNum: "2", url: "https://example.com/a" },
+				],
+			},
+		]);
+		deduplicateDialogCitations(d);
+		const { body, sourceLines } = buildNoteBody(d);
+		expect(body).toContain("first[^1_1] second[^1_1] third[^1_1]");
+		expect(sourceLines).toHaveLength(1);
+		expect(sourceLines[0]).toBe("[^1_1]: <https://example.com/a>");
 	});
 
 	it("renumbers turn IDs when startTurnId is given, prompt+ai sharing the same number", () => {
