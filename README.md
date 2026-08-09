@@ -210,6 +210,23 @@ To clean this up, run the command: **"Remove sources with no cite"**.
 
 ---
 
+# Zotero & Literature Note Relinking
+
+The plugin includes a powerful, automated mechanism to cross-reference and relink dialogue sources with items in your local **Zotero** library or your local **Obsidian Literature Notes**.
+
+When a source URL or title matches a Zotero entry, the plugin can automatically rewrite standard raw footnote links into:
+- A direct Zotero desktop URI link (`zotero://select/library/items/XYZ`), or
+- A local Obsidian wikilink (`[[citekey|Title -> citekey]]`) referencing an existing literature note in your vault.
+
+### How it Works:
+1. **Zotero matching**: The plugin connects to the local Zotero HTTP API (typically port `23119` used by Zotero 7/8/9). It scans your library and matches the source URL or fuzzy-matches the title against your Zotero item titles.
+2. **Literature note matching**: If a matching Zotero item is found, the plugin checks if a markdown file with the matching citekey (e.g., `smith2024climate.md`) exists in your configured Literature Notes folder. If it does, it links directly to that note!
+3. **Automatic or Manual execution**:
+   - **Automatic**: If **Auto-relink sources** is enabled in settings, this process runs automatically on every import and sync operation. If Zotero is closed or offline, it fails silently with a gentle Notice toast, without interrupting your flow.
+   - **Manual Command**: You can trigger this at any time for the active note by running the command: **"Relink sources with Zotero"**.
+
+---
+
 # Settings Configuration
 
 - **AI save folder** (default: `ai-searches`): Folder name where notes are created (relative to your currently active note).
@@ -220,6 +237,15 @@ To clean this up, run the command: **"Remove sources with no cite"**.
   - **Heading max characters** (default: `100`): Maximum length for the summary heading.
   - **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` and `TF-IDF ranked sentence`.
   - **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt.
+- **Source link title shortening**:
+  - **Auto-fetch source titles** (default: on): Automatically fetch webpage titles to build clean markdown links for sources.
+  - **Source title max characters** (default: `100`): Maximum length of a fetched source link title, including a possible ellipsis.
+- **Zotero & Literature Note Relinking**:
+  - **Auto-relink sources** (default: off): Automatically run Zotero relinking when importing or syncing new turns.
+  - **Zotero HTTP Port** (default: `23119`): Local HTTP port for Zotero 7/8/9 API communication.
+  - **Literature notes folder** (default: `lit/lit_notes`): Vault folder where literature notes reside (defaults to lit/lit_notes; leave blank to search anywhere in vault).
+  - **Minimum title match score** (default: `95`): Minimum fuzzy similarity score (0-100) required to match an AI source title to a Zotero item.
+  - **Zotero library cache**: A setting to "Clear Cache", forcing a fresh fetch from Zotero on the next relink operation.
 
 ---
 

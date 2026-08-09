@@ -17,6 +17,11 @@ export interface ImportDialogParams {
 	headlineOptions: HeadlineOptions;
 	autoFetchSourceTitles?: boolean;
 	sourceTitleMaxChars?: number;
+	autoRelinkSources?: boolean;
+	zoteroPort?: number;
+	litNotesFolder?: string;
+	minTitleMatchScore?: number;
+	zoteroClient?: any;
 }
 
 export interface ImportDialogResult {
@@ -56,6 +61,22 @@ export async function importDialogFromClipboard(
 
 	const { body } = buildNoteBody(dialog, { collapseBlankLines, headlineOptions });
 
+	let finalBody = body;
+	if (params.autoRelinkSources) {
+		const { autoRelinkSourcesInNote } = await import("../zotero/relinker");
+		finalBody = await autoRelinkSourcesInNote(
+			app,
+			body,
+			{
+				autoRelinkSources: params.autoRelinkSources,
+				zoteroPort: params.zoteroPort ?? 23119,
+				litNotesFolder: params.litNotesFolder ?? "",
+				minTitleMatchScore: params.minTitleMatchScore ?? 95,
+			},
+			params.zoteroClient
+		);
+	}
+
 	const folderPath = normalizePath(importFolder);
 	const folder = app.vault.getAbstractFileByPath(folderPath);
 	if (!folder) {
@@ -68,7 +89,7 @@ export async function importDialogFromClipboard(
 		return { success: false, error: "A note with that name already exists. Pick a different name." };
 	}
 
-	const file = await createDialogNote(app, newNotePath, body, {
+	const file = await createDialogNote(app, newNotePath, finalBody, {
 		"ai-dialog-format": "v1",
 		"ai-source-vendor": dialog.sourceVendor,
 		"ai-source-url": dialog.sourceUrl,
