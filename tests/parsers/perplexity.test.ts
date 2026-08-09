@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parsePerplexityDialog, isPerplexityContent } from "../../src/parsers/perplexity";
+import { buildNoteBody } from "../../src/normalize/buildNote";
 
 describe("isPerplexityContent", () => {
 	it("detects the [Perplexity](perplexity.ai/...) metadata line", () => {
@@ -368,4 +369,32 @@ Here’s a quick comparison of the main PNW states often used in the core Pacifi
 		});
 		expect(dialog.turns[1].citations[1].url).toBe("https://www.census.gov/quickfacts/fact/table/WA/PST045225");
 	});
+
+	it("parses annotated dialog with fenced prompt heading and text below quote without leftover triple backticks", () => {
+		const raw = `<!-- PPLX-TURN 1 -->
+<!-- PPLX-ROLE: prompt -->
+\`\`\`
+# <q>Other methodologies tell a different story entirely: WalletHub's 2026 tax burden ranking actually shows Washington slightly lower than Idaho</q> The website you link to says Washington
+\`\`\`
+
+8.47%; Idaho 7.04%
+
+<!-- PPLX-ROLE: ai -->
+You're right, and I made an error — thank you for catching it. Let me correct this.`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns).toHaveLength(2);
+		expect(dialog.turns[0].role).toBe("prompt");
+
+		const rawText = dialog.turns[0].rawText;
+		expect(rawText).not.toContain("```");
+		expect(rawText).toContain("> Other methodologies tell a different story entirely: WalletHub's 2026 tax burden ranking actually shows Washington slightly lower than Idaho");
+		expect(rawText).toContain("The website you link to says Washington");
+		expect(rawText).toContain("8.47%; Idaho 7.04%");
+
+		const { body } = buildNoteBody(dialog, { startTurnId: 2 });
+		expect(body).toContain("## The website you link to says Washington ^turn-2");
+		expect(body).not.toContain("## Other methodologies");
+	});
 });
+

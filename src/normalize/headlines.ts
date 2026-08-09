@@ -107,7 +107,7 @@ export function headlineFromLead(markdown: string, opts: LeadOptions): string {
  */
 function splitSentencesForLead(text: string): string[] {
 	const out: string[] = [];
-	const re = /[.!?]+(\s+|$)/g;
+	const re = /[.!?]+(\s+|$)|[\r\n]+/g;
 	let lastIndex = 0;
 	let m: RegExpExecArray | null;
 	while ((m = re.exec(text)) !== null) {

@@ -238,11 +238,18 @@ function promptHeadingText(
 ): string {
 	const lines = promptText.split("\n");
 	const nonQuoteLines = lines.filter(line => !line.trim().startsWith(">") && line.trim() !== "");
-	const nonQuoteText = nonQuoteLines.join("\n").trim();
 
-	const textToUse = nonQuoteText || promptText;
+	let headline = "";
+	if (nonQuoteLines.length > 0) {
+		headline = headlineForPrompt(nonQuoteLines[0], headlineOptions);
+		if (!headline.trim() && nonQuoteLines.length > 1) {
+			headline = headlineForPrompt(nonQuoteLines.join("\n"), headlineOptions);
+		}
+	}
+	if (!headline.trim()) {
+		headline = headlineForPrompt(promptText, headlineOptions);
+	}
 
-	const headline = headlineForPrompt(textToUse, headlineOptions);
 	if (headline.trim()) return headline;
 	return `Prompt (turn ${turnId})`;
 }

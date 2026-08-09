@@ -205,15 +205,22 @@
   }
 
   function unwrapFencedHeading(text) {
-    const trimmed = (text || "").trim();
+    let trimmed = (text || "").trim();
     if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
       const inside = trimmed.slice(3, -3).trim();
       if (inside.startsWith("#")) {
         return inside;
       }
     }
+    const fencedHeadingMatch = trimmed.match(/^```[ \t]*\r?\n+(#[\s\S]*?)\r?\n+```[ \t]*(?:\r?\n+|$)/);
+    if (fencedHeadingMatch) {
+      const headingContent = fencedHeadingMatch[1].trim();
+      const rest = trimmed.slice(fencedHeadingMatch[0].length).trim();
+      return rest ? `${headingContent}\n\n${rest}` : headingContent;
+    }
     return trimmed;
   }
+
 
   function buildComparableWithMap(text) {
     let stripped = "";

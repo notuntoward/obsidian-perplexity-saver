@@ -238,6 +238,20 @@ describe("buildNoteBody — collapsePromptCallouts option", () => {
 		expect(body).toContain("> [!Prompt]-");
 		expect(body).not.toContain("> [!Prompt]+");
 	});
+
+	it("derives turn heading from the non-quoted prompt text when prompt starts with blockquote (>)", () => {
+		const promptWithQuote = `> Other methodologies tell a different story entirely: WalletHub's 2026 tax burden ranking actually shows Washington slightly lower than Idaho
+
+The website you link to says Washington
+
+8.47%; Idaho 7.04%`;
+
+		const d = dialog([
+			{ role: "prompt", rawText: promptWithQuote, citations: [] }
+		]);
+		const { body } = buildNoteBody(d, { startTurnId: 2 });
+		expect(body).toMatch(/## The website you link to says Washington \^turn-2/);
+	});
 });
 
 describe("extractSourcesSection", () => {

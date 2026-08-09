@@ -203,6 +203,23 @@ function extractSourceMetadata(section: string): string | undefined {
 	return m ? m[1] : undefined;
 }
 
+export function unwrapFencedHeading(text: string): string {
+	let trimmed = (text || "").trim();
+	if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
+		const inside = trimmed.slice(3, -3).trim();
+		if (inside.startsWith("#")) {
+			return inside;
+		}
+	}
+	const fencedHeadingMatch = trimmed.match(/^```[ \t]*\r?\n+(#[\s\S]*?)\r?\n+```[ \t]*(?:\r?\n+|$)/);
+	if (fencedHeadingMatch) {
+		const headingContent = fencedHeadingMatch[1].trim();
+		const rest = trimmed.slice(fencedHeadingMatch[0].length).trim();
+		return rest ? `${headingContent}\n\n${rest}` : headingContent;
+	}
+	return trimmed;
+}
+
 /**
  * Perplexity wraps a quoted excerpt from a prior AI response in <q>...</q>
  * when the user's follow-up prompt quotes back part of the answer (e.g.
@@ -212,13 +229,14 @@ function extractSourceMetadata(section: string): string | undefined {
  * rather than leaving raw HTML tags inline.
  */
 function extractLeadingQuotes(text: string): string {
+	const unwrapped = unwrapFencedHeading(text);
 	const quotes: string[] = [];
 	const placeholder = "\u0000";
-	const withoutQuotes = text.replace(/<q>([\s\S]*?)<\/q>/g, (_match, quoted: string) => {
+	const withoutQuotes = unwrapped.replace(/<q>([\s\S]*?)<\/q>/g, (_match, quoted: string) => {
 		quotes.push(quoted.trim());
 		return placeholder;
 	});
-	if (quotes.length === 0) return text;
+	if (quotes.length === 0) return unwrapped;
 
 	// Collapse any whitespace left dangling around the removed tag so the
 	// remaining prose doesn't end up with doubled spaces or a stray blank line.
