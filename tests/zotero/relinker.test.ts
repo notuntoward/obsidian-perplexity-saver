@@ -72,7 +72,7 @@ Climate change is real[^1_1].
 		expect(result.relinkedCount).toBe(1);
 		expect(result.zoteroCount).toBe(1);
 		expect(result.litNoteCount).toBe(0);
-		expect(result.updatedText).toContain("[^1_1]: **[Climate Study Title -> ZOTKEY1](zotero://select/library/items/ZOTKEY1)**");
+		expect(result.updatedText).toContain("[^1_1]: **[Climate Study Title \u2794 ZOTKEY1](zotero://select/library/items/ZOTKEY1)**");
 	});
 
 	it("relinks raw source to Literature Note link when vault contains citekey.md", async () => {
@@ -102,7 +102,7 @@ Climate change is real[^1_1].
 		expect(result.relinkedCount).toBe(1);
 		expect(result.zoteroCount).toBe(0);
 		expect(result.litNoteCount).toBe(1);
-		expect(result.updatedText).toContain("[^1_1]: **[[smith2024climate|Climate Study Title -> smith2024climate]]**");
+		expect(result.updatedText).toContain("[^1_1]: **[[smith2024climate|Climate Study Title \u2794 smith2024climate]]**");
 	});
 });
 
@@ -152,7 +152,7 @@ Climate change is real[^1_1].
 		(client as any).lastFetchTime = Date.now();
 
 		const result = await autoRelinkSourcesInNote(mockApp, SAMPLE_NOTE, RELINK_SETTINGS, client);
-		expect(result).toContain("[^1_1]: **[Climate Study Title -> ZOTKEY1](zotero://select/library/items/ZOTKEY1)**");
+		expect(result).toContain("[^1_1]: **[Climate Study Title \u2794 ZOTKEY1](zotero://select/library/items/ZOTKEY1)**");
 	});
 
 	it("returns the original text without throwing when Zotero is unreachable", async () => {

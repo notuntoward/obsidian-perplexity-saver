@@ -63,12 +63,12 @@ export function renderSourceLine(
 function renderLinkText(state: SourceLinkState): string {
 	switch (state.kind) {
 		case "lit-note": {
-			const label = state.title ? `${state.title} -> ${state.citekey}` : undefined;
+			const label = state.title ? `${state.title} \u2794 ${state.citekey}` : undefined;
 			return label ? `**[[${state.citekey}|${label}]]**` : `**[[${state.citekey}]]**`;
 		}
 		case "zotero-item": {
 			const label = state.title
-				? `${state.title} -> ${state.zotkey}`
+				? `${state.title} \u2794 ${state.zotkey}`
 				: `${state.citekey}\u2794${state.zotkey}`;
 			return `**[${label}](zotero://select/library/items/${state.zotkey})**`;
 		}
@@ -114,7 +114,9 @@ export function parseSourceLine(line: string): ParsedSourceLine | null {
 		if (parts[1]) {
 			const label = parts[1].trim();
 			const arrowIdx = label.lastIndexOf(" -> ");
-			title = arrowIdx !== -1 ? label.substring(0, arrowIdx).trim() : label;
+			const unicodeArrowIdx = label.lastIndexOf("\u2794");
+			const split = Math.max(arrowIdx, unicodeArrowIdx);
+			title = split !== -1 ? label.substring(0, split).trim() : label;
 		}
 		state = title ? { kind: "lit-note", citekey, title } : { kind: "lit-note", citekey };
 	} else if (g.url) {
@@ -125,13 +127,20 @@ export function parseSourceLine(line: string): ParsedSourceLine | null {
 			let title: string | undefined = undefined;
 			if (g.title) {
 				const arrowIdx = g.title.lastIndexOf(" -> ");
-				const unicodeArrowIdx = g.title.indexOf("\u2794");
+				const unicodeArrowIdx = g.title.lastIndexOf("\u2794");
 				if (arrowIdx !== -1) {
 					title = g.title.substring(0, arrowIdx).trim();
 					citekey = g.title.substring(arrowIdx + 4).trim();
 				} else if (unicodeArrowIdx !== -1) {
-					citekey = g.title.substring(0, unicodeArrowIdx).trim();
-					title = undefined;
+					// A spaced arrow separates "Title ➔ ZOTKEY"; an unspaced
+					// one is the legacy "citekey➔zotkey" title-less fallback.
+					if (g.title.includes(` \u2794 `)) {
+						title = g.title.substring(0, unicodeArrowIdx).trim();
+						citekey = g.title.substring(unicodeArrowIdx + 1).trim();
+					} else {
+						citekey = g.title.substring(0, unicodeArrowIdx).trim();
+						title = undefined;
+					}
 				} else {
 					title = g.title.trim();
 				}

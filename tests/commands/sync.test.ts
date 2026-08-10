@@ -188,7 +188,7 @@ first answer[^1_1]
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
 		expect(written).toContain("## second question ^turn-2");
-		expect(written).toContain("[^2_1]: **[B -> ZOTB1](zotero://select/library/items/ZOTB1)**");
+		expect(written).toContain("[^2_1]: **[B \u2794 ZOTB1](zotero://select/library/items/ZOTB1)**");
 	});
 
 	it("still syncs when auto-relinking fails because Zotero is unreachable", async () => {

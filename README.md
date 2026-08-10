@@ -222,8 +222,8 @@ To clean this up, run the command: **"Remove sources with no cite"**.
 
 Every entry under `# Sources` can be promoted from a plain web link into a **Zotero item link** or an **Obsidian literature-note link**:
 
-- **Zotero item link** — `**[Title -> ZOTKEY](zotero://select/library/items/ZOTKEY)**`. Clicking it jumps straight to the item in your local Zotero library.
-- **Literature note link** — `**[[citekey|Title -> citekey]]**`. Clicking it opens the vault note that corresponds to the citekey.
+- **Zotero item link** — `**[Title ➔ ZOTKEY](zotero://select/library/items/ZOTKEY)**`. Clicking it jumps straight to the item in your local Zotero library.
+- **Literature note link** — `**[[citekey|Title ➔ citekey]]**`. Clicking it opens the vault note that corresponds to the citekey.
 
 Sources are matched to Zotero items first by exact (normalized) URL, then by fuzzy title similarity against a configurable minimum score. When a Zotero item is found and a literature note with the item's citekey exists in your vault, the source becomes a literature-note link; otherwise it becomes a Zotero item link. The original URL is preserved so sources can be re-matched after new items are added.
 

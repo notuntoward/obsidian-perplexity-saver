@@ -16,6 +16,26 @@ describe("renderSourceLine", () => {
 		const line = renderSourceLine("1_5", { kind: "lit-note", citekey: "smith2024" }, [1], "https://example.com/w");
 		expect(line).toBe("[^1_5]: **[[smith2024]]**");
 	});
+
+	it("renders a lit-note source with a title using the unicode arrow", () => {
+		const line = renderSourceLine(
+			"1_5",
+			{ kind: "lit-note", citekey: "smith2024", title: "Climate Study" },
+			[1],
+			"https://example.com/w"
+		);
+		expect(line).toBe("[^1_5]: **[[smith2024|Climate Study \u2794 smith2024]]**");
+	});
+
+	it("renders a zotero-item source with a title using the unicode arrow", () => {
+		const line = renderSourceLine(
+			"1_6",
+			{ kind: "zotero-item", citekey: "smith2024", zotkey: "KEY1", title: "Climate Study" },
+			[1],
+			"https://example.com/v"
+		);
+		expect(line).toBe("[^1_6]: **[Climate Study \u2794 KEY1](zotero://select/library/items/KEY1)**");
+	});
 });
 
 describe("parseSourceLine", () => {
@@ -49,11 +69,51 @@ describe("parseSourceLine", () => {
 		});
 	});
 
+	it("parses a lit-note source with a title and unicode arrow", () => {
+		const line = "[^3_5]: **[[smith2024|Climate Study \u2794 smith2024]]**";
+		expect(parseSourceLine(line)).toEqual({
+			id: "3_5",
+			state: { kind: "lit-note", citekey: "smith2024", title: "Climate Study" },
+			turnIds: [3],
+			rawUrl: "",
+		});
+	});
+
+	it("parses a lit-note source with a legacy ASCII arrow title", () => {
+		const line = "[^3_5]: **[[smith2024|Climate Study -> smith2024]]**";
+		expect(parseSourceLine(line)).toEqual({
+			id: "3_5",
+			state: { kind: "lit-note", citekey: "smith2024", title: "Climate Study" },
+			turnIds: [3],
+			rawUrl: "",
+		});
+	});
+
 	it("parses a zotero-item source in bold format", () => {
 		const line = "[^2_1]: **[smith2024\u2794KEY1](zotero://select/library/items/KEY1)**";
 		expect(parseSourceLine(line)).toEqual({
 			id: "2_1",
 			state: { kind: "zotero-item", citekey: "smith2024", zotkey: "KEY1" },
+			turnIds: [2],
+			rawUrl: "",
+		});
+	});
+
+	it("parses a zotero-item source with a title and spaced unicode arrow", () => {
+		const line = "[^2_1]: **[Climate Study \u2794 KEY1](zotero://select/library/items/KEY1)**";
+		expect(parseSourceLine(line)).toEqual({
+			id: "2_1",
+			state: { kind: "zotero-item", citekey: "KEY1", zotkey: "KEY1", title: "Climate Study" },
+			turnIds: [2],
+			rawUrl: "",
+		});
+	});
+
+	it("parses a zotero-item source with a title and legacy ASCII arrow", () => {
+		const line = "[^2_1]: **[Climate Study -> KEY1](zotero://select/library/items/KEY1)**";
+		expect(parseSourceLine(line)).toEqual({
+			id: "2_1",
+			state: { kind: "zotero-item", citekey: "KEY1", zotkey: "KEY1", title: "Climate Study" },
 			turnIds: [2],
 			rawUrl: "",
 		});
@@ -87,6 +147,7 @@ describe("renderSourceLine / parseSourceLine round-trip", () => {
 		["raw with title", ["1_1", { kind: "raw", url: "https://example.com/x", title: "X" }, [1], "https://example.com/x"]],
 		["raw without title", ["4_3", { kind: "raw", url: "https://example.com/y" }, [4], "https://example.com/y"]],
 		["lit-note", ["3_5", { kind: "lit-note", citekey: "smith2024" }, [3], "https://example.com/w"]],
+		["lit-note with title", ["3_5", { kind: "lit-note", citekey: "smith2024", title: "Climate Study" }, [3], "https://example.com/w"]],
 	];
 
 	for (const [label, args] of cases) {
