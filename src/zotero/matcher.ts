@@ -9,8 +9,19 @@ export function extractMainTitle(fullTitle: string): string {
 	let trimmed = fullTitle.trim();
 	// Strip arXiv ID bracket prefixes like [1805.09785] or [math.NT/0203001]
 	trimmed = trimmed.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
-	// Split by |, :, --, or period followed by a space and capital letter
-	const delimiters = /\||:|--|\.(?=\s[A-Z])/;
+	// Split by |, :, --, or period followed by a space and capital letter.
+	// The period case is meant to catch genuine title/subtitle boundaries
+	// like "Deep Learning. A Survey" -> "Deep Learning". The negative
+	// lookbehind excludes two-letter abbreviations such as "U.S.", "U.K.",
+	// "D.C.", or "U.N." immediately before the split point: without it, a
+	// title like "U.S. Census Bureau QuickFacts: Washington" is truncated
+	// all the way down to just "U.S" (the period inside the abbreviation
+	// itself is followed by a space and a capital letter, so it satisfies
+	// the same pattern). Since "U.S." is an extremely common title prefix,
+	// that bug made every "U.S. ..." titled source normalize to the single
+	// token "us" and spuriously match every *other* "U.S. ..." titled
+	// source at a perfect 100 score, regardless of actual topic.
+	const delimiters = /\||:|--|(?<![A-Z]\.[A-Z])\.(?=\s[A-Z])/;
 	const parts = trimmed.split(delimiters);
 	return parts[0].trim();
 }

@@ -28,6 +28,12 @@ interface CreateNoteParams {
 	litNotesFolder?: string;
 	minTitleMatchScore?: number;
 	zoteroClient?: any;
+	/**
+	 * Optional callback receiving live status messages while auto-relinking
+	 * with Zotero runs, so the caller can surface progress instead of
+	 * leaving the user with no feedback during a slow Zotero lookup.
+	 */
+	onProgress?: (message: string) => void;
 }
 
 interface CreateNoteSuccess {
@@ -102,7 +108,8 @@ export async function createPerplexityNote(
 				litNotesFolder: params.litNotesFolder ?? "",
 				minTitleMatchScore: params.minTitleMatchScore ?? 95,
 			},
-			params.zoteroClient
+			params.zoteroClient,
+			params.onProgress
 		);
 	}
 

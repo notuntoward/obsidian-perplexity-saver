@@ -13,6 +13,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     pool: 'vmThreads', // Vitest 4.x: only vm* pools properly collect tests
+    setupFiles: ['tests/setup.ts'],
     include: ['tests/**/*.test.ts'],
     coverage: {
       provider: 'v8',

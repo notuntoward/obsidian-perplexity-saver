@@ -28,3 +28,34 @@
 .setting-item.is-disabled button {
 	cursor: not-allowed;
 }
+
+/* Inline "Import AI dialog from clipboard" filename input. The `is-busy`
+   class is added, with a short delay, only when the save (title fetching /
+   Zotero relinking) is still running after that delay, so a fast save never
+   flashes this. See BUSY_INDICATOR_DELAY_MS in main.ts. */
+.perplexity-inline-wrap.is-busy .perplexity-inline-input {
+	opacity: 0.6;
+	cursor: wait;
+}
+
+.perplexity-inline-spinner {
+	display: none;
+	width: 12px;
+	height: 12px;
+	margin-left: 4px;
+	border: 2px solid var(--background-modifier-border);
+	border-top-color: var(--text-accent);
+	border-radius: 50%;
+	vertical-align: middle;
+	animation: perplexity-inline-spin 0.7s linear infinite;
+}
+
+.perplexity-inline-wrap.is-busy .perplexity-inline-spinner {
+	display: inline-block;
+}
+
+@keyframes perplexity-inline-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}

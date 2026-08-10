@@ -1,4 +1,4 @@
-import { App } from "obsidian";
+import { App, Notice } from "obsidian";
 import { parseSourceLine, renderSourceLine, SourceLinkState } from "./sourceLinkState";
 import { ZoteroClient, ZoteroItemData } from "./zoteroClient";
 import { findLitNoteForCitekey } from "./matcher";
@@ -22,31 +22,87 @@ export interface RelinkResult {
 }
 
 /**
+ * How long the auto-relink-on-import/sync path waits for Zotero before
+ * giving up on relinking this particular note. This only bounds the
+ * *automatic* path invoked from import/sync — the explicit "Relink sources
+ * with Zotero" command calls relinkSourcesInNote() directly and is never
+ * subject to this timeout, since a user who invokes it explicitly should be
+ * able to wait out a genuinely slow (e.g. cold-cache) fetch.
+ *
+ * If Zotero doesn't respond in time, the in-flight request is left to
+ * resolve in the background (it will simply warm the ZoteroClient's cache
+ * for next time) while the note is saved immediately, unlinked. The user can
+ * always run "Relink sources with Zotero" manually afterward.
+ */
+const AUTO_RELINK_TIMEOUT_MS = 3000;
+const AUTO_RELINK_TIMEOUT_SENTINEL = "__perplexity_saver_auto_relink_timeout__";
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = window.setTimeout(() => reject(new Error(AUTO_RELINK_TIMEOUT_SENTINEL)), ms);
+		promise.then(
+			(value) => {
+				window.clearTimeout(timer);
+				resolve(value);
+			},
+			(err) => {
+				window.clearTimeout(timer);
+				reject(err);
+			}
+		);
+	});
+}
+
+/**
  * Automatically relinks sources in note text if autoRelinkSources setting is enabled.
  * Catches any connection/Zotero errors and displays a Notice without blocking the main workflow.
+ *
+ * `onProgress`, when provided, is forwarded to relinkSourcesInNote() so the
+ * caller can surface the same live status messages a manual relink already
+ * shows (via the standalone "Relink sources with Zotero" command), instead
+ * of running silently.
  */
 export async function autoRelinkSourcesInNote(
 	app: App,
 	noteText: string,
 	settings: AutoRelinkSettings,
-	zoteroClient?: ZoteroClient
+	zoteroClient?: ZoteroClient,
+	onProgress?: (message: string) => void
 ): Promise<string> {
 	if (!settings.autoRelinkSources) {
 		return noteText;
 	}
 
 	try {
-		const result = await relinkSourcesInNote(app, noteText, {
-			zoteroPort: settings.zoteroPort,
-			litNotesFolder: settings.litNotesFolder,
-			minTitleMatchScore: settings.minTitleMatchScore,
-			zoteroClient,
-		});
+		const result = await withTimeout(
+			relinkSourcesInNote(app, noteText, {
+				zoteroPort: settings.zoteroPort,
+				litNotesFolder: settings.litNotesFolder,
+				minTitleMatchScore: settings.minTitleMatchScore,
+				zoteroClient,
+				onProgress,
+			}),
+			AUTO_RELINK_TIMEOUT_MS
+		);
 		return result.updatedText;
 	} catch (err: any) {
-		console.warn("Auto-relinking failed:", err);
-		const { Notice } = await import("obsidian");
-		new Notice("Auto-relinking with Zotero failed: Zotero may not be running.");
+		// Note: this must be a *static* top-level import (see above), not a
+		// dynamic `await import("obsidian")`. Obsidian plugins are bundled
+		// as CommonJS with "obsidian" marked external, so esbuild compiles a
+		// static import into a working `require("obsidian")` call — but a
+		// dynamic import() of a bare specifier has no module resolution
+		// path in that runtime and always throws
+		// `TypeError: Failed to resolve module specifier 'obsidian'`,
+		// silently swallowing whatever error actually triggered this catch.
+		if (err?.message === AUTO_RELINK_TIMEOUT_SENTINEL) {
+			console.warn(`Auto-relinking timed out after ${AUTO_RELINK_TIMEOUT_MS}ms; saving note unlinked.`);
+			new Notice(
+				`Zotero didn't respond within ${AUTO_RELINK_TIMEOUT_MS / 1000}s — saved without relinking. Run "Relink sources with Zotero" later if needed.`
+			);
+		} else {
+			console.warn("Auto-relinking failed:", err);
+			new Notice("Auto-relinking with Zotero failed: Zotero may not be running.");
+		}
 		return noteText;
 	}
 }

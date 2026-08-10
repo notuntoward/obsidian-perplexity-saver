@@ -36,6 +36,7 @@ export async function syncDialogFromClipboard(
 		litNotesFolder?: string;
 		minTitleMatchScore?: number;
 		zoteroClient?: any;
+		onProgress?: (message: string) => void;
 	}
 ): Promise<SyncDialogResult> {
 	const clipboard = await navigator.clipboard.readText();
@@ -117,7 +118,8 @@ export async function syncDialogFromClipboard(
 				litNotesFolder: relinkOptions.litNotesFolder ?? "",
 				minTitleMatchScore: relinkOptions.minTitleMatchScore ?? 95,
 			},
-			relinkOptions.zoteroClient
+			relinkOptions.zoteroClient,
+			relinkOptions.onProgress
 		);
 	}
 
@@ -198,31 +200,48 @@ export function registerSyncCommand(
 				new Notice("No active file.");
 				return;
 			}
-			const result = await syncDialogFromClipboard(
-				plugin.app,
-				file,
-				plugin.headlineOptions(),
-				plugin.settings.autoFetchSourceTitles,
-				plugin.settings.sourceTitleMaxChars,
-				{
-					autoRelinkSources: plugin.settings.autoRelinkSources,
-					zoteroPort: plugin.settings.zoteroPort,
-					litNotesFolder: plugin.settings.litNotesFolder,
-					minTitleMatchScore: plugin.settings.minTitleMatchScore,
-					zoteroClient: plugin.zoteroClient,
+
+			// Only show a persistent progress notice when auto-relinking is
+			// enabled, since that's the step that can take noticeably long
+			// (a Zotero library-version check every call, and a full fetch
+			// on a cold cache). Without this, the Zotero status messages
+			// ZoteroClient already reports internally were previously
+			// dropped on the floor for this command, leaving the user with
+			// no feedback while sync silently waited on Zotero.
+			const progressNotice = plugin.settings.autoRelinkSources
+				? new Notice("Syncing...", 0)
+				: undefined;
+
+			try {
+				const result = await syncDialogFromClipboard(
+					plugin.app,
+					file,
+					plugin.headlineOptions(),
+					plugin.settings.autoFetchSourceTitles,
+					plugin.settings.sourceTitleMaxChars,
+					{
+						autoRelinkSources: plugin.settings.autoRelinkSources,
+						zoteroPort: plugin.settings.zoteroPort,
+						litNotesFolder: plugin.settings.litNotesFolder,
+						minTitleMatchScore: plugin.settings.minTitleMatchScore,
+						zoteroClient: plugin.zoteroClient,
+						onProgress: (msg: string) => progressNotice?.setMessage(msg),
+					}
+				);
+				if (!result.success) {
+					new Notice(result.error ?? "Sync failed.");
+					return;
 				}
-			);
-			if (!result.success) {
-				new Notice(result.error ?? "Sync failed.");
-				return;
+				if (result.nothingNew) {
+					new Notice("Nothing new to sync.");
+					return;
+				}
+				new Notice(
+					`Synced ${result.turnsSynced} turn(s)${result.newSources ? ` and ${result.newSources} new source(s)` : ""}.`
+				);
+			} finally {
+				progressNotice?.hide();
 			}
-			if (result.nothingNew) {
-				new Notice("Nothing new to sync.");
-				return;
-			}
-			new Notice(
-				`Synced ${result.turnsSynced} turn(s)${result.newSources ? ` and ${result.newSources} new source(s)` : ""}.`
-			);
 		},
 	});
 }

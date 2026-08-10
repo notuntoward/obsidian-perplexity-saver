@@ -31,19 +31,25 @@ export interface AutoRelinkSettings {
  * Run Zotero / literature-note relinking on `noteText` when the auto-relink
  * setting is enabled, otherwise return the text untouched. Relinking is
  * best-effort: the relinker itself catches connection and matching errors,
- * surfaces a Notice, and returns the original text so the caller's main
- * workflow (import or sync) is never blocked by a missing or unreachable
- * Zotero instance.
+ * enforces a short timeout so a slow/unresponsive Zotero can never block the
+ * caller's main workflow (import or sync), surfaces a Notice, and returns the
+ * original text on any failure.
+ *
+ * `onProgress` is optional and, when provided, receives the same live status
+ * messages `ZoteroClient.getItems()` reports (e.g. "Checking Zotero library
+ * version...") so the caller can show them instead of leaving the user with
+ * no feedback while this runs.
  */
 export async function maybeAutoRelinkSources(
 	app: App,
 	noteText: string,
 	settings: AutoRelinkSettings,
-	zoteroClient?: ZoteroClient
+	zoteroClient?: ZoteroClient,
+	onProgress?: (message: string) => void
 ): Promise<string> {
 	if (!settings.autoRelinkSources) {
 		return noteText;
 	}
 	const { autoRelinkSourcesInNote } = await import("./relinker");
-	return autoRelinkSourcesInNote(app, noteText, settings, zoteroClient);
+	return autoRelinkSourcesInNote(app, noteText, settings, zoteroClient, onProgress);
 }

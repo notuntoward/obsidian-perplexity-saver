@@ -219,7 +219,20 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 }
 
+/**
+ * How long to wait, after the user submits the filename, before showing any
+ * "busy" visual on the input. Saves usually finish well under this and
+ * should not flash a busy indicator; only a save that is genuinely taking a
+ * while (e.g. a slow Zotero lookup) should visibly change the input's
+ * appearance.
+ */
+const BUSY_INDICATOR_DELAY_MS = 350;
+
 class InlineInputWidget extends WidgetType {
+	private wrapEl?: HTMLElement;
+	private inputEl?: HTMLInputElement;
+	private submitting = false;
+
 	constructor(
 		private plugin: PerplexitySaverPlugin,
 		private data: InlineInputData
@@ -234,6 +247,7 @@ class InlineInputWidget extends WidgetType {
 	toDOM(): HTMLElement {
 		const wrap = document.createElement("span");
 		wrap.className = "perplexity-inline-wrap";
+		this.wrapEl = wrap;
 
 		const input = document.createElement("input");
 		input.type = "text";
@@ -247,6 +261,11 @@ class InlineInputWidget extends WidgetType {
 		input.style.background = "var(--background-primary-alt)";
 		input.style.padding = "2px 6px";
 		input.style.minWidth = "200px";
+		this.inputEl = input;
+
+		const spinner = document.createElement("span");
+		spinner.className = "perplexity-inline-spinner";
+		spinner.setAttribute("aria-hidden", "true");
 
 		window.setTimeout(() => {
 			input.focus();
@@ -257,9 +276,20 @@ class InlineInputWidget extends WidgetType {
 			if (e.key === "Enter") {
 				e.preventDefault();
 				e.stopPropagation();
+				if (this.submitting) return;
 				const filename = input.value.trim();
 				if (filename) {
-					await this.handleSubmit(filename);
+					this.submitting = true;
+					try {
+						await this.handleSubmit(filename);
+					} finally {
+						// Must run even if handleSubmit throws (e.g. an
+						// uncaught vault I/O or CM6 dispatch error):
+						// otherwise `submitting` stays stuck at true forever
+						// and every later Enter press silently no-ops,
+						// looking exactly like a permanent hang.
+						this.submitting = false;
+					}
 				}
 			} else if (e.key === "Escape") {
 				e.preventDefault();
@@ -272,6 +302,7 @@ class InlineInputWidget extends WidgetType {
 		});
 
 		wrap.appendChild(input);
+		wrap.appendChild(spinner);
 		return wrap;
 	}
 
@@ -279,41 +310,107 @@ class InlineInputWidget extends WidgetType {
 		return true;
 	}
 
+	/**
+	 * Toggle the visible "busy" state (dims/disables the input, shows a
+	 * spinner). Called only after BUSY_INDICATOR_DELAY_MS has elapsed
+	 * without the save finishing, so a fast save never flashes it.
+	 */
+	private setBusy(busy: boolean): void {
+		this.wrapEl?.classList.toggle("is-busy", busy);
+	}
+
 	private async handleSubmit(filename: string): Promise<void> {
 		const { noteContent, activeFile, editorView, from, to, prefetchedDialogPromise } = this.data;
 
-		const result = await createPerplexityNote({
-			app: this.plugin.app,
-			activeFile,
-			clipboardContent: noteContent,
-			filename,
-			searchesFolder: this.plugin.settings.searchesFolder,
-			generatedTag: this.plugin.settings.generatedTag,
-			collapseBlankLines: this.plugin.settings.collapseBlankLines,
-			collapsePromptCallouts: this.plugin.settings.collapsePromptCallouts,
-			headlineOptions: this.plugin.headlineOptions(),
-			autoFetchSourceTitles: this.plugin.settings.autoFetchSourceTitles,
-			sourceTitleMaxChars: this.plugin.settings.sourceTitleMaxChars,
-			prefetchedDialogPromise,
-			autoRelinkSources: this.plugin.settings.autoRelinkSources,
-			zoteroPort: this.plugin.settings.zoteroPort,
-			litNotesFolder: this.plugin.settings.litNotesFolder,
-			minTitleMatchScore: this.plugin.settings.minTitleMatchScore,
-			zoteroClient: this.plugin.zoteroClient,
-		});
-
-		if (!result.success) {
-			new Notice(result.error);
-			return;
+		// Disable the input immediately so it can't be edited or re-submitted
+		// mid-save, but don't change its appearance yet — that only happens
+		// if the save is still running after BUSY_INDICATOR_DELAY_MS.
+		if (this.inputEl) {
+			this.inputEl.disabled = true;
 		}
+		const busyTimer = window.setTimeout(() => this.setBusy(true), BUSY_INDICATOR_DELAY_MS);
 
-		editorView.dispatch({
-			changes: { from, to, insert: result.linkText },
-			effects: clearPerplexityInput.of(null),
-		});
+		// Live status (e.g. Zotero relink progress) surfaced via a single
+		// persistent Notice, updated in place rather than stacking multiple
+		// notices. This supplements, but is not a substitute for, the busy
+		// indicator on the input itself — the Notice can be missed or
+		// dismissed, but the input's own appearance can't be.
+		let progressNotice: Notice | undefined;
+		const onProgress = (message: string) => {
+			if (!progressNotice) {
+				progressNotice = new Notice(message, 0);
+			} else {
+				progressNotice.setMessage(message);
+			}
+		};
 
-		editorView.focus();
-		new Notice(`Saved note to ${result.newNotePath}`);
+		try {
+			const result = await createPerplexityNote({
+				app: this.plugin.app,
+				activeFile,
+				clipboardContent: noteContent,
+				filename,
+				searchesFolder: this.plugin.settings.searchesFolder,
+				generatedTag: this.plugin.settings.generatedTag,
+				collapseBlankLines: this.plugin.settings.collapseBlankLines,
+				collapsePromptCallouts: this.plugin.settings.collapsePromptCallouts,
+				headlineOptions: this.plugin.headlineOptions(),
+				autoFetchSourceTitles: this.plugin.settings.autoFetchSourceTitles,
+				sourceTitleMaxChars: this.plugin.settings.sourceTitleMaxChars,
+				prefetchedDialogPromise,
+				autoRelinkSources: this.plugin.settings.autoRelinkSources,
+				zoteroPort: this.plugin.settings.zoteroPort,
+				litNotesFolder: this.plugin.settings.litNotesFolder,
+				minTitleMatchScore: this.plugin.settings.minTitleMatchScore,
+				zoteroClient: this.plugin.zoteroClient,
+				onProgress,
+			});
+
+			if (!result.success) {
+				new Notice(result.error);
+				return; // input re-enabled below in `finally`, regardless of outcome
+			}
+
+			// Explicitly place the cursor immediately after the inserted link.
+			// Without this, CM6 maps the pre-existing collapsed selection
+			// through the change using its default association, which lands
+			// the cursor at the *start* of the inserted text (inside the
+			// link) rather than past it — leaving the link rendered "open"
+			// (raw [[...]] syntax visible) instead of closed.
+			//
+			// Placing the cursor immediately at the end of the link (right
+			// after `]]`) is not enough on its own: Obsidian's Live Preview
+			// keeps a [[link]] rendered as raw/open text whenever the
+			// cursor merely touches its boundary, not only when it's
+			// inside. Insert a trailing space and place the cursor past
+			// that space instead, so the cursor is unambiguously outside
+			// the link's range and it renders closed.
+			const insertText = result.linkText + " ";
+			editorView.dispatch({
+				changes: { from, to, insert: insertText },
+				selection: { anchor: from + insertText.length },
+				effects: clearPerplexityInput.of(null),
+			});
+
+			editorView.focus();
+			new Notice(`Saved note to ${result.newNotePath}`);
+		} catch (err) {
+			// Any unexpected error (vault I/O, CM6 dispatch, an uncaught
+			// network error somewhere in the pipeline, etc.) must not leave
+			// the input permanently disabled with no visible feedback —
+			// that looks exactly like a hang, since a disabled <input>
+			// doesn't receive further keydown events at all. Surface it and
+			// fall through to `finally`, which always re-enables the input.
+			console.error("Error saving AI dialog note:", err);
+			new Notice("Failed to save the note — see console for details.");
+		} finally {
+			window.clearTimeout(busyTimer);
+			this.setBusy(false);
+			progressNotice?.hide();
+			if (this.inputEl) {
+				this.inputEl.disabled = false;
+			}
+		}
 	}
 }
 

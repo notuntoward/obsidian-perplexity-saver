@@ -162,4 +162,55 @@ Climate change is real[^1_1].
 		const result = await autoRelinkSourcesInNote(mockApp, SAMPLE_NOTE, RELINK_SETTINGS, failingClient);
 		expect(result).toBe(SAMPLE_NOTE);
 	});
+
+	it("forwards live status messages via onProgress instead of dropping them", async () => {
+		const mockApp: any = { vault: { getMarkdownFiles: () => [] } };
+		const client = new ZoteroClient({ port: 23119 });
+		const item = {
+			zotkey: "ZOTKEY1",
+			citekey: "smith2024climate",
+			title: "Climate Study Title",
+			url: "https://example.com/climate",
+			normalizedUrl: "https://example.com/climate",
+		};
+		(client as any).cachedItems = [item];
+		(client as any).urlMap.set("https://example.com/climate", item);
+		(client as any).lastFetchTime = Date.now();
+
+		const progressMessages: string[] = [];
+		await autoRelinkSourcesInNote(mockApp, SAMPLE_NOTE, RELINK_SETTINGS, client, (msg) =>
+			progressMessages.push(msg)
+		);
+
+		expect(progressMessages.length).toBeGreaterThan(0);
+		expect(progressMessages.some((m) => m.toLowerCase().includes("cached"))).toBe(true);
+	});
+
+	it("saves the note unlinked instead of hanging when Zotero never responds", async () => {
+		vi.useFakeTimers();
+		try {
+			const mockApp: any = { vault: { getMarkdownFiles: () => [] } };
+			// A client whose getItems() never settles, simulating an
+			// unresponsive Zotero (e.g. a cold-cache fetch that stalls).
+			const neverRespondingClient: any = {
+				getItems: vi.fn(() => new Promise(() => {})),
+			};
+
+			const resultPromise = autoRelinkSourcesInNote(
+				mockApp,
+				SAMPLE_NOTE,
+				RELINK_SETTINGS,
+				neverRespondingClient
+			);
+
+			// Advance past the auto-relink timeout guard; without it this
+			// would hang the test (and, in the plugin, the user's save).
+			await vi.advanceTimersByTimeAsync(3100);
+
+			const result = await resultPromise;
+			expect(result).toBe(SAMPLE_NOTE);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
