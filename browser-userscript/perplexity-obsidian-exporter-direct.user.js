@@ -5,7 +5,7 @@
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
-// @grant        none
+// @grant        GM_setClipboard
 // @sandbox      raw
 // @run-at       document-idle
 // ==/UserScript==
@@ -34,26 +34,47 @@
     return document.querySelector("main") || document.body;
   }
 
-  function showToast(msg, isError) {
+  // Toast state:
+  //   "progress" — a status shown mid-export (e.g. "Preparing export...").
+  //                Never auto-hides on its own; stays up until replaced by
+  //                either another progress update or a final result.
+  //   "success" / "error" — a final result. Auto-hides after a delay, but
+  //                that delay is much longer than the original 3.8s so a
+  //                user glancing away for a moment doesn't miss it.
+  function showToast(msg, kind) {
     const t = document.getElementById("pplx-clip-toast") || (() => {
       const el = document.createElement("div");
       el.id = "pplx-clip-toast";
       el.style.cssText = `
-        position: fixed; bottom: 32px; left: 50%; transform: translateX(-50%);
-        z-index: 999999; padding: 14px 22px; border-radius: 10px;
-        font: 15px sans-serif; font-weight: 500; color: #fff; transition: opacity 0.3s;
+        position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
+        z-index: 999999; padding: 20px 32px; border-radius: 12px;
+        font: 18px/1.4 sans-serif; font-weight: 600; color: #fff; transition: opacity 0.3s;
         pointer-events: none; max-width: 80vw; text-align: center;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+        border: 2px solid rgba(255, 255, 255, 0.25);
       `;
       document.body.appendChild(el);
       return el;
     })();
 
-    t.style.background = isError ? "#c0392b" : "#2e7d32";
-    t.textContent = msg;
+    const colors = {
+      progress: "#1565c0", // blue — work is actively happening, do not navigate away
+      success: "#2e7d32", // green — done, safe to leave the page
+      error: "#c0392b",
+    };
+    const icons = { progress: "⏳", success: "✅", error: "⚠️" };
+    t.style.background = colors[kind] || colors.error;
+    t.textContent = `${icons[kind] || icons.error} ${msg}`;
     t.style.opacity = "1";
     clearTimeout(t._hideTimer);
-    t._hideTimer = setTimeout(() => (t.style.opacity = "0"), 3800);
+    if (kind !== "progress") {
+      // Final result: auto-hide, but only after a delay generous enough
+      // that a user who glanced away for a second or two still sees it.
+      t._hideTimer = setTimeout(() => (t.style.opacity = "0"), 6000);
+    }
+    // A "progress" toast is intentionally left up with no timer — it is
+    // always expected to be replaced by a later showToast() call once the
+    // export actually finishes (success or error), never left dangling.
   }
 
   function formatTimestamp(d) {
@@ -856,36 +877,81 @@
     return { text: out.join("\n\n"), warnings };
   }
 
+  // Attempt the clipboard write with a layered fallback, since no single
+  // method is reliable in every environment:
+  //   1. GM_setClipboard (Tampermonkey's own bridge, granted via
+  //      "@grant GM_setClipboard") is not subject to the page's own
+  //      focus/user-activation restrictions, so it is preferred whenever
+  //      available.
+  //   2. navigator.clipboard.writeText() is the fallback for setups where
+  //      GM_setClipboard isn't available (e.g. a different userscript
+  //      manager, or a Tampermonkey install where the grant hasn't taken
+  //      effect yet). It IS subject to focus/user-activation limits: if the
+  //      document loses focus, or too much time elapses since the original
+  //      click, the browser can silently no-op or reject the write — which
+  //      previously surfaced as Obsidian's importer reporting an "empty
+  //      clipboard" error despite this script showing a success toast.
+  // Both attempts are wrapped individually so a thrown error from the
+  // preferred method doesn't prevent trying the fallback.
+  async function writeToClipboard(full) {
+    if (typeof GM_setClipboard !== "undefined") {
+      try {
+        GM_setClipboard(full, "text");
+        return { success: true, method: "GM_setClipboard" };
+      } catch (err) {
+        console.warn("[PPLX Obsidian Exporter] GM_setClipboard failed, falling back:", err);
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(full);
+      return { success: true, method: "navigator.clipboard" };
+    } catch (err) {
+      console.error("[PPLX Obsidian Exporter] navigator.clipboard.writeText failed:", err);
+      return { success: false, error: err };
+    }
+  }
+
   async function copyText(text) {
+    // Immediate feedback the instant export starts, well before the actual
+    // clipboard write: expanding truncated prompts and annotating the
+    // conversation can take a noticeable moment on long threads, and
+    // without this the user previously saw nothing at all until the final
+    // toast — easy to mistake for the export having not started, or to
+    // navigate away from the page before it's actually done.
+    showToast("Preparing export — please wait, don't leave this page yet...", "progress");
+
     const toggles = await expandAllPrompts();
 
     const { result: logoStripped } = stripLogo(text);
 
     const { text: annotated, warnings } = annotateConversation(logoStripped, toggles);
-    if (warnings.length > 0) {
-      showToast(
-        `Turn(s) ${warnings.join(", ")} boundaries unresolved — copied with fallback.`,
-        true
-      );
-    }
 
     collapseAllPrompts();
 
     const full = buildHeader() + annotated;
-    if (typeof GM_setClipboard !== "undefined") {
-      GM_setClipboard(full, "text");
-      showToast("Copied annotated export to clipboard (no file saved)");
-      return true;
-    }
-    try {
-      await navigator.clipboard.writeText(full);
-      showToast("Copied annotated export to clipboard (no file saved)");
-      return true;
-    } catch (err) {
-      console.error("[PPLX Obsidian Exporter] Clipboard write failed:", err);
-      showToast("Clipboard write failed — saving file instead", true);
+
+    // Sanity check: if the assembled export is suspiciously small (e.g. the
+    // annotation pipeline produced next to nothing), do not report success
+    // — an empty or near-empty clipboard is exactly the failure mode this
+    // is meant to catch before the user ever leaves the page.
+    const MIN_PLAUSIBLE_LENGTH = 40;
+    if (full.trim().length < MIN_PLAUSIBLE_LENGTH) {
+      console.error("[PPLX Obsidian Exporter] Assembled export text is suspiciously short:", full);
+      showToast("Export produced little/no content — saving file instead", "error");
       return false;
     }
+
+    const result = await writeToClipboard(full);
+    if (!result.success) {
+      showToast("Clipboard write failed — saving file instead", "error");
+      return false;
+    }
+
+    const warningSuffix = warnings.length > 0
+      ? ` (turn(s) ${warnings.join(", ")} boundaries unresolved — used fallback split)`
+      : "";
+    showToast(`Copied to clipboard — safe to leave this page now${warningSuffix}`, "success");
+    return true;
   }
 
   function isExportDownload(href, download) {
@@ -1034,7 +1100,7 @@
       }
     } catch (err) {
       console.error("[PPLX Obsidian Exporter] Failed to read blob/data URL:", err);
-      showToast("Could not read export content — saving file instead", true);
+      showToast("Could not read export content — saving file instead", "error");
       OrigAnchorClick.call(anchorEl);
       return;
     }
