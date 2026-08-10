@@ -301,6 +301,38 @@ Research suggests that excessive intake of these amino acids may activate biolog
     }
   });
 
+  it("falls back to title text when the DOM-extracted prompt is empty (search-page turn 1 with no separate query bubble)", () => {
+    // Regression test for the KAN-networks bug: when the matched DOM element
+    // is itself the AI response wrapper (containsAiResponse is already true
+    // on it), getFullPromptText returns "". splitPromptFromResponse must be
+    // called with the title as domPromptText in that case, which hits the
+    // fast path and produces a correct split instead of falling through to
+    // the paragraph/citation heuristic that swallows the AI's intro
+    // paragraph into the prompt.
+    const chunk = `# Scholarly and Semi-Technical References on KAN Networks \\& Information Theory
+
+Research directly bridging Kolmogorov–Arnold Networks (KANs) and information theory is a fairly narrow, fast-moving niche — most work either (a) grounds KANs in the Kolmogorov–Arnold superposition theorem (a foundational result in function-representation/complexity theory) or (b) analyzes KAN training dynamics using **information bottleneck (IB) theory** and mutual information. Below are the strongest peer-reviewed/preprint sources, followed by accessible explainer-level material covering the same ground.
+
+## Scholarly (Academic/Technical) References
+
+Some table content here.`;
+    const title = "Scholarly and Semi-Technical References on KAN Networks \\& Information Theory";
+
+    // Simulate getFullPromptText returning "" by passing an empty string,
+    // then applying the same "use title instead" fallback the userscript now
+    // performs before calling splitPromptFromResponse.
+    const emptyDomPromptText = "";
+    const domPromptText = emptyDomPromptText || title;
+
+    const split = splitPromptFromResponse(chunk, domPromptText, 1, title);
+    expect(split).not.toBeNull();
+    if (split) {
+      expect(split.prompt).toBe("# Scholarly and Semi-Technical References on KAN Networks \\& Information Theory");
+      expect(split.response.startsWith("Research directly bridging Kolmogorov")).toBe(true);
+      expect(split.response).toContain("## Scholarly (Academic/Technical) References");
+    }
+  });
+
   it("perfectly aligns even when the prompt has links or formatting that render differently in the DOM", () => {
     // Let's simulate a chunk where the prompt in markdown has formatting, but the DOM text does not
     const chunk = `# Explain links

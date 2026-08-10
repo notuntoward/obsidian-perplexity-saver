@@ -531,6 +531,13 @@
         if (!(pos & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
       }
 
+      // Skip candidates that live inside the AI response body (e.g. an echoed
+      // heading that repeats the query verbatim). The query bubble is never
+      // rendered inside the response's prose/markdown container, so matching
+      // text found there is always a false positive that would swallow part
+      // of the AI response into the "prompt" text.
+      if (el.closest(".prose, .markdown")) continue;
+
       const text = stripForMatch(el.textContent || "");
       if (text === target || (text.length > target.length && text.startsWith(target))) {
         if (!bestEl || bestEl.contains(el)) {
@@ -791,8 +798,26 @@
         );
 
         if (domEl) {
-          const domPromptText = getFullPromptText(domEl);
+          let domPromptText = getFullPromptText(domEl);
           console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched prompt element with text length:`, domPromptText.length);
+
+          // getFullPromptText can legitimately come back empty: this happens
+          // when the matched "prompt" element is itself already the AI
+          // response wrapper (e.g. a search-style first turn with no
+          // separate query bubble in the DOM, where the query text only
+          // exists as the echoed heading inside the answer). In that case
+          // there is no genuine query text to extract from the DOM at all,
+          // so fall back to the heading text we already parsed from the
+          // markdown itself — it is always correct and lets
+          // splitPromptFromResponse take its exact-match fast path instead
+          // of falling through to the much less reliable paragraph/citation
+          // heuristic, which can misclassify the AI's own intro paragraph
+          // as part of the prompt.
+          if (!domPromptText) {
+            console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: DOM prompt text was empty (matched element is itself the AI response) — using title text as the prompt instead.`);
+            domPromptText = title;
+          }
+
           split = splitPromptFromResponse(chunk, domPromptText, turnNum, title);
         }
       } else if (!title) {
