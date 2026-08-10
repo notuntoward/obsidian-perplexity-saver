@@ -912,12 +912,11 @@
   }
 
   async function copyText(text) {
-    // Immediate feedback the instant export starts, well before the actual
-    // clipboard write: expanding truncated prompts and annotating the
-    // conversation can take a noticeable moment on long threads, and
-    // without this the user previously saw nothing at all until the final
-    // toast — easy to mistake for the export having not started, or to
-    // navigate away from the page before it's actually done.
+    // Fallback progress feedback: if the earlier click-detection on the
+    // "Export as Markdown" menu item missed (e.g. the menu is rendered in
+    // a shadow DOM or uses an unexpected structure), at least show the
+    // progress toast once our anchor-click interceptor actually fires and
+    // we begin the real work.
     showToast("Preparing export — please wait, don't leave this page yet...", "progress");
 
     const toggles = await expandAllPrompts();
@@ -1133,6 +1132,30 @@
     }
     return OrigAnchorClick.call(this);
   };
+
+  // Listen for clicks on the "Export as Markdown" menu item so we can show
+  // a progress toast the instant the user initiates an export — well before
+  // Perplexity finishes generating the markdown blob and clicks the
+  // download anchor our code intercepts. We walk up from the clicked element
+  // because the menu item text and the clickable element may be different
+  // nodes (text in a child span, etc.).
+  try {
+    document.addEventListener("click", (e) => {
+      let node = e.target;
+      while (node && node !== document.body && node !== document.documentElement) {
+        const text = ((node.textContent || "")).toLowerCase();
+        if (
+          text.includes("export as markdown") ||
+          text.includes("export markdown") ||
+          text.includes("download markdown")
+        ) {
+          showToast("Preparing export — please wait, don't leave this page yet...", "progress");
+          break;
+        }
+        node = node.parentElement;
+      }
+    }, true);
+  } catch (_) {}
 
   // Listen for Enter key on inputs containing export commands to trigger suppression immediately
   try {

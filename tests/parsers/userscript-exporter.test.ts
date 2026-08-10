@@ -908,6 +908,7 @@ describe("Userscript Exporter progress prompt suppression", () => {
       "setInterval",
       "clearInterval",
       "Date",
+      "showToast",
       `
         return (${fnText});
       `
@@ -917,7 +918,8 @@ describe("Userscript Exporter progress prompt suppression", () => {
       // Pass a mock setInterval that calls the callback synchronously once for the test
       (cb: any) => { cb(); return 123; },
       clearInterval,
-      Date
+      Date,
+      () => {}
     );
 
     // Run the function
@@ -976,13 +978,15 @@ describe("Userscript Exporter progress prompt suppression", () => {
       "setInterval",
       "clearInterval",
       "Date",
+      "showToast",
       `return (${fnText});`
     )(
       mockDocument,
       class { constructor() {} },
       (cb: any) => { cb(); return 123; },
       () => {},
-      Date
+      Date,
+      () => {}
     );
 
     dismissToastsInSandbox();
