@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createPerplexityNote } from "../src/note-creator";
+import { ZoteroClient } from "../src/zotero/zoteroClient";
 
 describe("createPerplexityNote", () => {
 	let mockApp: any;
@@ -321,5 +322,106 @@ describe("createPerplexityNote", () => {
 			expect.stringContaining("test.md"),
 			expect.stringContaining("prefetched answer")
 		);
+	});
+});
+
+describe("createPerplexityNote with auto-relinking", () => {
+	let mockApp: any;
+	let mockActiveFile: any;
+
+	const RELINKED_SOURCE = "zotero://select/library/items/ZOTKEY1";
+	const CLIPBOARD_WITH_SOURCE =
+		"# my question\n\nmy answer[1]\n\n# Citations:\n[1] [Climate Study Title](https://example.com/climate)";
+
+	beforeEach(() => {
+		mockApp = {
+			vault: {
+				create: vi.fn().mockResolvedValue({ path: "folder/ai-searches/test.md" }),
+				createFolder: vi.fn().mockResolvedValue(undefined),
+				getAbstractFileByPath: vi.fn().mockReturnValue(null),
+				getMarkdownFiles: vi.fn().mockReturnValue([]),
+			},
+			fileManager: {
+				processFrontMatter: vi.fn().mockImplementation(async (_file, callback) => {
+					const fm: Record<string, unknown> = {};
+					await callback(fm);
+				}),
+				generateMarkdownLink: vi.fn().mockReturnValue("[[test]]"),
+			},
+		};
+
+		mockActiveFile = {
+			path: "folder/test-note.md",
+			parent: { path: "folder" },
+		};
+
+		Object.assign(navigator, {
+			clipboard: {
+				writeText: vi.fn().mockResolvedValue(undefined),
+				readText: vi.fn().mockResolvedValue(""),
+			},
+		});
+	});
+
+	function matchedClient(): ZoteroClient {
+		const client = new ZoteroClient({ port: 23119 });
+		const item = {
+			zotkey: "ZOTKEY1",
+			citekey: "smith2024climate",
+			title: "Climate Study Title",
+			url: "https://example.com/climate",
+			normalizedUrl: "https://example.com/climate",
+		};
+		(client as any).cachedItems = [item];
+		(client as any).urlMap.set("https://example.com/climate", item);
+		(client as any).lastFetchTime = Date.now();
+		return client;
+	}
+
+	it("relinks the note body when autoRelinkSources is enabled", async () => {
+		const result = await createPerplexityNote({
+			app: mockApp,
+			activeFile: mockActiveFile,
+			clipboardContent: CLIPBOARD_WITH_SOURCE,
+			filename: "test",
+			searchesFolder: "ai-searches",
+			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+			headlineOptions: { method: "lead" },
+			autoRelinkSources: true,
+			zoteroPort: 23119,
+			litNotesFolder: "",
+			minTitleMatchScore: 95,
+			zoteroClient: matchedClient(),
+		});
+
+		expect(result.success).toBe(true);
+		const written = mockApp.vault.create.mock.calls[0][1] as string;
+		expect(written).toContain(RELINKED_SOURCE);
+	});
+
+	it("writes the un-relinked body when auto-relinking fails", async () => {
+		const failingClient: any = { getItems: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")) };
+
+		const result = await createPerplexityNote({
+			app: mockApp,
+			activeFile: mockActiveFile,
+			clipboardContent: CLIPBOARD_WITH_SOURCE,
+			filename: "test",
+			searchesFolder: "ai-searches",
+			generatedTag: "ai-generated",
+			collapseBlankLines: true,
+			headlineOptions: { method: "lead" },
+			autoRelinkSources: true,
+			zoteroPort: 23119,
+			litNotesFolder: "",
+			minTitleMatchScore: 95,
+			zoteroClient: failingClient,
+		});
+
+		expect(result.success).toBe(true);
+		const written = mockApp.vault.create.mock.calls[0][1] as string;
+		expect(written).not.toContain(RELINKED_SOURCE);
+		expect(written).toContain("[^1_1]: [Climate Study Title](https://example.com/climate)");
 	});
 });

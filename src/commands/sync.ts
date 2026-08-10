@@ -6,6 +6,7 @@ import { getNextTurnIndex, groupLogicalTurns, deduplicateDialogCitations } from 
 import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
+import { maybeAutoRelinkSources } from "../zotero/autoRelink";
 
 export interface SyncDialogResult {
 	success: boolean;
@@ -107,8 +108,7 @@ export async function syncDialogFromClipboard(
 	let updated = spliceIntoNote(existingText, newTurnsChunk, allSourceLines);
 
 	if (relinkOptions?.autoRelinkSources) {
-		const { autoRelinkSourcesInNote } = await import("../zotero/relinker");
-		updated = await autoRelinkSourcesInNote(
+		updated = await maybeAutoRelinkSources(
 			app,
 			updated,
 			{

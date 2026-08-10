@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { syncDialogFromClipboard } from "../../src/commands/sync";
 import { HeadlineOptions } from "../../src/normalize/headlines";
+import { ZoteroClient } from "../../src/zotero/zoteroClient";
 
 const HEADLINE_OPTIONS: HeadlineOptions = { method: "lead" };
 
@@ -142,5 +143,88 @@ A4`;
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
 		expect(written).toMatch(/## Q4 \^turn-3$/m); // Next monotonic local index is 3 (max surviving 2 + 1)
 		expect(written).not.toContain("Q3"); // Turn 3 should not be re-appended since synced watermark was 3
+	});
+
+	it("relinks the synced note when autoRelinkSources is enabled", async () => {
+		const existing = `# Dialog
+
+## First question ^turn-1
+
+first question
+
+first answer[^1_1]
+
+# Sources
+
+[^1_1]: [A](https://a.com/)
+`;
+		mockApp.vault.read.mockResolvedValue(existing);
+		(navigator.clipboard.readText as any).mockResolvedValue(
+			"# first question\n\nfirst answer[1]\n\n---\n\n# second question\n\nsecond answer[2]\n\n# Citations:\n[1] [A](https://a.com/)\n[2] [B](https://b.com/)"
+		);
+		mockApp.vault.getMarkdownFiles = vi.fn().mockReturnValue([]);
+
+		const client = new ZoteroClient({ port: 23119 });
+		const item = {
+			zotkey: "ZOTB1",
+			citekey: "author2026b",
+			title: "B",
+			url: "https://b.com/",
+			normalizedUrl: "https://b.com",
+		};
+		(client as any).cachedItems = [item];
+		(client as any).urlMap.set("https://b.com", item);
+		(client as any).lastFetchTime = Date.now();
+
+		const result = await syncDialogFromClipboard(mockApp, mockFile, HEADLINE_OPTIONS, true, 100, {
+			autoRelinkSources: true,
+			zoteroPort: 23119,
+			litNotesFolder: "",
+			minTitleMatchScore: 95,
+			zoteroClient: client,
+		});
+		expect(result.success).toBe(true);
+		expect(result.turnsSynced).toBe(1);
+
+		const written = mockApp.vault.modify.mock.calls[0][1] as string;
+		expect(written).toContain("## second question ^turn-2");
+		expect(written).toContain("[^2_1]: **[B -> ZOTB1](zotero://select/library/items/ZOTB1)**");
+	});
+
+	it("still syncs when auto-relinking fails because Zotero is unreachable", async () => {
+		const existing = `# Dialog
+
+## First question ^turn-1
+
+first question
+
+first answer[^1_1]
+
+# Sources
+
+[^1_1]: [A](https://a.com/)
+`;
+		mockApp.vault.read.mockResolvedValue(existing);
+		(navigator.clipboard.readText as any).mockResolvedValue(
+			"# first question\n\nfirst answer[1]\n\n---\n\n# second question\n\nsecond answer[2]\n\n# Citations:\n[1] [A](https://a.com/)\n[2] [B](https://b.com/)"
+		);
+		mockApp.vault.getMarkdownFiles = vi.fn().mockReturnValue([]);
+
+		const failingClient: any = { getItems: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")) };
+
+		const result = await syncDialogFromClipboard(mockApp, mockFile, HEADLINE_OPTIONS, true, 100, {
+			autoRelinkSources: true,
+			zoteroPort: 23119,
+			litNotesFolder: "",
+			minTitleMatchScore: 95,
+			zoteroClient: failingClient,
+		});
+		expect(result.success).toBe(true);
+		expect(result.turnsSynced).toBe(1);
+
+		// The sync succeeds and the new source is written un-relinked.
+		const written = mockApp.vault.modify.mock.calls[0][1] as string;
+		expect(written).toContain("## second question ^turn-2");
+		expect(written).toContain("[^2_1]: [B](https://b.com/)");
 	});
 });

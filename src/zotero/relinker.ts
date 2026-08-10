@@ -2,6 +2,7 @@ import { App } from "obsidian";
 import { parseSourceLine, renderSourceLine, SourceLinkState } from "./sourceLinkState";
 import { ZoteroClient, ZoteroItemData } from "./zoteroClient";
 import { findLitNoteForCitekey } from "./matcher";
+import type { AutoRelinkSettings } from "./autoRelink";
 
 export interface RelinkOptions {
 	zoteroPort?: number;
@@ -27,12 +28,7 @@ export interface RelinkResult {
 export async function autoRelinkSourcesInNote(
 	app: App,
 	noteText: string,
-	settings: {
-		autoRelinkSources: boolean;
-		zoteroPort: number;
-		litNotesFolder: string;
-		minTitleMatchScore: number;
-	},
+	settings: AutoRelinkSettings,
 	zoteroClient?: ZoteroClient
 ): Promise<string> {
 	if (!settings.autoRelinkSources) {

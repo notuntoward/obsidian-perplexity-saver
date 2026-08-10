@@ -7,7 +7,9 @@
 Ask AI a research question, then save the entire conversation into your
 vault with one click and one keystroke — automatically filed into a linked,
 tagged note next to whatever you're currently writing. No copy-pasting, no
-manual file creation, no frontmatter editing.  
+manual file creation, no frontmatter editing. Sources can then be matched
+against your local [Zotero](https://www.zotero.org/) library and vault
+literature notes, turning every citation into a jumpable link.  
 
 ```mermaid
 flowchart TD
@@ -156,6 +158,7 @@ This format is structured to be machine-readable yet highly readable in standard
    - Contains a standard markdown footnote list.
    - Each footnote corresponds to the turn-scoped footnote keys, formatted as standard markdown links:
      - Formatted as `[^turnNumber_sourceNumber]: [Title](URL)` or simply `[^turnNumber_sourceNumber]: <URL>` if no title is present.
+   - After [Zotero relinking](#zotero--literature-note-relinking), entries may instead be bold `zotero://` item links or bold literature-note wikilinks; the footnote key and turn-ownership semantics are unchanged.
 
 ---
 
@@ -183,6 +186,7 @@ If you continue a conversation in your browser and want to save the new turns in
 - It starts numbering new local anchors sequentially at `max(existing ^turn-N anchors) + 1`, making your local numbering robust and monotonic even if earlier turns were deleted.
 - It appends the new turns directly before the `# Sources` heading.
 - It **completely regenerates and merges the `# Sources` section** to ensure all citations from old and new turns are consolidated, mapped correctly, and deduplicated.
+- If the **Auto-relink sources** setting is on, it relinks the regenerated `# Sources` section against your Zotero library and literature notes in the same pass (see [Zotero & Literature Note Relinking](#zotero--literature-note-relinking)).
 - It updates the `ai-source-turns-synced` watermark to reflect the new total number of synced turns.
 
 > [!NOTE] Known Limitation
@@ -192,7 +196,11 @@ If you continue a conversation in your browser and want to save the new turns in
 
 # Pruning and Removing Sources
 
-This plugin provides two convenient commands to help keep your `# Sources` clean and relevant. Since both execute immediately and can be easily undone using standard Obsidian undo commands (`Ctrl+Z`), no confirmation modal is shown.
+This plugin provides several convenient commands to help keep your notes and `# Sources` clean and relevant. Since they execute immediately and can be easily undone using standard Obsidian undo commands (`Ctrl+Z`), no confirmation modal is shown.
+
+### Deleting a Dialog Turn
+
+To remove an entire turn (its summary heading, prompt callout, and AI response), run the command: **"Delete AI dialog turn"**. It opens a fuzzy-searchable list of every turn in the note; pick one and the plugin removes the whole block, then cleans up `# Sources` — sources cited only by the deleted turn are removed entirely, while sources still cited by other turns are kept with just the stale turn reference dropped.
 
 ### 1. Removing Sources with No Dialog
 If you manually delete a turn (e.g., removing a prompt callout and its accompanying AI response to tidy up a note), the citations tied exclusively to that turn will remain in the `# Sources` block at the bottom.
@@ -210,6 +218,28 @@ To clean this up, run the command: **"Remove sources with no cite"**.
 
 ---
 
+# Zotero & Literature Note Relinking
+
+Every entry under `# Sources` can be promoted from a plain web link into a **Zotero item link** or an **Obsidian literature-note link**:
+
+- **Zotero item link** — `**[Title -> ZOTKEY](zotero://select/library/items/ZOTKEY)**`. Clicking it jumps straight to the item in your local Zotero library.
+- **Literature note link** — `**[[citekey|Title -> citekey]]**`. Clicking it opens the vault note that corresponds to the citekey.
+
+Sources are matched to Zotero items first by exact (normalized) URL, then by fuzzy title similarity against a configurable minimum score. When a Zotero item is found and a literature note with the item's citekey exists in your vault, the source becomes a literature-note link; otherwise it becomes a Zotero item link. The original URL is preserved so sources can be re-matched after new items are added.
+
+## Prerequisites
+
+- **Zotero 7 or newer** running locally with the **Local API** enabled (Zotero → Settings → Advanced → Allow other applications on this computer to communicate with Zotero).
+- **Better BibTeX** (optional, recommended): provides reliable citekeys via the `item.citationkey` JSON-RPC method. Without it the plugin falls back to Zotero's native API and any citation keys in item metadata.
+- **Obsidian literature notes** (optional): any vault note whose basename matches a citekey (e.g. `smith2024climate.md` for citekey `smith2024climate`). Only notes inside the configured **Literature notes folder** are considered first; if none match there, the whole vault is searched as a fallback.
+
+## Commands
+
+- **"Relink sources with Zotero"** — manually relinks the current note's `# Sources` section. Shows a live progress notice and reports how many sources were matched (split into Zotero items vs. literature notes). If nothing new matches, the note is left untouched.
+- **"Auto-relink sources" setting** — when enabled, relinking runs automatically at the end of **"Import AI dialog from clipboard"** and **"Sync AI dialog from clipboard"** (the two commands that create new turns). Auto-relinking is best-effort: if Zotero is not running or the library is unreachable, the import/sync still completes and the note is saved with the un-relinked sources.
+
+---
+
 # Settings Configuration
 
 - **AI save folder** (default: `ai-searches`): Folder name where notes are created (relative to your currently active note).
@@ -220,6 +250,15 @@ To clean this up, run the command: **"Remove sources with no cite"**.
   - **Heading max characters** (default: `100`): Maximum length for the summary heading.
   - **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` and `TF-IDF ranked sentence`.
   - **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt.
+- **Source link title shortening**:
+  - **Auto-fetch source titles** (default: on): Fetches webpage titles for sources that don't already have one, producing clean markdown links instead of bare URLs.
+  - **Source title max characters** (default: `100`): Maximum length of a fetched source link title, including a possible ellipsis.
+- **Zotero & Literature Note Relinking** (see [above](#zotero--literature-note-relinking)):
+  - **Auto-relink sources** (default: off): Automatically run Zotero relinking when importing or syncing new turns.
+  - **Zotero HTTP Port** (default: `23119`): Local HTTP port for the Zotero 7 Local API.
+  - **Literature notes folder** (default: `lit/lit_notes`): Vault folder where literature notes reside. Leave blank to search anywhere in the vault.
+  - **Minimum title match score** (default: `95`): Minimum fuzzy similarity score (0-100) required to match an AI source title to a Zotero item.
+  - **Zotero library cache**: Button to clear the in-memory cached Zotero library so the next relink fetches fresh from Zotero.
 
 ---
 

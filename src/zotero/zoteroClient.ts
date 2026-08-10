@@ -67,8 +67,6 @@ function nodeRequest(
 }
 
 /**
-
-/**
  * Extract Better BibTeX / Zotero Citation Key from an item's extra field.
  */
 export function extractCitekeyFromExtra(extra?: string): string | null {

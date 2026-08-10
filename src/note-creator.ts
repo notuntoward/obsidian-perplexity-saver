@@ -8,6 +8,7 @@ import { groupLogicalTurns, deduplicateDialogCitations } from "./normalize/turns
 import { DialogFile } from "./parsers/types";
 
 import { resolveSourceTitles } from "./scraper";
+import { maybeAutoRelinkSources } from "./zotero/autoRelink";
 
 interface CreateNoteParams {
 	app: App;
@@ -92,8 +93,7 @@ export async function createPerplexityNote(
 
 	let finalBody = body;
 	if (params.autoRelinkSources) {
-		const { autoRelinkSourcesInNote } = await import("./zotero/relinker");
-		finalBody = await autoRelinkSourcesInNote(
+		finalBody = await maybeAutoRelinkSources(
 			app,
 			body,
 			{
