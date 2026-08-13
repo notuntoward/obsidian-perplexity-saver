@@ -32,7 +32,7 @@
     "@vitest/coverage-v8": "^4.0.0",
     "@vitest/ui": "^4.0.0",
     "builtin-modules": "^5.3.0",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.6.0",
     "eslint-plugin-obsidianmd": "^0.4.1",
     "fast-check": "^4.9.0",
