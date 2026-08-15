@@ -215,7 +215,6 @@ first answer[^1_1]
 			HEADLINE_OPTIONS,
 			false,
 			100,
-			undefined,
 			{ collapsePromptCallouts: false }
 		);
 		expect(result.success).toBe(true);
