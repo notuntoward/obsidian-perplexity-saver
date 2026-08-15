@@ -3,7 +3,7 @@ import { detectAndParse } from "../parsers/detect";
 import { buildNoteBody } from "../normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, createDialogNote } from "../normalize/frontmatter";
 import { HeadlineOptions } from "../normalize/headlines";
-import { sanitizeFilename } from "../utils";
+import { sanitizeFilename, suggestFilenameFromSelection } from "../utils";
 import { groupLogicalTurns, deduplicateDialogCitations } from "../normalize/turns";
 
 import { resolveSourceTitles } from "../scraper";
@@ -136,8 +136,8 @@ export function registerImportCommand(
 			}
 
 		const selection = editor.getSelection();
-		const defaultFilename = selection
-			? selection
+		const defaultFilename = selection.trim()
+			? suggestFilenameFromSelection(selection)
 			: suggestFilenameFromClipboard(clipboard, "AI Dialog");
 
 		const from = editor.getCursor("from");

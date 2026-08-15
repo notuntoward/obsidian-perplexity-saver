@@ -8,6 +8,7 @@ import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
 import { suggestFilenameFromClipboard } from "./commands/import";
+import { sanitizeFilename, suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 import { detectAndParse } from "./parsers/detect";
 import { resolveSourceTitles } from "./scraper";
@@ -97,6 +98,7 @@ interface InlineInputData {
 	activeFile: TFile;
 	editorView: EditorView;
 	prefetchedDialogPromise?: Promise<DialogFile>;
+	originalSelectedText?: string;
 }
 
 const startPerplexityInput = StateEffect.define<InlineInputData>();
@@ -150,9 +152,20 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		const selection = cm6View.state.selection.main;
 		const hasSelection = selection.from !== selection.to;
-		const defaultFilename = hasSelection
+		const selectedText = hasSelection
 			? cm6View.state.doc.sliceString(selection.from, selection.to)
-			: suggestFilenameFromClipboard(noteContent, "");
+			: "";
+		const trimmedSelectedText = selectedText.trim();
+		const isWhitespaceSelection = hasSelection && trimmedSelectedText === "";
+		const hasNonWhitespaceSelection = hasSelection && trimmedSelectedText !== "";
+
+		let defaultFilename = "";
+		if (hasNonWhitespaceSelection) {
+			defaultFilename = suggestFilenameFromSelection(selectedText);
+		}
+		if (!defaultFilename) {
+			defaultFilename = suggestFilenameFromClipboard(noteContent, "");
+		}
 
 		// Start pre-fetching source titles in parallel immediately as soon as command is run
 		let prefetchedDialogPromise: Promise<DialogFile> | undefined = undefined;
@@ -179,9 +192,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 			prefetchedDialogPromise = undefined;
 		}
 
-		const pos = selection.from;
+		const pos = isWhitespaceSelection ? selection.to : selection.from;
 		cm6View.dispatch({
-			changes: hasSelection
+			changes: hasNonWhitespaceSelection
 				? { from: selection.from, to: selection.to, insert: "" }
 				: undefined,
 			effects: startPerplexityInput.of({
@@ -193,6 +206,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				activeFile,
 				editorView: cm6View,
 				prefetchedDialogPromise,
+				originalSelectedText: hasNonWhitespaceSelection ? selectedText : undefined,
 			}),
 		});
 	}
@@ -294,7 +308,11 @@ class InlineInputWidget extends WidgetType {
 			} else if (e.key === "Escape") {
 				e.preventDefault();
 				e.stopPropagation();
+				const originalText = this.data.originalSelectedText;
 				this.data.editorView.dispatch({
+					changes: originalText
+						? { from: this.data.pos, to: this.data.pos, insert: originalText }
+						: undefined,
 					effects: clearPerplexityInput.of(null),
 				});
 				this.data.editorView.focus();
@@ -344,12 +362,23 @@ class InlineInputWidget extends WidgetType {
 			}
 		};
 
+		const rawInput = filename;
+		const sanitizedFilename = sanitizeFilename(rawInput).trim();
+
+		const alias = determineWikilinkAlias(
+			sanitizedFilename,
+			this.data.originalSelectedText,
+			this.data.defaultFilename,
+			rawInput
+		);
+
 		try {
 			const result = await createPerplexityNote({
 				app: this.plugin.app,
 				activeFile,
 				clipboardContent: noteContent,
-				filename,
+				filename: sanitizedFilename,
+				alias,
 				searchesFolder: this.plugin.settings.searchesFolder,
 				generatedTag: this.plugin.settings.generatedTag,
 				collapseBlankLines: this.plugin.settings.collapseBlankLines,
