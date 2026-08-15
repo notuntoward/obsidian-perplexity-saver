@@ -10,7 +10,7 @@ export function sanitizeFilename(filename: string): string {
 export function suggestFilenameFromSelection(selectionText: string): string {
 	if (!selectionText) return "";
 	const collapsed = selectionText.replace(/\s+/g, " ").trim();
-	const sanitized = collapsed.replace(/[\\/:*?"<>|#^\[\]]/g, "").trim();
+	const sanitized = sanitizeFilename(collapsed).trim();
 	if (sanitized.length > 60) {
 		return sanitized.slice(0, 60).trim();
 	}
@@ -38,12 +38,12 @@ export function formatWikilinkAlias(text: string): string {
  * Returns undefined if no alias is needed.
  */
 export function determineWikilinkAlias(
-	sanitizedTarget: string,
+	targetFilename: string,
 	originalSelectedText?: string,
 	defaultFilename?: string,
 	rawInputText?: string
 ): string | undefined {
-	const sanitized = sanitizeFilename(sanitizedTarget).trim();
+	const sanitized = sanitizeFilename(targetFilename).trim();
 
 	const userEdited =
 		rawInputText !== undefined &&

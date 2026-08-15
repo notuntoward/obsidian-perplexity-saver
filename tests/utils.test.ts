@@ -84,6 +84,22 @@ describe("suggestFilenameFromSelection", () => {
 		expect(suggested).toBe("This is a very long selection that exceeds sixty characters");
 	});
 
+	it("handles input >60 chars that becomes <=60 chars after illegal characters are removed", () => {
+		// 70 chars input with 20 '?' symbols -> 50 chars valid text
+		const inputWithIllegal = "a".repeat(50) + "?".repeat(20);
+		expect(inputWithIllegal.length).toBe(70);
+		const suggested = suggestFilenameFromSelection(inputWithIllegal);
+		expect(suggested).toBe("a".repeat(50));
+		expect(suggested.length).toBe(50);
+	});
+
+	it("handles input >60 chars with newlines that collapses to <=60 chars", () => {
+		const inputWithNewlines = "  a  \n\n  " + "b".repeat(50) + "  \t\r\n  ";
+		const suggested = suggestFilenameFromSelection(inputWithNewlines);
+		expect(suggested).toBe("a " + "b".repeat(50));
+		expect(suggested.length).toBe(52);
+	});
+
 	it("returns empty string for empty or whitespace-only inputs", () => {
 		expect(suggestFilenameFromSelection("")).toBe("");
 		expect(suggestFilenameFromSelection("   \n\t  ")).toBe("");
