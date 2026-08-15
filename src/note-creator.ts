@@ -15,6 +15,7 @@ interface CreateNoteParams {
 	activeFile: TFile;
 	clipboardContent: string;
 	filename: string;
+	alias?: string;
 	searchesFolder: string;
 	generatedTag: string;
 	collapseBlankLines: boolean;
@@ -141,7 +142,7 @@ export async function createPerplexityNote(
 
 	await navigator.clipboard.writeText("");
 
-	const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path);
+	const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path, "", params.alias);
 
 	return { success: true, newFile, newNotePath, linkText };
 }

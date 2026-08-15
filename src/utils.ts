@@ -1,5 +1,96 @@
 export function sanitizeFilename(filename: string): string {
-  return filename.replace(/[\\/:*?"<>|]/g, "");
+  return filename.replace(/[\\/:*?"<>|#^\[\]]/g, "");
+}
+
+/**
+ * Suggest a filename derived from a selected text region.
+ * Collapses newlines/whitespace, strips invalid filename characters,
+ * trims, and limits length to max 60 chars.
+ */
+export function suggestFilenameFromSelection(selectionText: string): string {
+	if (!selectionText) return "";
+	const collapsed = selectionText.replace(/\s+/g, " ").trim();
+	const sanitized = collapsed.replace(/[\\/:*?"<>|#^\[\]]/g, "").trim();
+	if (sanitized.length > 60) {
+		return sanitized.slice(0, 60).trim();
+	}
+	return sanitized;
+}
+
+/**
+ * Formats alias text for a wikilink.
+ * Replaces newlines/consecutive whitespace with a single space,
+ * escapes closing brackets ']]' as '\]\]',
+ * and truncates to 1000 chars ending with '**...**' if exceeded.
+ */
+export function formatWikilinkAlias(text: string): string {
+	if (!text) return "";
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	const escaped = collapsed.replace(/\]\]/g, "\\]\\]");
+	if (escaped.length > 1000) {
+		return escaped.slice(0, 1000) + "**...**";
+	}
+	return escaped;
+}
+
+/**
+ * Determines the wikilink alias string to pass to Obsidian's generateMarkdownLink.
+ * Returns undefined if no alias is needed.
+ */
+export function determineWikilinkAlias(
+	sanitizedTarget: string,
+	originalSelectedText?: string,
+	defaultFilename?: string,
+	rawInputText?: string
+): string | undefined {
+	const sanitized = sanitizeFilename(sanitizedTarget).trim();
+
+	const userEdited =
+		rawInputText !== undefined &&
+		defaultFilename !== undefined &&
+		rawInputText.trim() !== defaultFilename.trim();
+
+	if (userEdited && rawInputText) {
+		const userAlias = formatWikilinkAlias(rawInputText);
+		if (userAlias && userAlias !== sanitized) {
+			return userAlias;
+		}
+		return undefined;
+	}
+
+	if (originalSelectedText && originalSelectedText.trim()) {
+		const alias = formatWikilinkAlias(originalSelectedText);
+		if (alias && alias !== sanitized) {
+			return alias;
+		}
+	}
+
+	return undefined;
+}
+
+/**
+ * Builds the wikilink syntax [[Target|Alias]] or [[Target]].
+ * Prioritizes user-typed text if the user edited the default filename.
+ */
+export function buildWikilink(
+	targetFilename: string,
+	originalSelectedText?: string,
+	defaultFilename?: string,
+	rawInputText?: string
+): string {
+	const sanitizedTarget = sanitizeFilename(targetFilename).trim();
+	const alias = determineWikilinkAlias(
+		sanitizedTarget,
+		originalSelectedText,
+		defaultFilename,
+		rawInputText
+	);
+
+	if (alias) {
+		return `[[${sanitizedTarget}|${alias}]]`;
+	}
+
+	return `[[${sanitizedTarget}]]`;
 }
 
 /**
