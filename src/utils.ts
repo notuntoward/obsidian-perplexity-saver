@@ -38,12 +38,12 @@ export function formatWikilinkAlias(text: string): string {
  * Returns undefined if no alias is needed.
  */
 export function determineWikilinkAlias(
-	targetFilename: string,
+	sanitizedTargetFilename: string,
 	originalSelectedText?: string,
 	defaultFilename?: string,
 	rawInputText?: string
 ): string | undefined {
-	const sanitized = sanitizeFilename(targetFilename).trim();
+	const sanitized = sanitizedTargetFilename.trim();
 
 	const userEdited =
 		rawInputText !== undefined &&

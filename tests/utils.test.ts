@@ -104,6 +104,11 @@ describe("suggestFilenameFromSelection", () => {
 		expect(suggestFilenameFromSelection("")).toBe("");
 		expect(suggestFilenameFromSelection("   \n\t  ")).toBe("");
 	});
+
+	it("returns empty string when selection becomes empty after sanitization", () => {
+		expect(suggestFilenameFromSelection("   ###[]^   ")).toBe("");
+		expect(suggestFilenameFromSelection("/:\\*?\"<>|")).toBe("");
+	});
 });
 
 describe("formatWikilinkAlias", () => {

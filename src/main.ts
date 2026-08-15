@@ -8,7 +8,7 @@ import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
 import { suggestFilenameFromClipboard } from "./commands/import";
-import { suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
+import { sanitizeFilename, suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 import { detectAndParse } from "./parsers/detect";
 import { resolveSourceTitles } from "./scraper";
@@ -99,7 +99,6 @@ interface InlineInputData {
 	editorView: EditorView;
 	prefetchedDialogPromise?: Promise<DialogFile>;
 	originalSelectedText?: string;
-	isWhitespaceSelection?: boolean;
 }
 
 const startPerplexityInput = StateEffect.define<InlineInputData>();
@@ -208,7 +207,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 				editorView: cm6View,
 				prefetchedDialogPromise,
 				originalSelectedText: hasNonWhitespaceSelection ? selectedText : undefined,
-				isWhitespaceSelection,
 			}),
 		});
 	}
@@ -364,11 +362,14 @@ class InlineInputWidget extends WidgetType {
 			}
 		};
 
+		const rawInput = filename;
+		const sanitizedFilename = sanitizeFilename(rawInput).trim();
+
 		const alias = determineWikilinkAlias(
-			filename,
+			sanitizedFilename,
 			this.data.originalSelectedText,
 			this.data.defaultFilename,
-			filename
+			rawInput
 		);
 
 		try {
@@ -376,7 +377,7 @@ class InlineInputWidget extends WidgetType {
 				app: this.plugin.app,
 				activeFile,
 				clipboardContent: noteContent,
-				filename,
+				filename: sanitizedFilename,
 				alias,
 				searchesFolder: this.plugin.settings.searchesFolder,
 				generatedTag: this.plugin.settings.generatedTag,

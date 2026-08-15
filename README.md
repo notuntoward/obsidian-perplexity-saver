@@ -79,7 +79,11 @@ The plugin automatically:
 - Inserts a link to it at your cursor position.
 
 ### Using selected text as the filename
-If you select text in your note *before* pressing the hotkey, the plugin uses the selected text as the suggested filename: the selection is cleared and the inline input is pre-filled with it (auto-selected so you can type over it immediately). The note content still comes from the clipboard, not the selection.
+If you select text in your note *before* pressing the hotkey, the plugin uses the selected text as the suggested default filename:
+- **Sanitization & Length**: The selection is trimmed, internal newlines and whitespace are collapsed to single spaces, illegal filename characters (`\ / : * ? " < > | # ^ [ ]`) are stripped, and the suggested name is capped at 60 characters.
+- **Wikilink & Alias**: When you press Enter, the selected region is replaced with a link to the created note. If characters were stripped, if the selection was truncated, or if you edit the textbox, an alias is automatically generated (e.g. `[[Target Note|Original Selected Text]]`, with newlines collapsed, `]]` escaped, and capped at 1000 characters ending with `**...**` if truncated).
+- **Cancellation**: Pressing `Escape` cancels the import and restores your original selected text in your note.
+- **Whitespace Selection**: If the selected region contains only whitespace, the plugin falls back to deriving the default filename from the clipboard prompt and places the wikilink at the end of the selected whitespace.
 
 ---
 
