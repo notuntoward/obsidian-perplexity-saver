@@ -76,7 +76,7 @@ first answer[^1_1]
 
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
 		expect(written).toMatch(/## second question \^turn-2$/m);
-		expect(written).toMatch(/> \[!Prompt\]\+\n> second question/);
+		expect(written).toMatch(/> \[!Prompt\]-\n> second question/);
 		expect(written).toContain("second question");
 		expect(written).toContain("second answer[^2_1]");
 		expect(written).toContain("first question");
@@ -189,6 +189,39 @@ first answer[^1_1]
 		const written = mockApp.vault.modify.mock.calls[0][1] as string;
 		expect(written).toContain("## second question ^turn-2");
 		expect(written).toContain("[^2_1]: **[B \u2794 ZOTB1](zotero://select/library/items/ZOTB1)**");
+	});
+
+	it("respects collapsePromptCallouts option during sync", async () => {
+		const existing = `# Dialog
+
+## First question ^turn-1
+
+first question
+
+first answer[^1_1]
+
+# Sources
+
+[^1_1]: [A](https://a.com/)
+`;
+		mockApp.vault.read.mockResolvedValue(existing);
+		(navigator.clipboard.readText as any).mockResolvedValue(
+			"# first question\n\nfirst answer[1]\n\n---\n\n# second question\n\nsecond answer[2]\n\n# Citations:\n[1] [A](https://a.com/)\n[2] [B](https://b.com/)"
+		);
+
+		const result = await syncDialogFromClipboard(
+			mockApp,
+			mockFile,
+			HEADLINE_OPTIONS,
+			false,
+			100,
+			undefined,
+			{ collapsePromptCallouts: false }
+		);
+		expect(result.success).toBe(true);
+
+		const written = mockApp.vault.modify.mock.calls[0][1] as string;
+		expect(written).toMatch(/> \[!Prompt\]\+\n> second question/);
 	});
 
 	it("still syncs when auto-relinking fails because Zotero is unreachable", async () => {

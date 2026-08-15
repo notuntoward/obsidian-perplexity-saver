@@ -21,7 +21,7 @@ describe("buildNoteBody", () => {
 		expect(body).toContain("# Dialog");
 		expect(body).not.toContain("## Turns");
 		expect(body).toMatch(/## What is the answer to this question\? \^turn-1/);
-		expect(body).toMatch(/> \[!Prompt\]\+/);
+		expect(body).toMatch(/> \[!Prompt\]\-/);
 		expect(body).not.toMatch(/### AI response/);
 		expect(body).toContain("The answer is here.[^1_1]");
 		expect(body).toContain("# Sources");
@@ -224,7 +224,7 @@ describe("buildNoteBody — collapseBlankLines option", () => {
 	it("collapses by default (collapseBlankLines omitted)", () => {
 		const { body } = buildNoteBody(d);
 		expect(body).toContain(
-			"**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n# Dialog\n\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]+\n\nanswer"
+			"**Source:** [perplexity](https://www.perplexity.ai/search/x)\n\n# Dialog\n\n## AI response (turn 1) ^turn-1\n\n> [!Prompt]-\n\nanswer"
 		);
 		expect(body).not.toMatch(/\n{3,}/);
 	});
@@ -248,14 +248,14 @@ describe("buildNoteBody — collapsePromptCallouts option", () => {
 
 	it("collapses callouts by default (collapsePromptCallouts defaults to true)", () => {
 		const { body } = buildNoteBody(d);
-		expect(body).toContain("> [!Prompt]+");
-		expect(body).not.toContain("> [!Prompt]-");
+		expect(body).toContain("> [!Prompt]-");
+		expect(body).not.toContain("> [!Prompt]+");
 	});
 
 	it("expands callouts when collapsePromptCallouts is false", () => {
 		const { body } = buildNoteBody(d, { collapsePromptCallouts: false });
-		expect(body).toContain("> [!Prompt]-");
-		expect(body).not.toContain("> [!Prompt]+");
+		expect(body).toContain("> [!Prompt]+");
+		expect(body).not.toContain("> [!Prompt]-");
 	});
 
 	it("derives turn heading from the non-quoted prompt text when prompt starts with blockquote (>)", () => {

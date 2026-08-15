@@ -11,7 +11,7 @@ import { normalizeUrl } from "../utils";
  *
  *   - For a prompt turn: a level-2 summary heading (the headline derived
  *     from the prompt text) carrying the `^turn-N` block ID, followed by
- *     a closed `> [!Prompt]+` callout containing the prompt body. Any
+ *     a closed `> [!Prompt]-` callout containing the prompt body. Any
  *     leading "# " heading markers in the prompt are stripped first so
  *     the prompt is always plain paragraph text inside the callout, never
  *     its own headline.
@@ -29,7 +29,7 @@ export function renderTurn(
 	headingText: string,
 	options?: { includeHeading?: boolean; calloutCollapsed?: boolean }
 ): string {
-	const calloutSuffix = options?.calloutCollapsed !== false ? "+" : "-";
+	const calloutSuffix = options?.calloutCollapsed !== false ? "-" : "+";
 	const includeHeading = options?.includeHeading ?? true;
 	if (!includeHeading) {
 		// AI turn that is part of a prompt+ai pair: no heading of its own.
@@ -45,7 +45,7 @@ export function renderTurn(
 	//      single `^turn-N` block ID. This is the thing that shows up in
 	//      the outline pane and is the machine-readable anchor for the
 	//      turn.
-	//   2. A closed Obsidian callout (`> [!Prompt]+`) containing the
+	//   2. A closed Obsidian callout (`> [!Prompt]-`) containing the
 	//      prompt body (for a normal prompt turn) or a fallback label
 	//      (for a standalone AI turn). Closed by default so the
 	//      prompt text collapses into a single clickable block.

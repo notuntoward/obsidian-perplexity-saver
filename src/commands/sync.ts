@@ -37,6 +37,10 @@ export async function syncDialogFromClipboard(
 		minTitleMatchScore?: number;
 		zoteroClient?: any;
 		onProgress?: (message: string) => void;
+	},
+	options?: {
+		collapseBlankLines?: boolean;
+		collapsePromptCallouts?: boolean;
 	}
 ): Promise<SyncDialogResult> {
 	const clipboard = await navigator.clipboard.readText();
@@ -103,6 +107,8 @@ export async function syncDialogFromClipboard(
 		startTurnId: nextLocalTurnNumber,
 		existingSourceText: existingSources,
 		headlineOptions,
+		collapseBlankLines: options?.collapseBlankLines,
+		collapsePromptCallouts: options?.collapsePromptCallouts,
 	});
 
 	const newTurnsChunk = extractTurnsBlock(newBody, nextLocalTurnNumber);
@@ -187,6 +193,8 @@ export function registerSyncCommand(
 			zoteroPort: number;
 			litNotesFolder: string;
 			minTitleMatchScore: number;
+			collapseBlankLines: boolean;
+			collapsePromptCallouts: boolean;
 		};
 		zoteroClient?: any;
 	}
@@ -226,6 +234,10 @@ export function registerSyncCommand(
 						minTitleMatchScore: plugin.settings.minTitleMatchScore,
 						zoteroClient: plugin.zoteroClient,
 						onProgress: (msg: string) => progressNotice?.setMessage(msg),
+					},
+					{
+						collapseBlankLines: plugin.settings.collapseBlankLines,
+						collapsePromptCallouts: plugin.settings.collapsePromptCallouts,
 					}
 				);
 				if (!result.success) {

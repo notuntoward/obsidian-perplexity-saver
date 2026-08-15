@@ -28,8 +28,8 @@ interface PerplexitySaverSettings {
 	collapseBlankLines: boolean;
 	/**
 	 * When on (the default), prompt callouts are rendered as collapsed
-	 * by default (`> [!Prompt]+`). When off, they are rendered as
-	 * expanded by default (`> [!Prompt]-`).
+	 * by default (`> [!Prompt]-`). When off, they are rendered as
+	 * expanded by default (`> [!Prompt]+`).
 	 */
 	collapsePromptCallouts: boolean;
 	/**
@@ -524,7 +524,7 @@ class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Collapse prompt callouts")
 			.setDesc(
-				"When on, prompt callouts start collapsed (`> [!Prompt]+`). When off, they start expanded (`> [!Prompt]-`)."
+				"When on, prompt callouts start collapsed (`> [!Prompt]-`). When off, they start expanded (`> [!Prompt]+`)."
 			)
 			.addToggle((toggle) =>
 				toggle

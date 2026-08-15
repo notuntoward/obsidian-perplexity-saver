@@ -18,9 +18,9 @@ describe("renderTurn", () => {
 		// the computed headline. A single ID (not two) avoids Obsidian
 		// wrapping the second `^` anchor onto its own visual line.
 		expect(out).toContain("## A greeting ^turn-1");
-		// The prompt body is folded inside a closed `> [!Prompt]+` callout
+		// The prompt body is folded inside a closed `> [!Prompt]-` callout
 		// so it collapses by default.
-		expect(out).toMatch(/> \[!Prompt\]\+\n> Hello there/);
+		expect(out).toMatch(/> \[!Prompt\]-\n> Hello there/);
 	});
 
 	it("renders an AI turn with no heading of its own when includeHeading is false (the prompt heading above is the turn's only heading)", () => {
