@@ -39,6 +39,7 @@ export class PluginSettingTab {
 
 	display(): void {}
 	hide(): void {}
+	refreshDomState(): void {}
 }
 
 export class Setting {
