@@ -19,6 +19,35 @@ function stripForMatch(text: string) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+function checkPromptMatch(domText: string, targetText: string, originalTitle: string): boolean {
+  if (!domText || !targetText) return false;
+  const domStripped = stripForMatch(domText);
+  const targetStripped = stripForMatch(targetText);
+
+  // 1. Exact match
+  if (domStripped === targetStripped) return true;
+
+  // 2. DOM text is a prefix of target (e.g. DOM is truncated at the end)
+  if (targetStripped.startsWith(domStripped) && domStripped.length >= 15) return true;
+
+  // 3. Target is a prefix of DOM text (e.g. DOM text has extra suffix)
+  if (domStripped.startsWith(targetStripped)) return true;
+
+  // 4. Quote-based matching: if originalTitle contains a quote,
+  // we check if the DOM text contains/ends with the user-typed non-quoted part.
+  if (originalTitle && originalTitle.includes("<q>")) {
+    const nonQuoted = originalTitle.replace(/<q>[\s\S]*?<\/q>/g, "").trim();
+    const nonQuotedTarget = stripForMatch(nonQuoted);
+    if (nonQuotedTarget && nonQuotedTarget.length >= 10) {
+      if (domStripped.endsWith(nonQuotedTarget) || domStripped.includes(nonQuotedTarget)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function unwrapFencedHeading(text: string) {
   let trimmed = (text || "").trim();
   if (trimmed.startsWith("```")) {
@@ -224,8 +253,9 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   // merely because it's short (real multi-line prompt content can also
   // start with the title and be short).
   const isTitlePlusChrome = !!titleStripped && isKnownStatusChromeSuffix(title, domPromptText);
+  const isFuzzyMatch = !!titleStripped && checkPromptMatch(domPromptText, title, title) && !domPromptText.includes("\n");
 
-  if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome)) {
+  if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome || isFuzzyMatch)) {
     let promptPart = chunkBody.slice(0, startIdx).trim();
     promptPart = unwrapFencedHeading(promptPart);
     return {
@@ -236,13 +266,18 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
   }
 
   const { stripped: strippedBody, map: bodyMap } = buildComparableWithMap(chunkBody);
-  const strippedDomPrompt = stripForMatch(domPromptText);
+  let strippedDomPrompt = stripForMatch(domPromptText);
 
   if (!strippedDomPrompt) {
     return null;
   }
 
-  const promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+  let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+  if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
+    const strippedTitle = stripForMatch(title);
+    promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle);
+  }
+
   if (promptEndStrippedIdx === -1) {
     return null;
   }
@@ -301,6 +336,23 @@ function splitPromptFromResponseFallback(chunkText: string, turnNum: number) {
     if (citationRegex.test(para) || /^##+\s+\S/.test(para)) {
       firstResponseParaIdx = i;
       break;
+    }
+  }
+
+  if (firstResponseParaIdx > 1) {
+    // Walk backwards to consume plain text paragraphs as part of the response,
+    // but only if the title heading (paragraphs[0]) is not a short instruction
+    // (length < 45) which typically indicates a multi-paragraph prompt layout.
+    const titleClean = paragraphs[0].replace(/^#+\s+/, "").trim();
+    if (titleClean.length >= 45) {
+      while (firstResponseParaIdx > 1) {
+        const prevPara = paragraphs[firstResponseParaIdx - 1].trim();
+        // If the previous paragraph is a code block, we stop, as it's likely part of the prompt.
+        if (prevPara.startsWith("```")) {
+          break;
+        }
+        firstResponseParaIdx--;
+      }
     }
   }
 
@@ -972,6 +1024,58 @@ It encompasses machine learning and deep learning.[^2_2]`;
     expect(result.prompt).toBe("# What is AI?");
     expect(result.response).toContain("[^2_1]");
     expect(result.response).toContain("[^2_2]");
+  });
+
+  it("checkPromptMatch checks match varieties correctly", () => {
+    // Exact match
+    expect(checkPromptMatch("Hello World", "hello world", "")).toBe(true);
+
+    // DOM truncated prefix
+    expect(checkPromptMatch("This is a very long string that...", "This is a very long string that is complete", "")).toBe(true);
+
+    // DOM has extra suffix
+    expect(checkPromptMatch("This is a very long string that is complete 2:39 PM", "This is a very long string that is complete", "")).toBe(true);
+
+    // Quote-based matching with non-quoted suffix
+    const title = "<q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads";
+    const domText = "The scale mismatch between Roman roads and the modern European network is eno... Also tell me specifically about the UK modern and roman roads";
+    expect(checkPromptMatch(domText, title, title)).toBe(true);
+  });
+
+  it("REGRESSION TEST: splitPromptFromResponse handles Turn 6 correctly when title contains quote and DOM prompt is truncated", () => {
+    const chunk = `# <q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically
+
+The scale gap holds up in the UK case too, but with a real and specific caveat: a small but genuine fraction of the UK's *major* road routes — not the physical pavement — do trace back to Roman-era alignments, most famously the A5's Watling Street corridor.
+
+## Roman Britain's Road Network Was Small`;
+
+    const title = "<q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically";
+    const domPrompt = "The scale mismatch between Roman roads and the modern European network is eno... Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically";
+
+    const result = splitPromptFromResponse(chunk, domPrompt, 6, title);
+    expect(result).not.toBeNull();
+    if (result) {
+      expect(result.prompt).toBe("# <q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically");
+      expect(result.response.startsWith("The scale gap holds up in the UK")).toBe(true);
+      expect(result.response).not.toContain("# <q>");
+    }
+  });
+
+  it("REGRESSION TEST: splitPromptFromResponseFallback handles Turn 6 correctly (splits after first paragraph because it's a long prompt)", () => {
+    // Simulates what happens if DOM element matching failed for Turn 6:
+    // the fallback split should NOT include the AI's introductory paragraph inside the prompt callout.
+    const chunk = `# <q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically
+
+The scale gap holds up in the UK case too, but with a real and specific caveat: a small but genuine fraction of the UK's *major* road routes — not the physical pavement — do trace back to Roman-era alignments, most famously the A5's Watling Street corridor.
+
+## Roman Britain's Road Network Was Small
+
+Roman Britain's road network was small...`;
+
+    const result = splitPromptFromResponseFallback(chunk, 6);
+    expect(result.prompt).toBe("# <q>The scale mismatch between Roman roads and the modern European network is enormous</q> Also tell me specifically about the UK modern and roman roads, since Keith mentioned them specifically");
+    expect(result.response.startsWith("The scale gap holds up in the UK")).toBe(true);
+    expect(result.response).toContain("## Roman Britain's Road Network Was Small");
   });
 });
 

@@ -228,6 +228,35 @@
       .replace(/[^a-z0-9]/g, "");
   }
 
+  function checkPromptMatch(domText, targetText, originalTitle) {
+    if (!domText || !targetText) return false;
+    const domStripped = stripForMatch(domText);
+    const targetStripped = stripForMatch(targetText);
+
+    // 1. Exact match
+    if (domStripped === targetStripped) return true;
+
+    // 2. DOM text is a prefix of target (e.g. DOM is truncated at the end)
+    if (targetStripped.startsWith(domStripped) && domStripped.length >= 15) return true;
+
+    // 3. Target is a prefix of DOM text (e.g. DOM text has extra suffix)
+    if (domStripped.startsWith(targetStripped)) return true;
+
+    // 4. Quote-based matching: if originalTitle contains a quote,
+    // we check if the DOM text contains/ends with the user-typed non-quoted part.
+    if (originalTitle && originalTitle.includes("<q>")) {
+      const nonQuoted = originalTitle.replace(/<q>[\s\S]*?<\/q>/g, "").trim();
+      const nonQuotedTarget = stripForMatch(nonQuoted);
+      if (nonQuotedTarget && nonQuotedTarget.length >= 10) {
+        if (domStripped.endsWith(nonQuotedTarget) || domStripped.includes(nonQuotedTarget)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
   function unwrapFencedHeading(text) {
     let trimmed = (text || "").trim();
     if (trimmed.startsWith("```")) {
@@ -514,11 +543,10 @@
     const directMsg = reactMsgs[turnNum - 1];
     if (directMsg) {
       const pText = getPromptTextFromMsg(directMsg);
-      const pStripped = pText ? stripForMatch(pText) : "";
       console.log(
-        `[PPLX Diag] Turn ${turnNum}: direct index [${turnNum - 1}] pText(len=${pText ? pText.length : 0})="${(pText || "").slice(0, 80)}" startsWithTarget=${pText ? pStripped.startsWith(target) : false}`
+        `[PPLX Diag] Turn ${turnNum}: direct index [${turnNum - 1}] pText(len=${pText ? pText.length : 0})="${(pText || "").slice(0, 80)}"`
       );
-      if (pText && pStripped.startsWith(target)) {
+      if (pText && checkPromptMatch(pText, title, title)) {
         console.log(`[PPLX Diag] Turn ${turnNum}: MATCHED via direct index [${turnNum - 1}].`);
         return directMsg;
       }
@@ -529,7 +557,7 @@
     for (let mi = 0; mi < reactMsgs.length; mi++) {
       const msg = reactMsgs[mi];
       const pText = getPromptTextFromMsg(msg);
-      if (pText && stripForMatch(pText).startsWith(target)) {
+      if (pText && checkPromptMatch(pText, title, title)) {
         console.log(
           `[PPLX Diag] Turn ${turnNum}: MATCHED via full-array scan at index [${mi}] (expected [${turnNum - 1}]). pText(len=${pText.length})="${pText.slice(0, 80)}"`
         );
@@ -551,9 +579,8 @@
 
     if (turnNum !== undefined && queryEls[turnNum - 1]) {
       const el = queryEls[turnNum - 1];
-      const text = stripForMatch(el.textContent || "");
-      const isMatch = text === target || (text.length > target.length && text.startsWith(target));
-      if (isMatch) {
+      const text = el.textContent || "";
+      if (checkPromptMatch(text, titleText, titleText)) {
         console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched query container via index.`);
         return el;
       }
@@ -576,8 +603,8 @@
       // of the AI response into the "prompt" text.
       if (el.closest(".prose, .markdown")) continue;
 
-      const text = stripForMatch(el.textContent || "");
-      if (text === target || (text.length > target.length && text.startsWith(target))) {
+      const text = el.textContent || "";
+      if (checkPromptMatch(text, titleText, titleText)) {
         if (!bestEl || bestEl.contains(el)) {
           bestEl = el;
         }
@@ -831,8 +858,13 @@
       );
     }
 
-    if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome)) {
-      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals DOM prompt (or title + trailing UI chrome).`);
+    const isFuzzyMatch = titleStripped && checkPromptMatch(domPromptText, title, title) && !domPromptText.includes("\n");
+    if (isFuzzyMatch) {
+      console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText fuzzy-matched title.`);
+    }
+
+    if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome || isFuzzyMatch)) {
+      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals/fuzzy-matches DOM prompt (or title + trailing UI chrome).`);
       let promptPart = chunkBody.slice(0, startIdx).trim();
       promptPart = unwrapFencedHeading(promptPart);
       return {
@@ -843,14 +875,20 @@
     }
 
     const { stripped: strippedBody, map: bodyMap } = buildComparableWithMap(chunkBody);
-    const strippedDomPrompt = stripForMatch(domPromptText);
+    let strippedDomPrompt = stripForMatch(domPromptText);
 
     if (!strippedDomPrompt) {
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt is empty.`);
       return null;
     }
 
-    const promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+    let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+    if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
+      console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText failed in findPromptEnd, trying title instead due to fuzzy match.`);
+      const strippedTitle = stripForMatch(title);
+      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle);
+    }
+
     if (promptEndStrippedIdx === -1) {
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt not found in strippedBody.`);
       return null;
@@ -919,6 +957,23 @@
       if (citationRegex.test(para) || /^##+\s+\S/.test(para)) {
         firstResponseParaIdx = i;
         break;
+      }
+    }
+
+    if (firstResponseParaIdx > 1) {
+      // Walk backwards to consume plain text paragraphs as part of the response,
+      // but only if the title heading (paragraphs[0]) is not a short instruction
+      // (length < 45) which typically indicates a multi-paragraph prompt layout.
+      const titleClean = paragraphs[0].replace(/^#+\s+/, "").trim();
+      if (titleClean.length >= 45) {
+        while (firstResponseParaIdx > 1) {
+          const prevPara = paragraphs[firstResponseParaIdx - 1].trim();
+          // If the previous paragraph is a code block, we stop, as it's likely part of the prompt.
+          if (prevPara.startsWith("```")) {
+            break;
+          }
+          firstResponseParaIdx--;
+        }
       }
     }
 
