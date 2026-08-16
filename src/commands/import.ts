@@ -14,6 +14,7 @@ export interface ImportDialogParams {
 	importFolder: string;
 	generatedTag: string;
 	collapseBlankLines: boolean;
+	collapsePromptCallouts?: boolean;
 	headlineOptions: HeadlineOptions;
 	autoFetchSourceTitles?: boolean;
 	sourceTitleMaxChars?: number;
@@ -34,7 +35,7 @@ export interface ImportDialogResult {
 export async function importDialogFromClipboard(
 	params: ImportDialogParams & { filename: string }
 ): Promise<ImportDialogResult> {
-	const { app, clipboardContent, filename, importFolder, generatedTag, collapseBlankLines, headlineOptions, autoFetchSourceTitles = true, sourceTitleMaxChars = 100 } = params;
+	const { app, clipboardContent, filename, importFolder, generatedTag, collapseBlankLines, collapsePromptCallouts = true, headlineOptions, autoFetchSourceTitles = true, sourceTitleMaxChars = 100 } = params;
 
 	const sanitized = sanitizeFilename(filename);
 	if (!sanitized) {
@@ -54,7 +55,7 @@ export async function importDialogFromClipboard(
 		});
 	}
 
-	const { body } = buildNoteBody(dialog, { collapseBlankLines, headlineOptions });
+	const { body } = buildNoteBody(dialog, { collapseBlankLines, collapsePromptCallouts, headlineOptions });
 
 	const folderPath = normalizePath(importFolder);
 	const folder = app.vault.getAbstractFileByPath(folderPath);

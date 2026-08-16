@@ -59,7 +59,7 @@ describe("uniform note format from Perplexity export", () => {
 		// Bug 1: a prompt and its AI response are one logical turn and share
 		// the same turn number. The prompt marker is a level-2 heading
 		// carrying the single `^turn-N` block ID, followed by a closed
-		// `> [!Prompt]+` callout containing the prompt body. The AI body
+		// `> [!Prompt]-` callout containing the prompt body. The AI body
 		// follows directly below with no AI heading of its own.
 		expect(body).toMatch(/## How do I configure foo mode\? \^turn-1/);
 		expect(body).toMatch(/## Explain\. \^turn-2/);
@@ -73,7 +73,7 @@ describe("uniform note format from Perplexity export", () => {
 			l.startsWith("## How do I configure foo mode?")
 		);
 		const calloutContent = bodyLines.slice(headingIndex + 1).join("\n");
-		expect(calloutContent).toContain("> [!Prompt]+");
+		expect(calloutContent).toContain("> [!Prompt]-");
 		expect(calloutContent).toContain("> How do I configure foo mode?");
 		expect(calloutContent).not.toMatch(/^#{1,6}[ \t]+How do I configure foo mode\?/m);
 
@@ -82,7 +82,7 @@ describe("uniform note format from Perplexity export", () => {
 		// The headline excludes the quote text and only includes the rest of
 		// the prompt typed by the user, if present.
 		expect(body).toMatch(
-			/## Explain\. \^turn-2\n\n> \[!Prompt\]\+\n> > Does it work with baz\?\n>\n> Explain\./
+			/## Explain\. \^turn-2\n\n> \[!Prompt\]-\n> > Does it work with baz\?\n>\n> Explain\./
 		);
 		expect(body).not.toContain("<q>");
 		expect(body).not.toContain("</q>");
@@ -200,7 +200,7 @@ The best NFL quarterback of all time is most commonly considered **Tom Brady**: 
 		// stripped), not as its own heading in the body. The prompt body
 		// follows in a closed callout below the heading.
 		expect(body).toContain("When was the biggest forest fire");
-		expect(body).toMatch(/> \[!Prompt\]\+/);
+		expect(body).toMatch(/> \[!Prompt\]-/);
 		expect(body).toMatch(/> When was the biggest forest fire/);
 	// The prompt body (the line immediately after the callout title) has no
 	// leading "# " — it is plain paragraph text inside the callout.

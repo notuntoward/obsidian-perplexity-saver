@@ -18,6 +18,17 @@ export interface SyncDialogResult {
 
 export type AppendDialogResult = SyncDialogResult;
 
+export interface SyncDialogOptions {
+	autoRelinkSources?: boolean;
+	zoteroPort?: number;
+	litNotesFolder?: string;
+	minTitleMatchScore?: number;
+	zoteroClient?: any;
+	onProgress?: (message: string) => void;
+	collapseBlankLines?: boolean;
+	collapsePromptCallouts?: boolean;
+}
+
 /**
  * Sync (or append) new turns to the active note. Decouples the number of
  * conversation turns previously synced using a frontmatter field
@@ -30,14 +41,7 @@ export async function syncDialogFromClipboard(
 	headlineOptions: HeadlineOptions,
 	autoFetchSourceTitles: boolean = true,
 	sourceTitleMaxChars: number = 100,
-	relinkOptions?: {
-		autoRelinkSources?: boolean;
-		zoteroPort?: number;
-		litNotesFolder?: string;
-		minTitleMatchScore?: number;
-		zoteroClient?: any;
-		onProgress?: (message: string) => void;
-	}
+	options?: SyncDialogOptions
 ): Promise<SyncDialogResult> {
 	const clipboard = await navigator.clipboard.readText();
 	if (!clipboard) {
@@ -103,23 +107,25 @@ export async function syncDialogFromClipboard(
 		startTurnId: nextLocalTurnNumber,
 		existingSourceText: existingSources,
 		headlineOptions,
+		collapseBlankLines: options?.collapseBlankLines,
+		collapsePromptCallouts: options?.collapsePromptCallouts,
 	});
 
 	const newTurnsChunk = extractTurnsBlock(newBody, nextLocalTurnNumber);
 	let updated = spliceIntoNote(existingText, newTurnsChunk, allSourceLines);
 
-	if (relinkOptions?.autoRelinkSources) {
+	if (options?.autoRelinkSources) {
 		updated = await maybeAutoRelinkSources(
 			app,
 			updated,
 			{
-				autoRelinkSources: relinkOptions.autoRelinkSources,
-				zoteroPort: relinkOptions.zoteroPort ?? 23119,
-				litNotesFolder: relinkOptions.litNotesFolder ?? "",
-				minTitleMatchScore: relinkOptions.minTitleMatchScore ?? 95,
+				autoRelinkSources: options.autoRelinkSources,
+				zoteroPort: options.zoteroPort ?? 23119,
+				litNotesFolder: options.litNotesFolder ?? "",
+				minTitleMatchScore: options.minTitleMatchScore ?? 95,
 			},
-			relinkOptions.zoteroClient,
-			relinkOptions.onProgress
+			options.zoteroClient,
+			options.onProgress
 		);
 	}
 
@@ -187,6 +193,8 @@ export function registerSyncCommand(
 			zoteroPort: number;
 			litNotesFolder: string;
 			minTitleMatchScore: number;
+			collapseBlankLines: boolean;
+			collapsePromptCallouts: boolean;
 		};
 		zoteroClient?: any;
 	}
@@ -226,6 +234,8 @@ export function registerSyncCommand(
 						minTitleMatchScore: plugin.settings.minTitleMatchScore,
 						zoteroClient: plugin.zoteroClient,
 						onProgress: (msg: string) => progressNotice?.setMessage(msg),
+						collapseBlankLines: plugin.settings.collapseBlankLines,
+						collapsePromptCallouts: plugin.settings.collapsePromptCallouts,
 					}
 				);
 				if (!result.success) {
