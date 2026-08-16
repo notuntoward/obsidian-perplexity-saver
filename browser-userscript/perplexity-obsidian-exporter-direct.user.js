@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.4
+// @version      8.8
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -188,7 +188,7 @@
   async function expandAllPrompts() {
     const MAX_ROUNDS = 6;
     const allClicked = new Set();
-    const expandRegex = /show\s*(?:\d+\s*)?more|more\s*queries|show\s*queries|show\s*previous|view\s*more|expand/i;
+    const expandRegex = /show\s*(?:\d+\s*)?more|more\s*queries|show\s*queries|show\s*previous|view\s*more|read\s*more|expand/i;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const toggles = findToggleButtons(expandRegex).sort(docOrder);
       const fresh = toggles.filter((btn) => !allClicked.has(btn));
@@ -507,19 +507,36 @@
   function findReactMessageForChunk(reactMsgs, title, turnNum) {
     if (!reactMsgs || !title) return null;
     const target = stripForMatch(title);
+    console.log(
+      `[PPLX Diag] Turn ${turnNum}: findReactMessageForChunk — reactMsgs.length=${reactMsgs.length}, target(len=${target.length})="${target.slice(0, 60)}"`
+    );
+
     const directMsg = reactMsgs[turnNum - 1];
     if (directMsg) {
       const pText = getPromptTextFromMsg(directMsg);
-      if (pText && stripForMatch(pText).startsWith(target)) {
+      const pStripped = pText ? stripForMatch(pText) : "";
+      console.log(
+        `[PPLX Diag] Turn ${turnNum}: direct index [${turnNum - 1}] pText(len=${pText ? pText.length : 0})="${(pText || "").slice(0, 80)}" startsWithTarget=${pText ? pStripped.startsWith(target) : false}`
+      );
+      if (pText && pStripped.startsWith(target)) {
+        console.log(`[PPLX Diag] Turn ${turnNum}: MATCHED via direct index [${turnNum - 1}].`);
         return directMsg;
       }
+    } else {
+      console.log(`[PPLX Diag] Turn ${turnNum}: no reactMsgs entry at direct index [${turnNum - 1}].`);
     }
-    for (const msg of reactMsgs) {
+
+    for (let mi = 0; mi < reactMsgs.length; mi++) {
+      const msg = reactMsgs[mi];
       const pText = getPromptTextFromMsg(msg);
       if (pText && stripForMatch(pText).startsWith(target)) {
+        console.log(
+          `[PPLX Diag] Turn ${turnNum}: MATCHED via full-array scan at index [${mi}] (expected [${turnNum - 1}]). pText(len=${pText.length})="${pText.slice(0, 80)}"`
+        );
         return msg;
       }
     }
+    console.log(`[PPLX Diag] Turn ${turnNum}: NO react message matched title at all. Falling back to DOM strategy.`);
     return null;
   }
 
@@ -582,35 +599,151 @@
     return bestEl;
   }
 
+  // Perplexity renders per-turn UI chrome (a timestamp badge, a "Completed N
+  // steps"/"Searching ..."/"Checking ..." research-trace summary, and/or a
+  // trailing "N sources" badge) inside the SAME DOM container as the user's
+  // query text. None of that is text the user typed, but a plain
+  // `.textContent` read slurps it in right after the real prompt, which
+  // corrupts every downstream comparison against the markdown title/body
+  // (confirmed via [PPLX Diag] logging: every turn's domPromptText ended in
+  // one of these patterns, e.g. "...saftety2:55 PM\n\nSearching public
+  // safety data" or "...road networks\n\n23 sources"). Truncate at the
+  // earliest such marker so only the genuine typed prompt remains.
+  function stripTrailingStatusChrome(text) {
+    if (!text) return text;
+    // All three patterns are anchored to the END of the string (`$`).
+    // These previously matched anywhere in the text and took the
+    // EARLIEST match, which truncated real prompt prose containing an
+    // ordinary clock time ("what happened at 9:30 AM") or the phrase
+    // "completed N steps" used in conversation, not as UI chrome. Only a
+    // TRAILING occurrence is ever actual chrome.
+    const patterns = [
+      // Timestamp badge, e.g. "2:39 PM". No leading \b: Perplexity
+      // concatenates this directly against the query text with no
+      // separator (e.g. "...saftety2:55 PM"), so there is no word
+      // boundary between the trailing letter and the leading digit.
+      /\d{1,2}:\d{2}\s*(?:AM|PM)\s*$/i,
+      /\bCompleted\s+\d+\s+steps?\s*$/i, // research-trace summary
+      /\n\s*\d+\s+sources?\s*$/i, // trailing source-count badge
+    ];
+    let cutIdx = -1;
+    for (const p of patterns) {
+      const m = p.exec(text);
+      if (m && (cutIdx === -1 || m.index < cutIdx)) {
+        cutIdx = m.index;
+      }
+    }
+    if (cutIdx === -1) return text;
+    console.log(
+      `[PPLX Diag] stripTrailingStatusChrome: truncating at idx=${cutIdx}, removed="${text.slice(cutIdx, cutIdx + 60)}..."`
+    );
+    return text.slice(0, cutIdx).trim();
+  }
+
   function getCleanText(el) {
     if (!el) return "";
     let text = el.textContent || "";
     text = text.replace(/Show\s*(more|less)/gi, "");
+    // Anchored to the end: this is a toggle LABEL that gets glued onto the
+    // real prompt text (e.g. "...education.Read less" / "...Read more").
+    // An unanchored/global replace would also delete a legitimate
+    // occurrence of the phrase "read more" inside the user's own prompt
+    // (e.g. "Read more about X and summarize").
+    text = text.replace(/\s*Read\s*more\s*$/i, "");
+    text = stripTrailingStatusChrome(text);
     return text.trim();
+  }
+
+  // Matches Perplexity's research-trace/status UI text — the kind of
+  // thing that ends up glued onto domPromptText from a separate DOM
+  // sibling that stripTrailingStatusChrome() (which only sees one node at
+  // a time) can't reach. Deliberately narrow: only recognizable status
+  // shapes (gerund research-action phrases, "N sources" badges, step-trace
+  // summaries, bare timestamps) count, so ordinary multi-line prompt text
+  // that happens to start with the title is never misclassified as chrome.
+  const STATUS_CHROME_RE = new RegExp(
+    "^(?:" +
+      "\\d+\\s+sources?" + // "23 sources"
+      "|completed\\s+\\d+\\s+steps?" + // "Completed 2 steps"
+      "|\\d{1,2}:\\d{2}\\s*(?:AM|PM)" + // "2:55 PM"
+      // Research-status phrase, e.g. "Searching public safety data",
+      // "Checking traffic-car statistics". Deliberately narrow: capped
+      // length and NO sentence-terminating punctuation (`.`, `?`, `!`,
+      // `,`, `;`, `:`), so a real prompt continuation that happens to
+      // start with one of these common verbs (e.g. "Looking at 2024 data
+      // only, which state is cheaper?" or "Reading level should stay
+      // simple and keep it under 400 words.") is never misclassified as
+      // chrome — genuine Perplexity status lines are short noun-phrase
+      // fragments with no punctuation, never full sentences.
+      "|(?:searching|checking|reading|analyzing|researching|browsing|looking|gathering|verifying|reviewing|comparing|calculating|summarizing|investigating|examining|scanning|querying|fetching|retrieving|compiling|collecting|cross[- ]?checking|double[- ]?checking|pulling)\\b[^\\n.?!,;:]{0,60}" +
+      ")\\s*$",
+    "i"
+  );
+
+  /**
+   * True when domPromptText is exactly `title` followed by a trailing
+   * remainder that matches a known UI-chrome shape (whitespace-flexibly
+   * matched, so differences in blank lines between title and the DOM text
+   * don't matter). Used to decide whether it's safe to trust the title as
+   * the full prompt even though domPromptText != title verbatim.
+   */
+  function isKnownStatusChromeSuffix(title, domPromptText) {
+    if (!title || !domPromptText) return false;
+    const escapedTitle = title.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*");
+    const prefixRe = new RegExp("^\\s*" + escapedTitle, "i");
+    const m = prefixRe.exec(domPromptText);
+    if (!m) return false;
+    const rawSuffix = domPromptText.slice(m[0].length).trim();
+    if (!rawSuffix) return false;
+    // The suffix is frequently MULTIPLE chrome fragments from separate DOM
+    // siblings joined with a blank line — e.g. a "Checking ..." research
+    // step summary followed by a "N sources" badge (confirmed via [PPLX
+    // Diag] sibling-level logging: sibling[1]="Checking the claim about
+    // Roman and modern road networks", sibling[2]="23 sources"). Testing
+    // the whole suffix as one string against STATUS_CHROME_RE fails
+    // because its gerund alternative stops at the first newline. Instead,
+    // split on blank lines and require every resulting segment to
+    // independently match a known chrome shape.
+    const segments = rawSuffix
+      .split(/\n\s*\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (segments.length === 0) return false;
+    return segments.every((seg) => STATUS_CHROME_RE.test(seg));
   }
 
   function getFullPromptText(el) {
     if (!el) return "";
-    
+
     const isQueryContainer = el.classList.contains("group/query") || el.matches(".group\\/query");
 
     if (isQueryContainer) {
+      console.log(
+        `[PPLX Diag] getFullPromptText: isQueryContainer path. RAW el.textContent(len=${(el.textContent || "").length})="${el.textContent}"`
+      );
       const clean = getCleanText(el);
       return clean;
     }
 
     const textParts = [];
     let sib = el;
+    let sibIdx = 0;
     while (sib) {
       const hasAi = containsAiResponse(sib);
       if (hasAi) {
+        console.log(`[PPLX Diag] getFullPromptText: sibling[${sibIdx}] containsAiResponse=true, stopping walk.`);
         break; // Stop if we hit the AI response element or container
       }
+      const rawSibText = sib.textContent || "";
       const text = getCleanText(sib);
+      console.log(
+        `[PPLX Diag] getFullPromptText: sibling[${sibIdx}] tag=${sib.tagName} rawLen=${rawSibText.length} raw="${rawSibText.slice(0, 120)}" cleanedLen=${text.length} cleaned="${text.slice(0, 120)}"`
+      );
       if (text) {
         textParts.push(text);
       }
       sib = sib.nextElementSibling;
+      sibIdx++;
     }
     const full = textParts.join("\n\n").trim();
     return full;
@@ -673,8 +806,33 @@
 
     const domPromptStripped = stripAllWS(stripHtmlTags(domPromptText));
     const titleStripped = stripAllWS(stripHtmlTags(title || ""));
-    if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
-      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals DOM prompt.`);
+    console.log(
+      `[PPLX Diag] Turn ${turnNum}: splitPromptFromResponse — domPromptText(len=${domPromptText.length})="${domPromptText.slice(0, 60)}"...${domPromptText.slice(-40)}", title(len=${(title || "").length})="${(title || "").slice(0, 60)}"`
+    );
+    console.log(
+      `[PPLX Diag] Turn ${turnNum}: domPromptStripped.length=${domPromptStripped.length}, titleStripped.length=${titleStripped.length}, equal=${domPromptStripped === titleStripped}`
+    );
+    // Perplexity's own H1 heading is generated verbatim from the user's
+    // typed query, so domPromptText should always start with it. In
+    // practice domPromptText frequently has a research-trace status line
+    // ("Searching ...", "Checking ...") or a "N sources" badge glued on
+    // after the real prompt text, living in a separate DOM node that
+    // stripTrailingStatusChrome() (applied per sibling) can't see. Rather
+    // than accepting ANY short trailing remainder as chrome — which would
+    // also wrongly discard real multi-line prompt content that merely
+    // starts with the title (e.g. "Explain links\n\nGo to Google to
+    // search.") — require the remainder to actually match a known chrome
+    // shape: a gerund research-status phrase, a source-count badge, a
+    // step-trace summary, or a timestamp.
+    const isTitlePlusChrome = titleStripped && isKnownStatusChromeSuffix(title, domPromptText);
+    if (isTitlePlusChrome) {
+      console.log(
+        `[PPLX Diag] Turn ${turnNum}: domPromptText is title + a recognized UI-chrome suffix — treating as title-plus-chrome fast path.`
+      );
+    }
+
+    if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome)) {
+      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals DOM prompt (or title + trailing UI chrome).`);
       let promptPart = chunkBody.slice(0, startIdx).trim();
       promptPart = unwrapFencedHeading(promptPart);
       return {
@@ -697,8 +855,16 @@
       console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt not found in strippedBody.`);
       return null;
     }
+    console.log(
+      `[PPLX Diag] Turn ${turnNum}: findPromptEnd matched at strippedIdx=${promptEndStrippedIdx} of strippedBody.length=${strippedBody.length}. ` +
+      `Stripped context around match: "...${strippedBody.slice(Math.max(0, promptEndStrippedIdx - 30), promptEndStrippedIdx)}[[SPLIT]]${strippedBody.slice(promptEndStrippedIdx, promptEndStrippedIdx + 30)}..."`
+    );
 
     let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+    console.log(
+      `[PPLX Diag] Turn ${turnNum}: originalEndIdx=${originalEndIdx} of chunkBody.length=${chunkBody.length}. ` +
+      `Original context around split: "...${chunkBody.slice(Math.max(0, originalEndIdx - 40), originalEndIdx)}[[SPLIT]]${chunkBody.slice(originalEndIdx, originalEndIdx + 40)}..."`
+    );
 
     // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
     // but before the response starts, we can consume it as part of the split so that
@@ -806,6 +972,11 @@
           if (promptText) {
             console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: found matching prompt text in React state (length=${promptText.length}).`);
             split = splitPromptFromResponse(chunk, promptText, turnNum, title);
+            if (!split) {
+              console.log(`[PPLX Diag] Turn ${turnNum}: React-derived promptText did NOT yield a split — falling through to DOM strategy.`);
+            }
+          } else {
+            console.log(`[PPLX Diag] Turn ${turnNum}: React message matched but getPromptTextFromMsg returned null — falling through to DOM strategy.`);
           }
         }
       }
@@ -846,6 +1017,9 @@
       }
 
       if (split) {
+        console.log(
+          `[PPLX Diag] Turn ${turnNum}: FINAL split — prompt tail(40)="...${split.prompt.slice(-40)}", response head(60)="${split.response.slice(0, 60)}..."`
+        );
         if (domEl) {
           lastMatchedNode = domEl;
         }
@@ -856,8 +1030,12 @@
           `<!-- PPLX-ROLE: sources -->\n${split.sources || "(none)"}`
         );
       } else {
+        console.log(`[PPLX Diag] Turn ${turnNum}: both react and DOM strategies failed to produce a split — using paragraph/citation fallback heuristic.`);
         const fallbackSplit = splitPromptFromResponseFallback(chunk, turnNum);
         if (fallbackSplit) {
+          console.log(
+            `[PPLX Diag] Turn ${turnNum}: FALLBACK split — prompt tail(40)="...${fallbackSplit.prompt.slice(-40)}", response head(60)="${fallbackSplit.response.slice(0, 60)}..."`
+          );
           out.push(
             `<!-- PPLX-TURN ${turnNum} -->\n` +
             `<!-- PPLX-ROLE: prompt -->\n${fallbackSplit.prompt}\n\n` +

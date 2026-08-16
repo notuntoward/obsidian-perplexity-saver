@@ -145,6 +145,67 @@ function findPromptEnd(strippedBody: string, strippedDomPrompt: string) {
   return -1;
 }
 
+function stripTrailingStatusChrome(text: string): string {
+  if (!text) return text;
+  // All three patterns are anchored to the END of the string (`$`); see
+  // the matching block in the browser userscript for the full rationale
+  // (an earlier unanchored version truncated real prompt prose containing
+  // an ordinary clock time or "completed N steps" phrase).
+  const patterns = [
+    /\d{1,2}:\d{2}\s*(?:AM|PM)\s*$/i,
+    /\bCompleted\s+\d+\s+steps?\s*$/i,
+    /\n\s*\d+\s+sources?\s*$/i,
+  ];
+  let cutIdx = -1;
+  for (const p of patterns) {
+    const m = p.exec(text);
+    if (m && (cutIdx === -1 || m.index < cutIdx)) {
+      cutIdx = m.index;
+    }
+  }
+  if (cutIdx === -1) return text;
+  return text.slice(0, cutIdx).trim();
+}
+
+function getCleanText(text: string): string {
+  let t = text || "";
+  t = t.replace(/Show\s*(more|less)/gi, "");
+  t = t.replace(/\s*Read\s*more\s*$/i, "");
+  t = stripTrailingStatusChrome(t);
+  return t.trim();
+}
+
+const STATUS_CHROME_RE = new RegExp(
+  "^(?:" +
+    "\\d+\\s+sources?" +
+    "|completed\\s+\\d+\\s+steps?" +
+    "|\\d{1,2}:\\d{2}\\s*(?:AM|PM)" +
+    "|(?:searching|checking|reading|analyzing|researching|browsing|looking|gathering|verifying|reviewing|comparing|calculating|summarizing|investigating|examining|scanning|querying|fetching|retrieving|compiling|collecting|cross[- ]?checking|double[- ]?checking|pulling)\\b[^\\n.?!,;:]{0,60}" +
+    ")\\s*$",
+  "i"
+);
+
+function isKnownStatusChromeSuffix(title: string, domPromptText: string): boolean {
+  if (!title || !domPromptText) return false;
+  const escapedTitle = title.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s*");
+  const prefixRe = new RegExp("^\\s*" + escapedTitle, "i");
+  const m = prefixRe.exec(domPromptText);
+  if (!m) return false;
+  const rawSuffix = domPromptText.slice(m[0].length).trim();
+  if (!rawSuffix) return false;
+  // The suffix is frequently multiple chrome fragments from separate DOM
+  // siblings joined with a blank line (e.g. a "Checking ..." research-step
+  // summary followed by a "N sources" badge). Require every blank-line
+  // separated segment to independently match a known chrome shape, rather
+  // than the whole suffix in one regex pass.
+  const segments = rawSuffix
+    .split(/\n\s*\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (segments.length === 0) return false;
+  return segments.every((seg) => STATUS_CHROME_RE.test(seg));
+}
+
 function splitPromptFromResponse(chunkText: string, domPromptText: string, turnNum: number, title: string) {
   const { body: chunkBody, sources } = splitSources(chunkText);
 
@@ -154,7 +215,17 @@ function splitPromptFromResponse(chunkText: string, domPromptText: string, turnN
 
   const domPromptStripped = stripAllWS(stripHtmlTags(domPromptText));
   const titleStripped = stripAllWS(stripHtmlTags(title || ""));
-  if (!chunkBody.startsWith("```") && titleStripped && domPromptStripped === titleStripped) {
+
+  // See the matching block in the browser userscript for the full
+  // rationale: domPromptText frequently has a short amount of UI chrome
+  // (research-trace status line, "N sources" badge, etc.) glued onto the
+  // end of the real prompt text by the DOM sibling walk. Trust the title
+  // only when the trailing remainder matches a known chrome shape, not
+  // merely because it's short (real multi-line prompt content can also
+  // start with the title and be short).
+  const isTitlePlusChrome = !!titleStripped && isKnownStatusChromeSuffix(title, domPromptText);
+
+  if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome)) {
     let promptPart = chunkBody.slice(0, startIdx).trim();
     promptPart = unwrapFencedHeading(promptPart);
     return {
@@ -416,6 +487,152 @@ AI Response here.`;
       expect(result.prompt).toBe("# <q>What is Washington's tax burden?</q> The website you link to says Washington");
       expect(result.response).toBe("8.47%; Idaho 7.04%\n\nSome other details here.");
     }
+  });
+
+  it("treats domPromptText as title-plus-chrome when a short research-trace/status suffix is glued on (regression: real Perplexity export)", () => {
+    // Captured verbatim from a real [PPLX Diag] console log: Perplexity
+    // glues a research-trace status line onto domPromptText in a separate
+    // DOM node that stripTrailingStatusChrome() (applied per-sibling) can't
+    // reach, so the exact-match fast path used to fail and fall through to
+    // the much weaker paragraph/citation fallback, swallowing the AI's
+    // entire lead-in paragraph into "prompt".
+    const chunk = `# Compare US e-bike safety to European E-bike saftety
+
+The US has a much larger and faster-growing e-bike safety problem than most of Europe.
+
+## Regulatory Divergence Is the Core Difference
+
+The EU treats e-bikes as bicycles only if they meet strict limits.`;
+    const title = "Compare US e-bike safety to European E-bike saftety";
+    const domPromptText = "Compare US e-bike safety to European E-bike saftety\n\nSearching public safety data";
+
+    const split = splitPromptFromResponse(chunk, domPromptText, 4, title);
+    expect(split).not.toBeNull();
+    if (split) {
+      expect(split.prompt).toBe("# Compare US e-bike safety to European E-bike saftety");
+      expect(split.response.startsWith("The US has a much larger")).toBe(true);
+      expect(split.response).not.toContain("Searching public safety data");
+    }
+  });
+
+  it("treats domPromptText as title-plus-chrome for a 'Checking ...' status suffix (regression: real Perplexity export)", () => {
+    const chunk = `# A bike advocate may claim that European road safety is because they ban or discourage cars.  True?
+
+That claim is mostly false as stated.
+
+## Car Ownership Isn't Actually Low
+
+Household car ownership in major European countries is close to American levels.`;
+    const title = "A bike advocate may claim that European road safety is because they ban or discourage cars.  True?";
+    const domPromptText =
+      "A bike advocate may claim that European road safety is because they ban or discourage cars.  True?\n\nChecking traffic-car statistics";
+
+    const split = splitPromptFromResponse(chunk, domPromptText, 3, title);
+    expect(split).not.toBeNull();
+    if (split) {
+      expect(split.prompt).toBe(
+        "# A bike advocate may claim that European road safety is because they ban or discourage cars.  True?"
+      );
+      expect(split.response.startsWith("That claim is mostly false")).toBe(true);
+      expect(split.response).not.toContain("Checking traffic-car statistics");
+    }
+  });
+
+  it("treats domPromptText as title-plus-chrome when the suffix is TWO separate chrome fragments joined by a blank line (regression: real Perplexity export, turn 5)", () => {
+    // Captured verbatim from a real [PPLX Diag] sibling-level log: the
+    // "Checking ..." research-step summary and the "N sources" badge are
+    // two SEPARATE DOM siblings, joined by getFullPromptText via "\n\n".
+    // isKnownStatusChromeSuffix must recognize each fragment on its own,
+    // not require the whole two-fragment suffix to match a single
+    // STATUS_CHROME_RE alternative in one pass.
+    const title =
+      "How common are modern European roads on roman roads.  How many miles of roman roads were there and how many miles are European modern roads are there.  Does the autobahn sit on a roman road?";
+    const domPromptText = `${title}\n\nChecking the claim about Roman and modern road networks\n\n23 sources`;
+
+    expect(isKnownStatusChromeSuffix(title, domPromptText)).toBe(true);
+
+    const chunk = `# ${title}\n\nThe scale mismatch between Roman roads and the modern European network is enormous.\n\n## Roman Road Mileage\n\nHistorical estimates of the Roman road network have grown.`;
+    const split = splitPromptFromResponse(chunk, domPromptText, 5, title);
+    expect(split).not.toBeNull();
+    if (split) {
+      expect(split.prompt).toBe(`# ${title}`);
+      expect(split.response.startsWith("The scale mismatch between Roman roads")).toBe(true);
+      expect(split.response).not.toContain("Checking the claim");
+      expect(split.response).not.toContain("23 sources");
+    }
+  });
+
+  it("does NOT treat an ordinary trailing sentence as UI chrome, even when short (guards against the opposite failure mode)", () => {
+    // The title-plus-chrome heuristic must require the trailing remainder
+    // to look like a recognized chrome shape (gerund status phrase,
+    // source-count badge, timestamp, step-trace summary) — NOT merely be
+    // short — otherwise real multi-line prompt content that starts with
+    // the title (a very common shape) would be silently discarded.
+    expect(isKnownStatusChromeSuffix("Explain links", "Explain links\n\nGo to Google to search.")).toBe(false);
+    expect(isKnownStatusChromeSuffix("Short title", "Short title and then some more real text.")).toBe(false);
+
+    // But the real chrome shapes seen in production logs are recognized.
+    expect(isKnownStatusChromeSuffix("Compare US e-bike safety to European E-bike saftety", "Compare US e-bike safety to European E-bike saftety\n\nSearching public safety data")).toBe(true);
+    expect(isKnownStatusChromeSuffix("A bike advocate...", "A bike advocate...\n\nChecking traffic-car statistics")).toBe(true);
+    expect(isKnownStatusChromeSuffix("How common are roads", "How common are roads\n\n23 sources")).toBe(true);
+  });
+
+  it("does NOT treat a real prompt continuation starting with a chrome-verb as UI chrome when it is a full sentence (regression: code review finding)", () => {
+    // A code review of the first version of this heuristic found that the
+    // gerund alternative in STATUS_CHROME_RE matched ANY line starting
+    // with one of the listed verbs, regardless of length or punctuation —
+    // so a real prompt continuation like "Looking at 2024 data only,
+    // which state is cheaper?" or "Reading level should stay simple and
+    // keep it under 400 words." was wrongly classified as chrome. Real
+    // Perplexity status lines are short, punctuation-free noun-phrase
+    // fragments, never full sentences with terminal punctuation.
+    expect(
+      isKnownStatusChromeSuffix(
+        "Compare Idaho and Washington taxes",
+        "Compare Idaho and Washington taxes\n\nLooking at 2024 data only, which state is cheaper?"
+      )
+    ).toBe(false);
+    expect(
+      isKnownStatusChromeSuffix(
+        "Fix my resume",
+        "Fix my resume\n\nReading level should stay simple and keep it under 400 words."
+      )
+    ).toBe(false);
+
+    // Genuine chrome (short, no punctuation) must still be recognized.
+    expect(isKnownStatusChromeSuffix("title", "title\n\nChecking the claim about Roman and modern road networks")).toBe(true);
+  });
+
+  it("stripTrailingStatusChrome only truncates a TRAILING timestamp/step-count marker, never an interior one in ordinary prose (regression: code review finding)", () => {
+    // A code review found the timestamp and "Completed N steps" patterns
+    // were unanchored and truncated at the EARLIEST match anywhere in the
+    // text, destroying real prompt content that merely mentions a clock
+    // time or the phrase "completed N steps" as ordinary prose.
+    expect(stripTrailingStatusChrome("Why did the market drop at 9:30 AM yesterday and recover later?")).toBe(
+      "Why did the market drop at 9:30 AM yesterday and recover later?"
+    );
+    expect(stripTrailingStatusChrome("I completed 3 steps of the tutorial; what is next?")).toBe(
+      "I completed 3 steps of the tutorial; what is next?"
+    );
+
+    // A genuine trailing chrome marker is still stripped.
+    expect(stripTrailingStatusChrome("Regarding Seattle and Keith correct or wrong?2:39 PM")).toBe(
+      "Regarding Seattle and Keith correct or wrong?"
+    );
+    expect(stripTrailingStatusChrome("Completed 2 steps")).toBe("");
+  });
+
+  it("getCleanText only strips a trailing 'Read more' toggle label, never a legitimate mid-prompt occurrence of the phrase (regression: code review finding)", () => {
+    // A code review found the "Read more" strip was a global, unanchored
+    // replace that could delete a real occurrence of the phrase inside
+    // the user's own prompt (e.g. "Read more about X and summarize").
+    expect(getCleanText("Read more about Roman roads and summarize")).toBe(
+      "Read more about Roman roads and summarize"
+    );
+    // But the trailing toggle-label shape is still removed.
+    expect(getCleanText("...driver & pedestrian education.Read more")).toBe(
+      "...driver & pedestrian education."
+    );
   });
 
   it("correctly splits and unwraps a fenced prompt with trailing user text (Tax Foundation case)", () => {
