@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.8
+// @version      8.9
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -882,11 +882,30 @@
       return null;
     }
 
-    let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+    // Guard: if the DOM prompt text is significantly longer than the title,
+    // the DOM scraper likely captured part of the AI response along with the
+    // prompt. In that case, try the shorter title first for findPromptEnd,
+    // since using the extended domPromptText would push the split point
+    // into the middle of the AI response (e.g. splitting "application" into
+    // "app" + "lication").
+    const strippedTitleForSplit = stripForMatch(title);
+    let promptEndStrippedIdx = -1;
+    if (strippedDomPrompt.length > strippedTitleForSplit.length * 1.5 && strippedTitleForSplit.length >= 15) {
+      console.log(
+        `[PPLX Diag] Turn ${turnNum}: domPromptText (stripped len=${strippedDomPrompt.length}) is much longer than title (stripped len=${strippedTitleForSplit.length}) — trying title first for findPromptEnd to avoid swallowed AI text.`
+      );
+      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitleForSplit);
+      if (promptEndStrippedIdx !== -1) {
+        console.log(`[PPLX Diag] Turn ${turnNum}: title-based findPromptEnd succeeded at idx=${promptEndStrippedIdx}.`);
+      }
+    }
+
+    if (promptEndStrippedIdx === -1) {
+      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+    }
     if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
       console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText failed in findPromptEnd, trying title instead due to fuzzy match.`);
-      const strippedTitle = stripForMatch(title);
-      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle);
+      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitleForSplit);
     }
 
     if (promptEndStrippedIdx === -1) {
