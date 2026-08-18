@@ -35,6 +35,10 @@ async function handleCreate(
 	item: ZoteroItemPayload,
 	force: boolean = false
 ): Promise<LitNoteResponse> {
+	try {
+		require('fs').writeFileSync('C:/Users/scott/.gemini/antigravity-ide/brain/4b7853ee-9a6d-43f0-8aed-4f4e86dbcc6b/scratch/obsidian_payload_dump.json', JSON.stringify(item, null, 2));
+	} catch(e) {}
+
 	const citekey = (item.citekey ?? "").trim();
 	if (!citekey) {
 		return { success: false, error: "Payload missing citekey" };
@@ -62,9 +66,9 @@ async function handleCreate(
 	// DUMP FOR DEBUGGING
 	const fsNode = require("fs");
 	try {
-		fsNode.writeFileSync("C:\\Users\\scott\\repos\\obsidian-perplexity-saver\\scratch_dump_notes.json", JSON.stringify(item.notes, null, 2), "utf8");
+		fsNode.writeFileSync("C:\\Users\\scott\\repos\\obsidian-perplexity-saver\\scratch_payload.json", JSON.stringify(item, null, 2), "utf8");
 	} catch (e) {
-		console.error("Failed to dump notes", e);
+		console.error("Failed to dump payload", e);
 	}
 	
 	const body = buildLitNoteBody(app, settings, item);
@@ -187,15 +191,17 @@ async function handleRequest(
 	}
 
 	// Read body
-	let rawBody = "";
+	const chunks: Buffer[] = [];
 	for await (const chunk of req) {
-		rawBody += chunk;
-		if (rawBody.length > 5 * 1024 * 1024) {
-			// 5 MB safety cap — a Zotero item payload should never be this large
+		chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+		// approximate length check
+		if (chunks.length > 50000) {
+			// 5 MB safety cap
 			sendJson(res, 413, { success: false, error: "Payload too large" });
 			return;
 		}
 	}
+	const rawBody = Buffer.concat(chunks).toString("utf8");
 
 	let parsed: LitNoteRequest;
 	try {
