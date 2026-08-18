@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.9
+// @version      8.10
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -739,17 +739,26 @@
     return segments.every((seg) => STATUS_CHROME_RE.test(seg));
   }
 
-  function getFullPromptText(el) {
-    if (!el) return "";
+  function getFullPromptTextAndResponseStart(el) {
+    if (!el) return { promptText: "", responseStartText: "" };
 
     const isQueryContainer = el.classList.contains("group/query") || el.matches(".group\\/query");
 
+    let responseStartText = "";
+    
+    function extractResponseStart(responseEl) {
+      if (!responseEl) return "";
+      // Grab the first significant chunk of text from the AI response to use as an anchor
+      const proseNode = responseEl.classList.contains("prose") ? responseEl : responseEl.querySelector(".prose") || responseEl;
+      return getCleanText({ textContent: proseNode.textContent || "" });
+    }
+
     if (isQueryContainer) {
-      console.log(
-        `[PPLX Diag] getFullPromptText: isQueryContainer path. RAW el.textContent(len=${(el.textContent || "").length})="${el.textContent}"`
-      );
       const clean = getCleanText(el);
-      return clean;
+      if (el.nextElementSibling) {
+        responseStartText = extractResponseStart(el.nextElementSibling);
+      }
+      return { promptText: clean, responseStartText };
     }
 
     const textParts = [];
@@ -758,22 +767,19 @@
     while (sib) {
       const hasAi = containsAiResponse(sib);
       if (hasAi) {
-        console.log(`[PPLX Diag] getFullPromptText: sibling[${sibIdx}] containsAiResponse=true, stopping walk.`);
+        responseStartText = extractResponseStart(sib);
         break; // Stop if we hit the AI response element or container
       }
       const rawSibText = sib.textContent || "";
       const text = getCleanText(sib);
-      console.log(
-        `[PPLX Diag] getFullPromptText: sibling[${sibIdx}] tag=${sib.tagName} rawLen=${rawSibText.length} raw="${rawSibText.slice(0, 120)}" cleanedLen=${text.length} cleaned="${text.slice(0, 120)}"`
-      );
       if (text) {
         textParts.push(text);
       }
       sib = sib.nextElementSibling;
       sibIdx++;
     }
-    const full = textParts.join("\n\n").trim();
-    return full;
+    const promptText = textParts.join("\n\n").trim();
+    return { promptText, responseStartText };
   }
 
   function findBibliographyStart(text, fromIdx) {
@@ -824,7 +830,29 @@
     return -1;
   }
 
-  function splitPromptFromResponse(chunkText, domPromptText, turnNum, title) {
+  function findResponseStart(strippedBody, strippedDomResponseStart) {
+    if (!strippedDomResponseStart || strippedDomResponseStart.length < 15) return -1;
+    
+    // 1. Try matching the entire start snippet
+    const idx = strippedBody.indexOf(strippedDomResponseStart);
+    if (idx !== -1) return idx;
+
+    // 2. Try matching leading prefixes of the AI response
+    const prefixLens = [60, 40, 30, 20, 15];
+    for (const len of prefixLens) {
+      if (strippedDomResponseStart.length >= len) {
+        const prefix = strippedDomResponseStart.slice(0, len);
+        const sIdx = strippedBody.indexOf(prefix);
+        if (sIdx !== -1) {
+          console.log(`[PPLX Obsidian Exporter] Matched response start using leading prefix of length ${len}: "${prefix}"`);
+          return sIdx;
+        }
+      }
+    }
+    return -1;
+  }
+
+  function splitPromptFromResponse(chunkText, domPromptText, domResponseStartText, turnNum, title) {
     const { body: chunkBody, sources } = splitSources(chunkText);
 
     const headingMatch = chunkBody.match(/^#{1,6}[^\n]*\n+/);
@@ -858,10 +886,33 @@
       );
     }
 
+    const checkPromptMatch = (domPrompt, titleText, fullPromptText) => {
+      if (!domPrompt || !titleText) return false;
+      const cleanDom = domPrompt.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const cleanTitle = titleText.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const cleanFull = fullPromptText.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+      if (cleanDom.length === 0) return false;
+
+      // Handle typical UI artifacts by checking if the DOM text starts with the title,
+      // and any extra text is short and likely UI chrome (e.g., "completed 12 steps")
+      if (cleanDom.startsWith(cleanTitle)) {
+        const extraText = cleanDom.slice(cleanTitle.length);
+        if (extraText.length < 50) {
+          // Generous allowance for UI chrome
+          return true;
+        }
+      }
+
+      // Check if the DOM matches the start of the full prompt exactly
+      if (cleanFull && cleanFull.startsWith(cleanDom)) {
+        return true;
+      }
+
+      return false;
+    };
+
     const isFuzzyMatch = titleStripped && checkPromptMatch(domPromptText, title, title) && !domPromptText.includes("\n");
-    if (isFuzzyMatch) {
-      console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText fuzzy-matched title.`);
-    }
 
     if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome || isFuzzyMatch)) {
       console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals/fuzzy-matches DOM prompt (or title + trailing UI chrome).`);
@@ -875,66 +926,50 @@
     }
 
     const { stripped: strippedBody, map: bodyMap } = buildComparableWithMap(chunkBody);
-    let strippedDomPrompt = stripForMatch(domPromptText);
+    let originalEndIdx = -1;
 
-    if (!strippedDomPrompt) {
-      console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt is empty.`);
-      return null;
-    }
+    // --- NEW STRATEGY: Try anchoring to the AI Response Start ---
+    const strippedDomResponseStart = stripForMatch(domResponseStartText);
+    const responseStartStrippedIdx = findResponseStart(strippedBody, strippedDomResponseStart);
 
-    // Guard: if the DOM prompt text is significantly longer than the title,
-    // the DOM scraper likely captured part of the AI response along with the
-    // prompt. In that case, try the shorter title first for findPromptEnd,
-    // since using the extended domPromptText would push the split point
-    // into the middle of the AI response (e.g. splitting "application" into
-    // "app" + "lication").
-    const strippedTitleForSplit = stripForMatch(title);
-    let promptEndStrippedIdx = -1;
-    if (strippedDomPrompt.length > strippedTitleForSplit.length * 1.5 && strippedTitleForSplit.length >= 15) {
-      console.log(
-        `[PPLX Diag] Turn ${turnNum}: domPromptText (stripped len=${strippedDomPrompt.length}) is much longer than title (stripped len=${strippedTitleForSplit.length}) — trying title first for findPromptEnd to avoid swallowed AI text.`
-      );
-      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitleForSplit);
-      if (promptEndStrippedIdx !== -1) {
-        console.log(`[PPLX Diag] Turn ${turnNum}: title-based findPromptEnd succeeded at idx=${promptEndStrippedIdx}.`);
+    if (responseStartStrippedIdx !== -1) {
+      console.log(`[PPLX Diag] Turn ${turnNum}: Successfully anchored to AI response start.`);
+      originalEndIdx = bodyMap[responseStartStrippedIdx];
+    } else {
+      console.log(`[PPLX Diag] Turn ${turnNum}: Failed to anchor to AI response start. Falling back to prompt end search.`);
+      
+      // --- FALLBACK STRATEGY: Anchor to Prompt End ---
+      let strippedDomPrompt = stripForMatch(domPromptText);
+      let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+
+      if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
+        console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText failed in findPromptEnd, trying title instead due to fuzzy match.`);
+        const strippedTitle = stripForMatch(title);
+        promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle);
+      }
+
+      if (promptEndStrippedIdx === -1) {
+        console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt not found in strippedBody.`);
+        return null;
+      }
+
+      originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
+
+      // Mid-word split detection (indicates DOM scraper swallowed AI response)
+      const charBefore = originalEndIdx > 0 ? chunkBody[originalEndIdx - 1] : "";
+      const charAfter = originalEndIdx < chunkBody.length ? chunkBody[originalEndIdx] : "";
+      if (/[a-zA-Z0-9]/.test(charBefore) && /[a-zA-Z0-9]/.test(charAfter)) {
+        console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: Split landed mid-word ("${charBefore}|${charAfter}"). DOM scraper likely swallowed AI response. Falling back to title-based split.`);
+        const strippedTitle = stripForMatch(title);
+        const titleEndIdx = findPromptEnd(strippedBody, strippedTitle);
+        if (titleEndIdx !== -1) {
+          originalEndIdx = bodyMap[titleEndIdx - 1] + 1;
+          console.log(`[PPLX Diag] Turn ${turnNum}: title-based split placed originalEndIdx at ${originalEndIdx}.`);
+        }
       }
     }
 
-    if (promptEndStrippedIdx === -1) {
-      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
-    }
-    if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
-      console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText failed in findPromptEnd, trying title instead due to fuzzy match.`);
-      promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitleForSplit);
-    }
-
-    if (promptEndStrippedIdx === -1) {
-      console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: strippedDomPrompt not found in strippedBody.`);
-      return null;
-    }
-    console.log(
-      `[PPLX Diag] Turn ${turnNum}: findPromptEnd matched at strippedIdx=${promptEndStrippedIdx} of strippedBody.length=${strippedBody.length}. ` +
-      `Stripped context around match: "...${strippedBody.slice(Math.max(0, promptEndStrippedIdx - 30), promptEndStrippedIdx)}[[SPLIT]]${strippedBody.slice(promptEndStrippedIdx, promptEndStrippedIdx + 30)}..."`
-    );
-
-    let originalEndIdx = bodyMap[promptEndStrippedIdx - 1] + 1;
-    console.log(
-      `[PPLX Diag] Turn ${turnNum}: originalEndIdx=${originalEndIdx} of chunkBody.length=${chunkBody.length}. ` +
-      `Original context around split: "...${chunkBody.slice(Math.max(0, originalEndIdx - 40), originalEndIdx)}[[SPLIT]]${chunkBody.slice(originalEndIdx, originalEndIdx + 40)}..."`
-    );
-
-    // If chunkBody starts with a codeblock and there is a closing ``` after originalEndIdx
-    // but before the response starts, we can consume it as part of the split so that
-    // promptPart is a complete fenced code block.
-    if (chunkBody.startsWith("```")) {
-      const remaining = chunkBody.slice(originalEndIdx);
-      const closeMatch = remaining.match(/^([ \t]*\n)*[ \t]*```/);
-      if (closeMatch) {
-        originalEndIdx += closeMatch[0].length;
-      }
-    }
-
-    // Scan forward for the first alphanumeric character of the response
+    // Scan forward or backward to ensure we land on a clean boundary
     const remainingText = chunkBody.slice(originalEndIdx);
     const firstAlphanumRelIdx = remainingText.search(/[a-zA-Z0-9]/);
     const splitIdx = firstAlphanumRelIdx === -1 ? originalEndIdx : originalEndIdx + firstAlphanumRelIdx;
@@ -1045,7 +1080,7 @@
           const promptText = getPromptTextFromMsg(msg);
           if (promptText) {
             console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: found matching prompt text in React state (length=${promptText.length}).`);
-            split = splitPromptFromResponse(chunk, promptText, turnNum, title);
+            split = splitPromptFromResponse(chunk, promptText, "", turnNum, title);
             if (!split) {
               console.log(`[PPLX Diag] Turn ${turnNum}: React-derived promptText did NOT yield a split — falling through to DOM strategy.`);
             }
@@ -1055,17 +1090,41 @@
         }
       }
 
+      let domPromptText = "";
+      let domResponseStartText = "";
+
+      if (!split && reactMsgs && reactMsgs.length > 0) {
+        // Try React messages first
+        const promptMsg = reactMsgs.find((m) => m.role === "user");
+        const responseMsg = reactMsgs.find((m) => m.role === "ai" || m.role === "assistant" || m.role === "model");
+        if (promptMsg && promptMsg.text) {
+          domPromptText = promptMsg.text;
+          console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: Used React message for prompt.`);
+        }
+        if (responseMsg && responseMsg.text) {
+          domResponseStartText = responseMsg.text;
+          console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: Used React message for responseStart.`);
+        }
+        if (domPromptText) {
+          split = splitPromptFromResponse(chunk, domPromptText, domResponseStartText, turnNum, title);
+        }
+      }
+
       // 2. Fallback to DOM element scanning
       if (!split && title) {
         domEl = findPromptElement(title, lastMatchedNode, turnNum);
 
         console.log(
-          `[PPLX Obsidian Exporter] Turn ${turnNum}: title="${title.slice(0, 80)}" domEl=${domEl ? "FOUND" : "NOT FOUND"}`
+          `[PPLX Diag] Turn ${turnNum}: title="${title.slice(0, 80)}" domEl=${domEl ? "FOUND" : "NOT FOUND"}`
         );
 
         if (domEl) {
-          let domPromptText = getFullPromptText(domEl);
-          console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: matched prompt element with text length:`, domPromptText.length);
+          const extracted = getFullPromptTextAndResponseStart(domEl);
+          domPromptText = extracted.promptText;
+          domResponseStartText = extracted.responseStartText;
+          console.log(
+            `[PPLX Diag] Turn ${turnNum}: extracted domPromptText(len=${domPromptText.length}), domResponseStartText(len=${domResponseStartText.length})`
+          );
 
           // getFullPromptText can legitimately come back empty: this happens
           // when the matched "prompt" element is itself already the AI
@@ -1084,7 +1143,7 @@
             domPromptText = title;
           }
 
-          split = splitPromptFromResponse(chunk, domPromptText, turnNum, title);
+          split = splitPromptFromResponse(chunk, domPromptText, domResponseStartText, turnNum, title);
         }
       } else if (!title) {
         console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: could not extract a title heading from chunk.`);
