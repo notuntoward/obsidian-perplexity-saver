@@ -306,20 +306,17 @@ export function buildLitNoteBody(
 		.join(", ");
 	lines.push(`> **Related**::${relatedLinks ? " " + relatedLinks : ""}`);
 
-	// Blank line after callout
-	lines.push("");
-
 	// Bibliography block (conditional)
 	const bib = cleanupBibliography(item.bibliography ?? "");
 	if (bib) {
-		lines.push("", `> ${bib}`, "");
+		lines.push("", `> ${bib}`);
 	}
 
 	// Notes section (conditional)
 	const notes = item.notes ?? [];
 	if (notes.length > 0) {
 		lines.push("", "___");
-		lines.push(`> [!note]- &nbsp;Zotero Note (${notes.length})`, ">");
+		lines.push(`> [!note]- &nbsp;Zotero Note (${notes.length})`);
 		for (const noteHtml of notes) {
 			const md = zoteroHtmlToMd(app, settings, noteHtml);
 			// Indent each line with "> " and promote h1/h2 to h3 (matches Python behaviour)
