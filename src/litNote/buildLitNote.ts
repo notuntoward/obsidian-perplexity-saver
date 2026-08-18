@@ -317,8 +317,11 @@ export function buildLitNoteBody(
 	if (notes.length > 0) {
 		lines.push("", "___");
 		lines.push(`> [!note]- &nbsp;Zotero Note (${notes.length})`);
-		for (const noteHtml of notes) {
-			const md = zoteroHtmlToMd(app, settings, noteHtml);
+		for (let i = 0; i < notes.length; i++) {
+			if (i > 0) {
+				lines.push(">", "> ---", ">"); // Visual separator between distinct Zotero notes
+			}
+			const md = zoteroHtmlToMd(app, settings, notes[i]);
 			// Indent each line with "> " and promote h1/h2 to h3 (matches Python behaviour)
 			const indented = md
 				.replace(/^# /gm, "### ")
