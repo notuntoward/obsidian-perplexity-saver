@@ -265,6 +265,7 @@ export function buildLitNoteBody(
 
 	// Info callout header line
 	const lines: string[] = [
+		"",
 		`> [!info]- &nbsp;${calloutLinks}`,
 	];
 
