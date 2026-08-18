@@ -234,7 +234,7 @@ async function handleRequest(
 				return;
 			}
 			const result = await handleOpen(app, settings, citekey);
-			sendJson(res, result.success ? 200 : 404, result);
+			sendJson(res, 200, result);
 		} else {
 			sendJson(res, 400, { success: false, error: `Unknown action: ${(parsed as { action: string }).action}` });
 		}
