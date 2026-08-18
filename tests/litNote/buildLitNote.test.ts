@@ -78,7 +78,7 @@ describe("Lit Note Builder", () => {
 		});
 	});
 
-	describe("Full note body", () => {
+	describe("Full note body Regressions", () => {
 		it("assembles the complete note with all branches", () => {
 			const item: ZoteroItemPayload = {
 				title: "Test Note",
@@ -89,14 +89,28 @@ describe("Lit Note Builder", () => {
 				relations: [{ citekey: "Related1" }, { citekey: "Related2" }],
 			};
 			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
-		const mockSettings = { litNotesFolder: "" } as any;
-		const body = buildLitNoteBody(mockApp, mockSettings, item);
+			const mockSettings = { litNotesFolder: "" } as any;
+			const body = buildLitNoteBody(mockApp, mockSettings, item);
 			expect(body).toContain("> **Title**:: \"Test Note\"");
 			expect(body).toContain("> **Related**:: [[@Related1]], [[@Related2]]");
 			expect(body).toContain("> Smith (2024)."); // bibliography
 			expect(body).toContain("> [!note]- &nbsp;Zotero Note (2)");
 			expect(body).toContain("> Note 1");
 			expect(body).toContain("> ### Note 2"); // h1 promoted to h3 and indented
+		});
+
+		it("ensures there is a blank line before the first info callout to prevent Live Preview auto-expansion", () => {
+			const item: ZoteroItemPayload = {
+				title: "Test Note",
+				citekey: "Test24",
+			};
+			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
+			const mockSettings = { litNotesFolder: "" } as any;
+			const body = buildLitNoteBody(mockApp, mockSettings, item);
+			
+			// The regression: Obsidian auto-expands callouts if they are on the very first visible line.
+			// The generated body string MUST start with a newline to prevent this.
+			expect(body.startsWith("\n> [!info]-")).toBe(true);
 		});
 	});
 });
