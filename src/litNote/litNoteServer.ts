@@ -225,7 +225,8 @@ async function handleRequest(
 				lastResult = await handleCreate(app, settings, item, force);
 				if (!lastResult.success) break;
 			}
-			sendJson(res, lastResult.success ? 200 : 500, lastResult);
+			const statusCode = lastResult.success ? 200 : (lastResult.error === "exists" ? 200 : 500);
+			sendJson(res, statusCode, lastResult);
 		} else if (parsed.action === "open") {
 			const citekey = (parsed as { action: "open"; citekey: string }).citekey?.trim();
 			if (!citekey) {
