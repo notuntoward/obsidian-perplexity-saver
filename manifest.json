@@ -6,5 +6,5 @@
   "description": "Saves clipboard content as a new note in a user-defined subfolder, tags it, and links it back to the active note.",
   "author": "Scott Otterson",
   "authorUrl": "https://github.com/notuntoward",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

@@ -1,6 +1,7 @@
 import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, TFile } from "obsidian";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
+import http from "http";
 import { createPerplexityNote } from "./note-creator";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
 import { registerSyncCommand } from "./commands/sync";
@@ -16,8 +17,9 @@ import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
 import { DialogFile } from "./parsers/types";
 import { ZoteroClient } from "./zotero/zoteroClient";
 import { deduplicateDialogCitations } from "./normalize/turns";
+import { startLitNoteServer, stopLitNoteServer } from "./litNote/litNoteServer";
 
-interface PerplexitySaverSettings {
+export interface PerplexitySaverSettings {
 	searchesFolder: string;
 	generatedTag: string;
 	/**
@@ -71,6 +73,16 @@ interface PerplexitySaverSettings {
 	 * Automatically relink sources with Zotero and Obsidian literature notes when importing/syncing.
 	 */
 	autoRelinkSources: boolean;
+	/**
+	 * Port for the Zotero companion HTTP listener (lit-note create/open endpoint).
+	 */
+	litNotePort: number;
+	/**
+	 * Absolute OS path to the Obsidian vault root. Defaults to the current
+	 * vault's basePath but can be overridden if the vault is accessed via a
+	 * symlink or junction that Obsidian reports differently.
+	 */
+	vaultRoot: string;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -87,6 +99,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	litNotesFolder: "lit/lit_notes",
 	minTitleMatchScore: 95,
 	autoRelinkSources: false,
+	litNotePort: 27124,
+	vaultRoot: "C:\\Users\\scott\\new_obsidian\\obsidian\\Obsidian Share Vault",
 };
 
 interface InlineInputData {
@@ -107,10 +121,17 @@ const clearPerplexityInput = StateEffect.define<null>();
 export default class PerplexitySaverPlugin extends Plugin {
 	settings!: PerplexitySaverSettings;
 	zoteroClient!: ZoteroClient;
+	private litNoteServer: http.Server | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
+
+		// Start the Zotero companion HTTP listener (desktop only — node:http).
+		this.litNoteServer = startLitNoteServer(this.app, {
+			litNotePort: this.settings.litNotePort,
+			litNotesFolder: this.settings.litNotesFolder,
+		});
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -129,6 +150,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerRelinkSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
+	}
+
+	onunload(): void {
+		if (this.litNoteServer) {
+			stopLitNoteServer(this.litNoteServer);
+			this.litNoteServer = null;
+		}
 	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
@@ -897,6 +925,44 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					this.plugin.zoteroClient.clearCache();
 					new Notice("Zotero library cache cleared.");
 				});
+			});
+
+		// Zotero companion listener settings
+		containerEl.createEl("h3", { text: "Zotero Companion Listener" });
+
+		new Setting(containerEl)
+			.setName("Listener port")
+			.setDesc(
+				"Port the Zotero companion plugin POSTs to for creating/opening lit notes (default 27124). " +
+				"Restart Obsidian after changing. Must not conflict with Zotero's port (23119) or the Python webhook (5050)."
+			)
+			.addText((text) => {
+				text
+					.setPlaceholder("27124")
+					.setValue(String(this.plugin.settings.litNotePort))
+					.onChange(async (value) => {
+						const n = parseInt(value, 10);
+						if (!isNaN(n) && n > 0 && n < 65536) {
+							this.plugin.settings.litNotePort = n;
+							await this.plugin.saveSettings();
+						}
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Vault root path")
+			.setDesc(
+				"Absolute OS path to the Obsidian vault root. Used by the Zotero companion " +
+				"to resolve lit note paths. Leave as the default unless your vault has moved."
+			)
+			.addText((text) => {
+				text
+					.setPlaceholder("C:\\Users\\scott\\new_obsidian\\obsidian\\Obsidian Share Vault")
+					.setValue(this.plugin.settings.vaultRoot)
+					.onChange(async (value) => {
+						this.plugin.settings.vaultRoot = value.trim();
+						await this.plugin.saveSettings();
+					});
 			});
 	}
 }

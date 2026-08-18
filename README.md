@@ -318,3 +318,7 @@ If you are still using Complexity:
 1. Install the [Complexity](https://github.com/pnd280/complexity) Chrome extension.
 2. In Tampermonkey, use the [`browser-userscript/perplexity-obsidian-exporter.user.js`](./browser-userscript/perplexity-obsidian-exporter.user.js) script instead.
 3. This adds a floating circular "📋 Copy for Obsidian" button near the bottom right of Perplexity, which triggers the Complexity popup and copies the formatted thread.
+
+## Known Issues / Bugs
+
+- **Callout Auto-Expansion:** When the Zotero Companion plugin creates a new literature note, Obsidian automatically opens the note in Live Preview mode. Because the cursor defaults to the top line (which contains a `>[!info]-` callout), Live Preview automatically expands the folded callout to allow editing. Attempts to programmatically move the cursor to the bottom of the file (using `setCursor` or `eState`) have so far raced with Live Preview's mounting process, causing the callout to remain expanded upon opening.
