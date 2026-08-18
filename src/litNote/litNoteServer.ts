@@ -21,7 +21,6 @@ import type { 	LitNoteCreateRequest,
 } from "./types";
 
 export interface LitNoteServerSettings {
-	litNotePort: number;
 	litNotesFolder: string; // vault-relative path, e.g. "lit/lit_notes"
 }
 
@@ -267,24 +266,22 @@ export function startLitNoteServer(
 		});
 	});
 
-	server.on("error", (err: NodeJS.ErrnoException) => {
-		if (err.code === "EADDRINUSE") {
-			console.error(
-				`[LitNoteServer] Port ${settings.litNotePort} already in use. ` +
-				"Check that no other process (e.g. the Python webhook) is using it."
-			);
+	const HTTP_PORT = 27124;
+
+	server.on("error", (e: NodeJS.ErrnoException) => {
+		if (e.code === "EADDRINUSE") {
+			console.error(`[LitNoteServer] Port ${HTTP_PORT} is in use.`);
 			new Notice(
-				`Zotero lit-note listener: port ${settings.litNotePort} is already in use. ` +
-				"Change the port in Perplexity Saver settings.",
-				8000
+				`Zotero lit-note listener: port ${HTTP_PORT} is already in use. ` +
+					`Are multiple instances of Obsidian running?`
 			);
 		} else {
-			console.error("[LitNoteServer] Server error:", err);
+			console.error("[LitNoteServer] error", e);
 		}
 	});
 
-	server.listen(settings.litNotePort, "127.0.0.1", () => {
-		console.log(`[LitNoteServer] Listening on 127.0.0.1:${settings.litNotePort}`);
+	server.listen(HTTP_PORT, "127.0.0.1", () => {
+		console.log(`[LitNoteServer] Listening on 127.0.0.1:${HTTP_PORT}`);
 	});
 
 	return server;
