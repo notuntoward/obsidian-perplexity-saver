@@ -23,3 +23,6 @@ Thumbs.db
 
 # Obsidian (generated at runtime)
 data.json
+
+# Scratch files
+scratch*.json
