@@ -58,7 +58,7 @@ export interface PerplexitySaverSettings {
 	 */
 	sourceTitleMaxChars: number;
 	/**
-	 * Local HTTP Port for Zotero 7 API communication.
+	 * Local HTTP Port for Zotero API communication.
 	 */
 	zoteroPort: number;
 	/**
@@ -632,7 +632,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Zotero HTTP Port",
-						desc: "Local HTTP port for Zotero 7 API communication (defaults to 23119).",
+						desc: "Local HTTP port for Zotero API communication (defaults to 23119).",
 						control: {
 							type: "number",
 							key: "zoteroPort",
@@ -871,7 +871,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Zotero HTTP Port")
-			.setDesc("Local HTTP port for Zotero 7 API communication (defaults to 23119).")
+			.setDesc("Local HTTP port for Zotero API communication (defaults to 23119).")
 			.addText((text) => {
 				text
 					.setPlaceholder("23119")

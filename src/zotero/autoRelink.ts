@@ -14,7 +14,7 @@ export interface AutoRelinkSettings {
 	 */
 	autoRelinkSources: boolean;
 	/**
-	 * Local HTTP port for Zotero 7 API communication.
+	 * Local HTTP port for Zotero API communication.
 	 */
 	zoteroPort: number;
 	/**

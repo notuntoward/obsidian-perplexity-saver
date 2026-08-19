@@ -2,7 +2,7 @@
 
 This plugin saves conversational threads from Perplexity.ai into your Obsidian vault, retaining proper Markdown formatting, deep-linking citations to footnotes, and generating clean metadata headers for fast search and archival.
 
-It also supports rich integration with Zotero 7 to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
+It also supports rich integration with Zotero 7/8/9 to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
 
 ---
 
@@ -13,8 +13,8 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 2. **Local HTTP Server**: Runs a zero-configuration local server on port `27124` that allows Zotero to instantly push new literature notes directly into your vault.
 
 ### Prerequisites & Dependencies
-- **Zotero 7** running locally.
-- **[Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion)**: The companion plugin installed in Zotero 7. (This provides the "Create Lit Note" button in Zotero).
+- **Zotero 7/8/9** running locally.
+- **[Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion)**: The companion plugin installed in Zotero 7/8/9. (This provides the "Create Lit Note" button in Zotero).
 - **Zotero Local API enabled**: Check `Zotero -> Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero`.
 - **Better BibTeX** (optional, highly recommended): Provides reliable citekeys.
 
@@ -44,7 +44,7 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 
 ### Zotero & Literature Note Relinking
 - **Auto-relink sources** (default: off): Automatically run Zotero relinking when importing or syncing new turns.
-- **Zotero HTTP Port** (default: `23119`): Local HTTP port for the Zotero 7 Local API.
+- **Zotero HTTP Port** (default: `23119`): Local HTTP port for the Zotero 7/8/9 Local API.
 - **Literature notes folder** (default: `lit/lit_notes`): Vault folder where literature notes reside (and where new notes sent from the Zotero companion plugin are saved). Leave blank to search anywhere in the vault.
 - **Minimum title match score** (default: `95`): Minimum similarity score (0-100) required to match an AI source to a Zotero item.
 - **Zotero library cache**: Button to clear the in-memory cached Zotero library so the next relink fetches fresh from Zotero.
