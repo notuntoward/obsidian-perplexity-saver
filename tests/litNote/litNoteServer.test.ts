@@ -55,7 +55,7 @@ describe("Lit Note Server", () => {
 			const endPromise = new Promise<void>((r) => (resolveEnd = r));
 			const res = {
 				writeHead: vi.fn(),
-				end: vi.fn((_chunk?: any) => resolveEnd()),
+				end: vi.fn((_chunk?: string) => resolveEnd()),
 				headersSent: false,
 			};
 			return { res, endPromise };
@@ -77,7 +77,7 @@ describe("Lit Note Server", () => {
 				vault: {
 					getAbstractFileByPath: vi.fn((path) => {
 						if (path === "lit/lit_notes") return { path }; // folder exists
-						if (path.includes("existing")) return new TFile(path); // file exists
+						if (path.includes("existing")) return { path } as unknown as TFile; // file exists
 						return null;
 					}),
 					create: vi.fn(),
@@ -102,7 +102,7 @@ describe("Lit Note Server", () => {
 
 			// The regression: we should return 200 OK so the Zotero plugin parses the JSON correctly
 			expect(res.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-			const responseJson = JSON.parse(res.end.mock.calls[0][0]);
+			const responseJson = JSON.parse((res.end as any).mock.calls[0][0]);
 			expect(responseJson).toEqual({ success: false, error: "exists" });
 		});
 
@@ -130,7 +130,7 @@ describe("Lit Note Server", () => {
 			// The regression: we should return 200 OK so the Zotero plugin parses the JSON correctly,
 			// instead of getting intercepted by a generic 404 HTTP handler
 			expect(res.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
-			const responseJson = JSON.parse(res.end.mock.calls[0][0]);
+			const responseJson = JSON.parse((res.end as any).mock.calls[0][0]);
 			expect(responseJson.success).toBe(false);
 			expect(responseJson.error).toContain("Lit note not found");
 		});
