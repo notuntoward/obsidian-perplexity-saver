@@ -55,7 +55,7 @@ describe("Lit Note Server", () => {
 			const endPromise = new Promise<void>((r) => (resolveEnd = r));
 			const res = {
 				writeHead: vi.fn(),
-				end: vi.fn(() => resolveEnd()),
+				end: vi.fn((_chunk?: any) => resolveEnd()),
 				headersSent: false,
 			};
 			return { res, endPromise };

@@ -129,7 +129,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		// Start the Zotero companion HTTP listener (desktop only — node:http).
 		this.litNoteServer = startLitNoteServer(this.app, {
-			litNotePort: this.settings.litNotePort,
+			
 			litNotesFolder: this.settings.litNotesFolder,
 		});
 
