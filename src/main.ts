@@ -631,8 +631,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						},
 					},
 					{
-						name: "Zotero HTTP Port",
-						desc: "Local HTTP port for Zotero API communication (defaults to 23119).",
+						name: "Better BibTeX HTTP Port",
+						desc: "Port used by the Obsidian Auto-Relinker to fetch citation metadata from the Zotero Better BibTeX plugin (defaults to 23119).",
 						control: {
 							type: "number",
 							key: "zoteroPort",
@@ -870,8 +870,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
-			.setName("Zotero HTTP Port")
-			.setDesc("Local HTTP port for Zotero API communication (defaults to 23119).")
+			.setName("Better BibTeX HTTP Port")
+			.setDesc("Port used by the Obsidian Auto-Relinker to fetch citation metadata from the Zotero Better BibTeX plugin (defaults to 23119).")
 			.addText((text) => {
 				text
 					.setPlaceholder("23119")

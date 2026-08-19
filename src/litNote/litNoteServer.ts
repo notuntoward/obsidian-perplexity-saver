@@ -273,7 +273,7 @@ export function startLitNoteServer(
 			console.error(`[LitNoteServer] Port ${HTTP_PORT} is in use.`);
 			new Notice(
 				`Zotero lit-note listener: port ${HTTP_PORT} is already in use. ` +
-					`Are multiple instances of Obsidian running?`
+					`Is there more than one Obsidian vault running with the perplexity saver plugin enabled?`
 			);
 		} else {
 			console.error("[LitNoteServer] error", e);
