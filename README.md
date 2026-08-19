@@ -4,6 +4,30 @@ This plugin saves conversational threads from Perplexity.ai into your Obsidian v
 
 It also supports rich integration with Zotero 7/8/9 to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
 
+
+```mermaid
+flowchart TD
+    subgraph Import Flow
+    A["Ask Perplexity<br/>or Gemini"] --> B["Prepare clipboard via browser<br/>(Tampermonkey or Clipper)"]
+    B --> C["Press hotkey<br/>in Obsidian"]
+    C --> H["Note created in vault<br/>from clipboard, tagged + linked"]
+    H --> I{"Auto-Relinker Enabled?"}
+    I -->|Yes| J["Query Better BibTeX<br/>(Port 23119)"]
+    J --> K["Relink # Sources to<br/>Zotero items or Obsidian Lit Notes"]
+    I -->|No| L["Done"]
+    K --> L
+    end
+
+    subgraph Literature Note Flow
+    Zot["Zotero Companion<br/>Plugin"] -.->|Push Lit Note (Port 27124)| M["Lit Note Server<br/>(in Obsidian)"]
+    M -.-> N["Obsidian Vault<br/>(Creates & Opens .md File)"]
+    end
+
+    %% Define the smaller font style
+    classDef smallFont font-size:13px;
+    class A,B,C,H,I,J,K,L,M,N,Zot smallFont;
+```
+
 ---
 
 # Zotero & Literature Note Integration
