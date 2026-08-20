@@ -40,7 +40,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(names).toContain("Collapse blank lines");
 		expect(names).toContain("Collapse prompt callouts");
 		expect(names).toContain("Prompt heading");
-		expect(names).toContain("Source link title shortening");
+		expect(names).toContain("Source link title fetching");
 		expect(names).toContain("Zotero & Literature Note Relinking");
 	});
 
@@ -70,7 +70,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
 		const definitions = tab.getSettingDefinitions();
-		const sourceGroup: any = definitions.find((d: any) => d.heading === "Source link title shortening");
+		const sourceGroup: any = definitions.find((d: any) => d.heading === "Source link title fetching");
 		expect(sourceGroup).toBeDefined();
 
 		const maxCharsSetting = sourceGroup.items.find((item: any) => item.name === "Source title max characters");

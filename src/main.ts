@@ -595,7 +595,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
-				heading: "Source link title shortening",
+				heading: "Source link title fetching",
 				items: [
 					{
 						name: "Auto-fetch source titles",
@@ -815,8 +815,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			if (inputEl) inputEl.setAttribute("disabled", "true");
 		}
 
-		// "Source link title shortening" group
-		containerEl.createEl("h3", { text: "Source link title shortening" });
+		// "Source link title fetching" group
+		containerEl.createEl("h3", { text: "Source link title fetching" });
 
 		new Setting(containerEl)
 			.setName("Auto-fetch source titles")

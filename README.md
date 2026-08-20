@@ -62,7 +62,7 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 - **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` and `TF-IDF ranked sentence`.
 - **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt.
 
-### Source Link Formatting
+### Source Link Title Fetching
 - **Auto-fetch source titles** (default: on): Fetches webpage titles for sources that don't already have one, producing clean markdown links instead of bare URLs.
 - **Source title max characters** (default: `100`): Maximum length of a fetched source link title, including a possible ellipsis.
 
