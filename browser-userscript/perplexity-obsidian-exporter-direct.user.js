@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.13
+// @version      8.14-debug
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -186,6 +186,7 @@
   }
 
   async function expandAllPrompts() {
+    console.log("[PPLX LOG] expandAllPrompts started"); console.log("[PPLX Obsidian Exporter] -> expandAllPrompts() started");
     const MAX_ROUNDS = 6;
     const allClicked = new Set();
     const expandRegex = /show\s*(?:\d+\s*)?more|more\s*queries|show\s*queries|show\s*previous|view\s*more|read\s*more|expand/i;
@@ -351,6 +352,7 @@
   }
 
   function getThreadMessagesFromReact() {
+    console.log("[PPLX LOG] getThreadMessagesFromReact started"); console.log("[PPLX Obsidian Exporter] -> getThreadMessagesFromReact() started");
     // --- Helper: check if an array looks like a thread messages list ---
     function isMessagesArray(arr) {
       if (!Array.isArray(arr) || arr.length === 0) return false;
@@ -366,7 +368,12 @@
     // --- Helper: recursively search a plain JS object tree for a messages array ---
     function deepSearch(obj, depth, visited) {
       if (depth > 12 || !obj || typeof obj !== "object" || visited.has(obj)) return null;
-      // Skip DOM nodes and window to prevent massive traversals of the browser environment
+      
+      // [CRITICAL AI RULE]: NEVER REMOVE THE FOLLOWING LINE! 
+      // React state objects (especially refs) frequently contain raw DOM elements and `window`. 
+      // DOM elements are massively interconnected (parent, siblings, ownerDocument -> window).
+      // Without this guard, deepSearch will traverse the ENTIRE browser environment, causing 
+      // the script to fatally hang on large pages.
       if (obj instanceof Node || obj instanceof Element || obj === window) return null;
       
       visited.add(obj);
@@ -1402,12 +1409,17 @@
   }
 
   async function copyText(text) {
+    console.log("[PPLX LOG] copyText started. Text length:", text ? text.length : 0);
+    try {
+    
     // Fallback progress feedback: if the earlier click-detection on the
     // "Export as Markdown" menu item missed (e.g. the menu is rendered in
     // a shadow DOM or uses an unexpected structure), at least show the
     // progress toast once our anchor-click interceptor actually fires and
     // we begin the real work.
     showToast("Preparing export — please wait, don't leave this page yet...", "progress");
+    console.log("[PPLX Obsidian Exporter] -> copyText() called with text length:", text ? text.length : 0);
+    try {
 
     const toggles = await expandAllPrompts();
 
@@ -1430,6 +1442,7 @@
       return false;
     }
 
+    console.log("[PPLX Obsidian Exporter] -> writeToClipboard() about to be called");
     const result = await writeToClipboard(full);
     if (!result.success) {
       showToast("Clipboard write failed — saving file instead", "error");
@@ -1440,7 +1453,13 @@
       ? ` (turn(s) ${warnings.join(", ")} boundaries unresolved — used fallback split)`
       : "";
     showToast(`Copied to clipboard — safe to leave this page now${warningSuffix}`, "success");
+    console.log("[PPLX LOG] copyText finished successfully");
     return true;
+    } catch (e) {
+      console.error("[PPLX LOG] copyText FATAL ERROR:", e);
+      showToast("Fatal error during export. Check console.", "error");
+      return false;
+    }
   }
 
   function isExportDownload(href, download) {
@@ -1639,6 +1658,9 @@
           text.includes("export markdown") ||
           text.includes("download markdown")
         ) {
+          console.log("[PPLX LOG] User clicked Export menu item!");
+          
+          console.log("[PPLX Obsidian Exporter] -> User clicked the export menu item!");
           showToast("Preparing export — please wait, don't leave this page yet...", "progress");
           break;
         }
