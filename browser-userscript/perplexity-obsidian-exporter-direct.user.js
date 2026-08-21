@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.12
+// @version      8.13
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -366,6 +366,9 @@
     // --- Helper: recursively search a plain JS object tree for a messages array ---
     function deepSearch(obj, depth, visited) {
       if (depth > 12 || !obj || typeof obj !== "object" || visited.has(obj)) return null;
+      // Skip DOM nodes and window to prevent massive traversals of the browser environment
+      if (obj instanceof Node || obj instanceof Element || obj === window) return null;
+      
       visited.add(obj);
       if (isMessagesArray(obj)) return obj;
       if (!Array.isArray(obj)) {
