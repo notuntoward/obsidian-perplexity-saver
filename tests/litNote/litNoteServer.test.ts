@@ -77,7 +77,7 @@ describe("Lit Note Server", () => {
 				vault: {
 					getAbstractFileByPath: vi.fn((path) => {
 						if (path === "lit/lit_notes") return { path }; // folder exists
-						if (path.includes("existing")) return { path } as unknown as TFile; // file exists
+						if (path.includes("existing")) return new TFile(path, "lit/lit_notes"); // file exists
 						return null;
 					}),
 					create: vi.fn(),
