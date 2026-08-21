@@ -8,6 +8,7 @@ import { registerSyncCommand } from "./commands/sync";
 import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
+import { registerJumpCommand } from "./commands/jump";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { sanitizeFilename, suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
@@ -145,8 +146,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		registerSyncCommand(this);
 		registerDeleteTurnCommand(this);
-		registerRemoveSourcesWithNoDialogCommand(this);
 		registerRemoveSourcesWithNoCiteCommand(this);
+		registerRemoveSourcesWithNoDialogCommand(this);
+		registerJumpCommand(this);
 		registerRelinkSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));

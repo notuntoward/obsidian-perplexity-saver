@@ -174,3 +174,4 @@ export function parseYaml(input: string): unknown {
 export function htmlToMarkdown(html: string): string {
 	return html.replace(/<h1>(.*?)<\/h1>/g, "# $1").replace(/<[^>]*>?/gm, "");
 }
+export class FuzzySuggestModal<T> extends SuggestModal<T> {}
