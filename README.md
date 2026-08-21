@@ -13,14 +13,14 @@ It also supports rich integration with Zotero 7/8/9 to automatically link your P
 ```mermaid
 flowchart TD
     %% Use subgraphs to create "rows" for a wrapping/snaking layout
-    subgraph Row1 ["Step 1: Save Note"]
+    subgraph Row1 ["Step 1: Save AI Dialog"]
         direction LR
         A["Ask Perplexity<br/>or Gemini"] --> B["Prepare clipboard via browser<br/>(Tampermonkey or Clipper)"]
         B --> C["Press hotkey<br/>in Obsidian"]
         C --> H["Note created in vault<br/>from clipboard, tagged + linked"]
     end
 
-    subgraph Row2 ["Step 2: Auto-Relink (Optional)"]
+    subgraph Row2 ["Step 2: Auto-Relink AI Sources (Optional)"]
         direction LR
         I{"Auto-Relinker Enabled?"} -->|Yes| J["Query Better BibTeX<br/>(Port 23119)"]
         J --> K["Relink # Sources to<br/>Zotero items or Obsidian Lit Notes"]
