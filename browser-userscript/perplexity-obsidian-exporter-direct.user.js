@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.10
+// @version      8.11
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -529,41 +529,60 @@
     }
     if (typeof msg.text === "string") return msg.text;
     if (typeof msg.content === "string") return msg.content;
+    
+    // Handle array of content blocks
+    if (Array.isArray(msg.content)) {
+      return msg.content.map(c => {
+        if (typeof c === "string") return c;
+        if (c && typeof c === "object" && typeof c.text === "string") return c.text;
+        return "";
+      }).join("\n\n");
+    }
+    
     if (msg.content && typeof msg.content === "object" && typeof msg.content.text === "string") return msg.content.text;
     return null;
   }
 
   function findReactMessageForChunk(reactMsgs, title, turnNum) {
-    if (!reactMsgs || !title) return null;
+    if (!reactMsgs || reactMsgs.length === 0 || !title) return null;
     const target = stripForMatch(title);
-    console.log(
-      `[PPLX Diag] Turn ${turnNum}: findReactMessageForChunk — reactMsgs.length=${reactMsgs.length}, target(len=${target.length})="${target.slice(0, 60)}"`
-    );
+    
+    const doesMsgMatch = (msg) => {
+      const pText = getPromptTextFromMsg(msg);
+      if (!pText) return false;
+      const pTextStripped = stripForMatch(pText);
+      return pTextStripped.startsWith(target) || checkPromptMatch(pText, title, title);
+    };
 
-    const directMsg = reactMsgs[turnNum - 1];
-    if (directMsg) {
-      const pText = getPromptTextFromMsg(directMsg);
-      console.log(
-        `[PPLX Diag] Turn ${turnNum}: direct index [${turnNum - 1}] pText(len=${pText ? pText.length : 0})="${(pText || "").slice(0, 80)}"`
-      );
-      if (pText && checkPromptMatch(pText, title, title)) {
-        console.log(`[PPLX Diag] Turn ${turnNum}: MATCHED via direct index [${turnNum - 1}].`);
-        return directMsg;
-      }
-    } else {
-      console.log(`[PPLX Diag] Turn ${turnNum}: no reactMsgs entry at direct index [${turnNum - 1}].`);
-    }
+    let bestMsg = null;
+    let bestLen = -1;
 
+    // Perplexity's React state often contains multiple versions of a single user message if the 
+    // prompt was edited or if typing state flushed mid-keystroke. If we just return the *first*
+    // match, we risk grabbing a truncated, older version of the prompt (e.g., just the first 
+    // paragraph of what was eventually a multi-paragraph prompt). This causes the exporter to 
+    // wrongly assume the prompt ended early, splitting the boundary right in the middle of the 
+    // user's actual prompt text. 
+    // 
+    // By iterating through ALL matching messages and keeping the longest one, we guarantee we 
+    // grab the complete, final version of the prompt, ensuring the boundary split is accurate.
     for (let mi = 0; mi < reactMsgs.length; mi++) {
       const msg = reactMsgs[mi];
-      const pText = getPromptTextFromMsg(msg);
-      if (pText && checkPromptMatch(pText, title, title)) {
-        console.log(
-          `[PPLX Diag] Turn ${turnNum}: MATCHED via full-array scan at index [${mi}] (expected [${turnNum - 1}]). pText(len=${pText.length})="${pText.slice(0, 80)}"`
-        );
-        return msg;
+      if (doesMsgMatch(msg)) {
+        const pText = getPromptTextFromMsg(msg);
+        const len = pText ? pText.length : 0;
+        if (len > bestLen) {
+          bestLen = len;
+          bestMsg = msg;
+        }
       }
     }
+
+    if (bestMsg) {
+      console.log(`[PPLX Diag] Turn ${turnNum}: MATCHED React message (picked longest match, len=${bestLen}).`);
+      return bestMsg;
+    }
+
     console.log(`[PPLX Diag] Turn ${turnNum}: NO react message matched title at all. Falling back to DOM strategy.`);
     return null;
   }
@@ -807,11 +826,15 @@
     return { body, sources };
   }
 
-  function findPromptEnd(strippedBody, strippedDomPrompt) {
+  function findPromptEnd(strippedBody, strippedDomPrompt, maxIdx) {
     // 1. Try matching the entire stripped prompt
     const idx = strippedBody.indexOf(strippedDomPrompt);
     if (idx !== -1) {
-      return idx + strippedDomPrompt.length;
+      const endIdx = idx + strippedDomPrompt.length;
+      if (maxIdx === undefined || endIdx <= maxIdx) {
+        return endIdx;
+      }
+      console.log(`[PPLX Obsidian Exporter] Full prompt match at ${endIdx} exceeds maxIdx ${maxIdx} — skipping.`);
     }
 
     // 2. Try matching trailing suffixes of the prompt to be robust against markdown formatting differences
@@ -821,8 +844,13 @@
         const suffix = strippedDomPrompt.slice(-len);
         const sIdx = strippedBody.indexOf(suffix);
         if (sIdx !== -1) {
+          const endIdx = sIdx + len;
+          if (maxIdx !== undefined && endIdx > maxIdx) {
+            console.log(`[PPLX Obsidian Exporter] Suffix match (len=${len}) at ${endIdx} exceeds maxIdx ${maxIdx} — skipping.`);
+            continue;
+          }
           console.log(`[PPLX Obsidian Exporter] Matched prompt end using trailing suffix of length ${len}: "${suffix}"`);
-          return sIdx + len;
+          return endIdx;
         }
       }
     }
@@ -850,6 +878,88 @@
       }
     }
     return -1;
+  }
+
+  /**
+   * Validates that a prompt/response split didn't land in an impossible
+   * location. Returns true if the split looks valid.
+   *
+   * Signal A — Mid-word split: A real boundary never occurs in the middle
+   * of a word. If the last character of prompt and the first character of
+   * response are both word characters, the split is invalid.
+   *
+   * Signal B — Torn formatting: Check if the boundary tore apart a
+   * markdown formatting construct (**bold**, *italic*, [link](url),
+   * `code`). Unmatched openers at the end of prompt or unmatched closers
+   * at the start of response indicate the split landed inside a construct.
+   */
+  function isSplitValid(prompt, response, turnNum) {
+    if (!prompt || !response) return true; // empty halves are handled elsewhere
+
+    // --- Signal A: mid-word split ---
+    const lastPromptChar = prompt[prompt.length - 1];
+    const firstResponseChar = response[0];
+    if (/[a-zA-Z0-9]/.test(lastPromptChar) && /[a-zA-Z0-9]/.test(firstResponseChar)) {
+      console.warn(
+        `[PPLX Obsidian Exporter] Turn ${turnNum}: isSplitValid FAILED — mid-word split ("${lastPromptChar}|${firstResponseChar}").`
+      );
+      return false;
+    }
+
+    // --- Signal B: torn markdown formatting ---
+    // Check the tail of the prompt for unmatched formatting openers.
+    // Use a generous window so we catch constructs that span a few words.
+    const tailLen = Math.min(prompt.length, 200);
+    const tail = prompt.slice(-tailLen);
+    const headLen = Math.min(response.length, 200);
+    const head = response.slice(0, headLen);
+
+    // Bold/italic: count occurrences of ** and * in tail/head.
+    // An odd count means an unmatched opener/closer.
+    const countOccurrences = (str, sub) => {
+      let count = 0;
+      let pos = 0;
+      while ((pos = str.indexOf(sub, pos)) !== -1) {
+        count++;
+        pos += sub.length;
+      }
+      return count;
+    };
+
+    // Check ** first (bold), then * (italic — but skip those already
+    // counted as part of **).
+    const tailBold = countOccurrences(tail, "**");
+    const headBold = countOccurrences(head, "**");
+    if (tailBold % 2 !== 0 && headBold % 2 !== 0) {
+      console.warn(
+        `[PPLX Obsidian Exporter] Turn ${turnNum}: isSplitValid FAILED — torn bold (**) construct. tail=${tailBold} head=${headBold}`
+      );
+      return false;
+    }
+
+    // Check unmatched [ without closing ] in tail (torn link)
+    const lastOpenBracket = tail.lastIndexOf("[");
+    if (lastOpenBracket !== -1) {
+      const afterBracket = tail.slice(lastOpenBracket);
+      if (!afterBracket.includes("]")) {
+        console.warn(
+          `[PPLX Obsidian Exporter] Turn ${turnNum}: isSplitValid FAILED — torn link/bracket construct.`
+        );
+        return false;
+      }
+    }
+
+    // Check unmatched backtick (inline code)
+    const tailBackticks = countOccurrences(tail, "`") - countOccurrences(tail, "``");
+    const headBackticks = countOccurrences(head, "`") - countOccurrences(head, "``");
+    if (tailBackticks % 2 !== 0 && headBackticks % 2 !== 0) {
+      console.warn(
+        `[PPLX Obsidian Exporter] Turn ${turnNum}: isSplitValid FAILED — torn inline code construct.`
+      );
+      return false;
+    }
+
+    return true;
   }
 
   function splitPromptFromResponse(chunkText, domPromptText, domResponseStartText, turnNum, title) {
@@ -915,14 +1025,36 @@
     const isFuzzyMatch = titleStripped && checkPromptMatch(domPromptText, title, title) && !domPromptText.includes("\n");
 
     if (!chunkBody.startsWith("```") && titleStripped && (domPromptStripped === titleStripped || isTitlePlusChrome || isFuzzyMatch)) {
-      console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals/fuzzy-matches DOM prompt (or title + trailing UI chrome).`);
-      let promptPart = chunkBody.slice(0, startIdx).trim();
-      promptPart = unwrapFencedHeading(promptPart);
-      return {
-        prompt: promptPart,
-        response: bodyContent.trim(),
-        sources
-      };
+      const headingMatch = chunkBody.match(/^#{1,6}[^\n]*\n+/);
+      const startIdx = headingMatch ? headingMatch[0].length : 0;
+      const bodyContent = chunkBody.slice(startIdx).trim();
+
+      // Validate that this fast path split doesn't incorrectly orphan multi-paragraph prompts.
+      // If we have a reliable AI response start anchor, the text after the title MUST start with it.
+      let fastPathValid = true;
+      if (domResponseStartText && domResponseStartText.length >= 15) {
+        const strippedBodyContent = stripForMatch(bodyContent);
+        const strippedDomResponseStart = stripForMatch(domResponseStartText);
+        
+        // If the AI response anchor is found, but NOT near the beginning of bodyContent,
+        // it means there's extra prompt text between the heading and the AI response!
+        const anchorIdx = strippedBodyContent.indexOf(strippedDomResponseStart);
+        if (anchorIdx > 50) { // generous allowance for formatting
+          fastPathValid = false;
+          console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path rejected because AI response starts ${anchorIdx} chars after the heading. Prompt is likely multi-paragraph.`);
+        }
+      }
+
+      if (fastPathValid) {
+        console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: fast path — title equals/fuzzy-matches DOM prompt (or title + trailing UI chrome).`);
+        let promptPart = chunkBody.slice(0, startIdx).trim();
+        promptPart = unwrapFencedHeading(promptPart);
+        return {
+          prompt: promptPart,
+          response: bodyContent,
+          sources
+        };
+      }
     }
 
     const { stripped: strippedBody, map: bodyMap } = buildComparableWithMap(chunkBody);
@@ -939,13 +1071,17 @@
       console.log(`[PPLX Diag] Turn ${turnNum}: Failed to anchor to AI response start. Falling back to prompt end search.`);
       
       // --- FALLBACK STRATEGY: Anchor to Prompt End ---
+      // When a response-start anchor was found, use it as an upper bound
+      // for suffix matching so short suffixes can't accidentally match
+      // text inside the AI response body.
+      const maxIdx = responseStartStrippedIdx !== -1 ? responseStartStrippedIdx : undefined;
       let strippedDomPrompt = stripForMatch(domPromptText);
-      let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt);
+      let promptEndStrippedIdx = findPromptEnd(strippedBody, strippedDomPrompt, maxIdx);
 
       if (promptEndStrippedIdx === -1 && isFuzzyMatch) {
         console.log(`[PPLX Diag] Turn ${turnNum}: domPromptText failed in findPromptEnd, trying title instead due to fuzzy match.`);
         const strippedTitle = stripForMatch(title);
-        promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle);
+        promptEndStrippedIdx = findPromptEnd(strippedBody, strippedTitle, maxIdx);
       }
 
       if (promptEndStrippedIdx === -1) {
@@ -961,7 +1097,7 @@
       if (/[a-zA-Z0-9]/.test(charBefore) && /[a-zA-Z0-9]/.test(charAfter)) {
         console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: Split landed mid-word ("${charBefore}|${charAfter}"). DOM scraper likely swallowed AI response. Falling back to title-based split.`);
         const strippedTitle = stripForMatch(title);
-        const titleEndIdx = findPromptEnd(strippedBody, strippedTitle);
+        const titleEndIdx = findPromptEnd(strippedBody, strippedTitle, maxIdx);
         if (titleEndIdx !== -1) {
           originalEndIdx = bodyMap[titleEndIdx - 1] + 1;
           console.log(`[PPLX Diag] Turn ${turnNum}: title-based split placed originalEndIdx at ${originalEndIdx}.`);
@@ -1015,18 +1151,29 @@
     }
 
     if (firstResponseParaIdx > 1) {
-      // Walk backwards to consume plain text paragraphs as part of the response,
-      // but only if the title heading (paragraphs[0]) is not a short instruction
-      // (length < 45) which typically indicates a multi-paragraph prompt layout.
-      const titleClean = paragraphs[0].replace(/^#+\s+/, "").trim();
-      if (titleClean.length >= 45) {
-        while (firstResponseParaIdx > 1) {
-          const prevPara = paragraphs[firstResponseParaIdx - 1].trim();
-          // If the previous paragraph is a code block, we stop, as it's likely part of the prompt.
-          if (prevPara.startsWith("```")) {
-            break;
-          }
+      // DESIGN RATIONALE: We walk backwards to consume plain text paragraphs as part of the AI response,
+      // because AI intro paragraphs (e.g. "Here is...") often appear before the first citation.
+      // However, we MUST strictly bound this to prevent swallowing pages-long user prompts if 
+      // the React/DOM scrapers completely fail. 
+      // Rule 1: Max 2 paragraphs walked back.
+      // Rule 2: The paragraph must explicitly start with a known AI intro phrase.
+      // Rule 3: Immediately halt if the paragraph ends in a question mark (highly likely to be the user's prompt).
+      let walkedBack = 0;
+      while (firstResponseParaIdx > 1 && walkedBack < 2) {
+        const prevPara = paragraphs[firstResponseParaIdx - 1].trim();
+        if (prevPara.startsWith("```") || prevPara.endsWith("?")) {
+          break;
+        }
+        
+        const lower = prevPara.toLowerCase();
+        if (lower.startsWith("here") || lower.startsWith("certainly") || 
+            lower.startsWith("sure") || lower.startsWith("now ") || 
+            lower.startsWith("based on") || lower.startsWith("to ") ||
+            lower.startsWith("yes")) {
           firstResponseParaIdx--;
+          walkedBack++;
+        } else {
+          break;
         }
       }
     }
@@ -1073,16 +1220,33 @@
       let split = null;
       let domEl = null;
 
+      // Always try to find the DOM element for response-start anchoring,
+      // even when React provides the prompt text (Change 1 & 4).
+      let domResponseStartForReact = "";
+      if (title) {
+        const domElForResponseStart = findPromptElement(title, lastMatchedNode, turnNum);
+        if (domElForResponseStart) {
+          const extracted = getFullPromptTextAndResponseStart(domElForResponseStart);
+          domResponseStartForReact = extracted.responseStartText;
+          // Also save the DOM element so later strategies can skip re-scanning.
+          domEl = domElForResponseStart;
+        }
+      }
+
       // 1. Try React messages state first (works for virtualized/collapsed/deleted turns)
       if (title && reactMsgs) {
         const msg = findReactMessageForChunk(reactMsgs, title, turnNum);
         if (msg) {
           const promptText = getPromptTextFromMsg(msg);
           if (promptText) {
-            console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: found matching prompt text in React state (length=${promptText.length}).`);
-            split = splitPromptFromResponse(chunk, promptText, "", turnNum, title);
+            console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: found matching prompt text in React state (length=${promptText.length}), domResponseStartForReact(len=${domResponseStartForReact.length}).`);
+            split = splitPromptFromResponse(chunk, promptText, domResponseStartForReact, turnNum, title);
+            if (split && !isSplitValid(split.prompt, split.response, turnNum)) {
+              console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: React-derived split FAILED structural validation — rejecting.`);
+              split = null;
+            }
             if (!split) {
-              console.log(`[PPLX Diag] Turn ${turnNum}: React-derived promptText did NOT yield a split — falling through to DOM strategy.`);
+              console.log(`[PPLX Diag] Turn ${turnNum}: React-derived promptText did NOT yield a valid split — falling through to DOM strategy.`);
             }
           } else {
             console.log(`[PPLX Diag] Turn ${turnNum}: React message matched but getPromptTextFromMsg returned null — falling through to DOM strategy.`);
@@ -1105,14 +1269,23 @@
           domResponseStartText = responseMsg.text;
           console.log(`[PPLX Obsidian Exporter] Turn ${turnNum}: Used React message for responseStart.`);
         }
+        // Prefer DOM-extracted response start if available (more reliable anchor)
+        const effectiveResponseStart = domResponseStartForReact || domResponseStartText;
         if (domPromptText) {
-          split = splitPromptFromResponse(chunk, domPromptText, domResponseStartText, turnNum, title);
+          split = splitPromptFromResponse(chunk, domPromptText, effectiveResponseStart, turnNum, title);
+          if (split && !isSplitValid(split.prompt, split.response, turnNum)) {
+            console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: React role-based split FAILED structural validation — rejecting.`);
+            split = null;
+          }
         }
       }
 
       // 2. Fallback to DOM element scanning
       if (!split && title) {
-        domEl = findPromptElement(title, lastMatchedNode, turnNum);
+        // Re-use the DOM element found earlier if available, otherwise scan now.
+        if (!domEl) {
+          domEl = findPromptElement(title, lastMatchedNode, turnNum);
+        }
 
         console.log(
           `[PPLX Diag] Turn ${turnNum}: title="${title.slice(0, 80)}" domEl=${domEl ? "FOUND" : "NOT FOUND"}`
@@ -1144,6 +1317,10 @@
           }
 
           split = splitPromptFromResponse(chunk, domPromptText, domResponseStartText, turnNum, title);
+          if (split && !isSplitValid(split.prompt, split.response, turnNum)) {
+            console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: DOM-derived split FAILED structural validation — rejecting.`);
+            split = null;
+          }
         }
       } else if (!title) {
         console.warn(`[PPLX Obsidian Exporter] Turn ${turnNum}: could not extract a title heading from chunk.`);
