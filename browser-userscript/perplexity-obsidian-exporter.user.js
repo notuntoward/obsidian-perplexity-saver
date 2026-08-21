@@ -108,6 +108,48 @@
     }
   }
 
+  function showToast(msg, kind) {
+    const t = document.getElementById("pplx-clip-toast") || (() => {
+      const el = document.createElement("div");
+      el.id = "pplx-clip-toast";
+      el.style.cssText = `
+        position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+        z-index: 999999; padding: 12px 24px; border-radius: 24px;
+        font: 14px/1.4 sans-serif; font-weight: 500; transition: opacity 0.3s;
+        pointer-events: none; max-width: 80vw; text-align: center;
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        border: 1px solid transparent; display: flex; align-items: center; gap: 8px;
+      `;
+      document.body.appendChild(el);
+      return el;
+    })();
+
+    const isDark = document.documentElement.classList.contains('dark') ||
+                   document.body.classList.contains('dark') ||
+                   window.matchMedia('(prefers-color-scheme: dark)').matches;
+
+    if (isDark) {
+      t.style.background = "rgba(30, 30, 30, 0.75)";
+      t.style.borderColor = "rgba(255, 255, 255, 0.12)";
+      t.style.color = "rgba(255, 255, 255, 0.9)";
+      t.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.4)";
+    } else {
+      t.style.background = "rgba(255, 255, 255, 0.85)";
+      t.style.borderColor = "rgba(0, 0, 0, 0.08)";
+      t.style.color = "rgba(0, 0, 0, 0.8)";
+      t.style.boxShadow = "0 4px 14px rgba(0, 0, 0, 0.08)";
+    }
+
+    const icons = { progress: "⏳", success: "✅", error: "⚠️" };
+    t.innerHTML = `<span>${icons[kind] || icons.error}</span> <span>${msg}</span>`;
+    t.style.opacity = "1";
+    
+    clearTimeout(t._hideTimer);
+    if (kind !== "progress") {
+      t._hideTimer = setTimeout(() => (t.style.opacity = "0"), 3000);
+    }
+  }
+
   // Complexity's export menu is a Zag.js/Ark-UI style popover
   // (data-scope="popover"). Those components close on a real Escape
   // keypress or an outside pointerdown, not on a synthetic click(). Using
@@ -129,9 +171,11 @@
       await closePopover();
     }
 
+    showToast("Preparing export...", "progress");
+
     const trigger = findExportTrigger();
     if (!trigger) {
-      alert("Couldn't find the export icon. Complexity's UI may have changed.");
+      showToast("Couldn't find the export icon. Complexity's UI may have changed.", "error");
       return;
     }
     trigger.click();
@@ -139,16 +183,13 @@
     const popover = await waitForPopover();
     if (!popover) {
       logPopoverDebugInfo();
-      alert(
-        'Popover with "Choose format" not found after clicking the icon. ' +
-        "Open DevTools (F12) → Console for a debug dump of what was actually on the page."
-      );
+      showToast('Popover with "Choose format" not found. See Console.', "error");
       return;
     }
 
     const copyBtn = findButtonByText(popover, /^copy$/i);
     if (!copyBtn) {
-      alert('"Copy" button not found in the export popover.');
+      showToast('"Copy" button not found in the export popover.', "error");
       return;
     }
 
@@ -159,12 +200,12 @@
     try {
       rawMd = await navigator.clipboard.readText();
     } catch (e) {
-      alert("Couldn't read clipboard — grant clipboard-read permission if Chrome prompts, then retry.");
+      showToast("Couldn't read clipboard. Grant clipboard-read permission if prompted.", "error");
       return;
     }
 
     if (!rawMd) {
-      alert("Clipboard was empty after clicking Copy.");
+      showToast("Clipboard was empty after clicking Copy.", "error");
       return;
     }
 
@@ -175,11 +216,7 @@
 
     const finalMd = wrapMarkdown(rawMd, window.location.href);
     GM_setClipboard(finalMd, "text");
-    GM_notification({
-      title: "Obsidian Export Ready",
-      text: "Thread Markdown copied to clipboard.",
-      timeout: 2000,
-    });
+    showToast("Thread Markdown copied to clipboard.", "success");
 
     await closePopover();
   }
