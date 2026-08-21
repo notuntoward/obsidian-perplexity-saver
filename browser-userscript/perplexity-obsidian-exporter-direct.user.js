@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.13
+// @version      8.15-debug
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -186,6 +186,7 @@
   }
 
   async function expandAllPrompts() {
+    console.log("[PPLX LOG] expandAllPrompts started");
     const MAX_ROUNDS = 6;
     const allClicked = new Set();
     const expandRegex = /show\s*(?:\d+\s*)?more|more\s*queries|show\s*queries|show\s*previous|view\s*more|read\s*more|expand/i;
@@ -351,6 +352,7 @@
   }
 
   function getThreadMessagesFromReact() {
+    console.log("[PPLX LOG] getThreadMessagesFromReact started");
     // --- Helper: check if an array looks like a thread messages list ---
     function isMessagesArray(arr) {
       if (!Array.isArray(arr) || arr.length === 0) return false;
@@ -1402,6 +1404,8 @@
   }
 
   async function copyText(text) {
+    console.log("[PPLX LOG] copyText started. Text length:", text ? text.length : 0);
+    try {
     // Fallback progress feedback: if the earlier click-detection on the
     // "Export as Markdown" menu item missed (e.g. the menu is rendered in
     // a shadow DOM or uses an unexpected structure), at least show the
@@ -1440,7 +1444,13 @@
       ? ` (turn(s) ${warnings.join(", ")} boundaries unresolved — used fallback split)`
       : "";
     showToast(`Copied to clipboard — safe to leave this page now${warningSuffix}`, "success");
+    console.log("[PPLX LOG] copyText finished successfully");
     return true;
+    } catch (e) {
+      console.error("[PPLX LOG] copyText FATAL ERROR:", e);
+      showToast("Fatal error during export. Check console.", "error");
+      return false;
+    }
   }
 
   function isExportDownload(href, download) {
@@ -1639,6 +1649,8 @@
           text.includes("export markdown") ||
           text.includes("download markdown")
         ) {
+          console.log("[PPLX LOG] User clicked Export menu item!");
+          
           showToast("Preparing export — please wait, don't leave this page yet...", "progress");
           break;
         }
