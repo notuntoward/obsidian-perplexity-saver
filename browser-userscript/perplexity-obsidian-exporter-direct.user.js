@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.11
+// @version      8.12
 // @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -407,6 +407,8 @@
       let fiberResult = null;
       let fibersScanned = 0;
 
+      const objVisited = new Set(); // Share visited objects across all hooks and fibers
+
       function scanHooks(fiber) {
         // Walk the hooks linked list on this fiber
         let hook = fiber.memoizedState;
@@ -418,22 +420,19 @@
           // object/array wrapping it.
           const val = hook.memoizedState;
           if (val && typeof val === "object") {
-            const visited = new Set();
-            const r = deepSearch(val, 0, visited);
+            const r = deepSearch(val, 0, objVisited);
             if (r) return r;
           }
           // Also check queue.lastRenderedState (useState/useReducer)
           if (hook.queue && hook.queue.lastRenderedState) {
-            const visited = new Set();
-            const r = deepSearch(hook.queue.lastRenderedState, 0, visited);
+            const r = deepSearch(hook.queue.lastRenderedState, 0, objVisited);
             if (r) return r;
           }
           hook = hook.next;
         }
         // For class components, check stateNode.state
         if (fiber.stateNode && typeof fiber.stateNode === "object" && fiber.stateNode.state) {
-          const visited = new Set();
-          const r = deepSearch(fiber.stateNode.state, 0, visited);
+          const r = deepSearch(fiber.stateNode.state, 0, objVisited);
           if (r) return r;
         }
         return null;
