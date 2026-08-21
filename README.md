@@ -23,6 +23,13 @@ flowchart TD
     K --> L
     end
 
+    %% Define the smaller font style
+    classDef smallFont font-size:13px;
+    class A,B,C,H,I,J,K,L smallFont;
+```
+
+```mermaid
+flowchart TD
     subgraph Literature Note Flow
     Zot["Zotero Companion<br/>Plugin"] -. "Push Lit Note (Port 27124)" .-> M["Lit Note Server<br/>(in Obsidian)"]
     M -.-> N["Obsidian Vault<br/>(Creates & Opens .md File)"]
@@ -30,7 +37,7 @@ flowchart TD
 
     %% Define the smaller font style
     classDef smallFont font-size:13px;
-    class A,B,C,H,I,J,K,L,M,N,Zot smallFont;
+    class M,N,Zot smallFont;
 ```
 
 ---
