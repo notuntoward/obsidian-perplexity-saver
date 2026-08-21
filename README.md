@@ -12,16 +12,24 @@ It also supports rich integration with Zotero 7/8/9 to automatically link your P
 
 ```mermaid
 flowchart TD
-    subgraph Import Flow
-    A["Ask Perplexity<br/>or Gemini"] --> B["Prepare clipboard via browser<br/>(Tampermonkey or Clipper)"]
-    B --> C["Press hotkey<br/>in Obsidian"]
-    C --> H["Note created in vault<br/>from clipboard, tagged + linked"]
-    H --> I{"Auto-Relinker Enabled?"}
-    I -->|Yes| J["Query Better BibTeX<br/>(Port 23119)"]
-    J --> K["Relink # Sources to<br/>Zotero items or Obsidian Lit Notes"]
-    I -->|No| L["Done"]
-    K --> L
+    %% Use subgraphs to create "rows" for a wrapping/snaking layout
+    subgraph Row1 ["Step 1: Save Note"]
+        direction LR
+        A["Ask Perplexity<br/>or Gemini"] --> B["Prepare clipboard via browser<br/>(Tampermonkey or Clipper)"]
+        B --> C["Press hotkey<br/>in Obsidian"]
+        C --> H["Note created in vault<br/>from clipboard, tagged + linked"]
     end
+
+    subgraph Row2 ["Step 2: Auto-Relink (Optional)"]
+        direction LR
+        I{"Auto-Relinker Enabled?"} -->|Yes| J["Query Better BibTeX<br/>(Port 23119)"]
+        J --> K["Relink # Sources to<br/>Zotero items or Obsidian Lit Notes"]
+        I -->|No| L["Done"]
+        K --> L
+    end
+
+    %% Connect the end of Row 1 to the start of Row 2
+    H --> I
 
     %% Define the smaller font style
     classDef smallFont font-size:13px;
