@@ -150,48 +150,6 @@
     }
   }
 
-  function dismissNativeToasts() {
-    const hideElement = (el) => {
-      if (!el) return;
-      try {
-        if (el.style) {
-          if (typeof el.style.setProperty === "function") {
-            el.style.setProperty("display", "none", "important");
-            el.style.setProperty("opacity", "0", "important");
-            el.style.setProperty("visibility", "hidden", "important");
-            el.style.setProperty("pointer-events", "none", "important");
-          }
-          el.style.display = "none";
-        }
-      } catch (_) {}
-    };
-
-    const performSuppression = () => {
-      try {
-        const toastContainers = document.querySelectorAll(
-          "[data-sonner-toast], [data-radix-toast], [role='status'], [role='alert'], [role='region'], .toast, .notification, [class*='toast'], [class*='Toast'], [class*='notification'], [class*='Notification']"
-        );
-        for (const container of toastContainers) {
-          if (!container || container.id === "pplx-clip-toast") continue;
-          const text = (container.textContent || "").toLowerCase();
-          if (text.length > 200) continue;
-          
-          if (text.includes("copied") || text.includes("copy") || text.includes("export")) {
-            const card = (typeof container.closest === "function" && container.closest("li, div[class*='fixed'], div[class*='absolute']")) || container;
-            if (card !== document.body && card.id !== "__next") {
-              hideElement(card);
-            }
-            hideElement(container);
-          }
-        }
-      } catch (_) {}
-    };
-
-    performSuppression();
-    const interval = setInterval(performSuppression, 50);
-    setTimeout(() => clearInterval(interval), 3000);
-  }
-
   // Complexity's export menu is a Zag.js/Ark-UI style popover
   // (data-scope="popover"). Those components close on a real Escape
   // keypress or an outside pointerdown, not on a synthetic click(). Using
@@ -236,7 +194,6 @@
     }
 
     copyBtn.click();
-    dismissNativeToasts();
     await new Promise((r) => setTimeout(r, 300));
 
     let rawMd = null;
@@ -258,7 +215,11 @@
     );
 
     const finalMd = wrapMarkdown(rawMd, window.location.href);
-    GM_setClipboard(finalMd, "text");
+    try {
+      await navigator.clipboard.writeText(finalMd);
+    } catch (err) {
+      GM_setClipboard(finalMd, "text");
+    }
     showToast("Thread Markdown copied to clipboard.", "success");
 
     await closePopover();
