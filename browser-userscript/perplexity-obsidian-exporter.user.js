@@ -158,6 +158,37 @@
   // a stray empty box and makes the trigger stop working until a full page
   // reload. Dispatch a real Escape keydown instead so the component's own
   // dismiss logic runs.
+  let toastSuppressionStyle = null;
+
+  function suppressNativeToasts() {
+    if (!toastSuppressionStyle) {
+      toastSuppressionStyle = document.createElement("style");
+      toastSuppressionStyle.textContent = `
+        [data-radix-toast-viewport],
+        [data-sonner-toaster],
+        .toast, .notification, [class*='toast'], [class*='Toast'] {
+          display: none !important;
+          opacity: 0 !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+        }
+        #pplx-clip-toast {
+          display: flex !important;
+          opacity: 1 !important;
+          visibility: visible !important;
+        }
+      `;
+      document.documentElement.appendChild(toastSuppressionStyle);
+    }
+  }
+
+  function restoreNativeToasts() {
+    if (toastSuppressionStyle) {
+      toastSuppressionStyle.remove();
+      toastSuppressionStyle = null;
+    }
+  }
+
   async function closePopover() {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
     await new Promise((r) => setTimeout(r, 100));
@@ -172,6 +203,7 @@
     }
 
     showToast("Preparing export...", "progress");
+    suppressNativeToasts();
 
     const trigger = findExportTrigger();
     if (!trigger) {
@@ -223,6 +255,7 @@
     showToast("Thread Markdown copied to clipboard.", "success");
 
     await closePopover();
+    restoreNativeToasts();
   }
 
   function applyNativeThemeStyles(btn) {
