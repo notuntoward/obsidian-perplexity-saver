@@ -48,16 +48,17 @@ const SOURCES_HEADING_RE =
 export function parseGeminiDialog(rawText: string): DialogFile {
 	const normalized = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 	const sourceUrl = extractGeminiSourceUrl(normalized);
+	const sourceMetadata = extractGeminiSourceMetadata(normalized);
 
 	if (NATIVE_PROMPT_MARKER_RE.test(normalized) && NATIVE_AI_MARKER_RE.test(normalized)) {
-		return { sourceVendor: "gemini", sourceUrl, turns: parseNativeFormat(normalized) };
+		return { sourceVendor: "gemini", sourceUrl, sourceMetadata, turns: parseNativeFormat(normalized) };
 	}
 
 	if (NATIVE_PROMPT_MARKER_RE.test(normalized) && LEGACY_AI_BOLD_MARKER_RE.test(normalized)) {
-		return { sourceVendor: "gemini", sourceUrl, turns: parseMixedFormat(normalized) };
+		return { sourceVendor: "gemini", sourceUrl, sourceMetadata, turns: parseMixedFormat(normalized) };
 	}
 
-	return { sourceVendor: "gemini", sourceUrl, turns: parseLegacyBoldMarkerFormat(normalized) };
+	return { sourceVendor: "gemini", sourceUrl, sourceMetadata, turns: parseLegacyBoldMarkerFormat(normalized) };
 }
 
 /**
@@ -66,8 +67,13 @@ export function parseGeminiDialog(rawText: string): DialogFile {
  * to build a clickable "source" link in the note's frontmatter.
  */
 function extractGeminiSourceUrl(text: string): string | undefined {
-	const m = text.match(/^\[Gemini\]\((https?:\/\/gemini\.google\.com\/[^)]+)\)/m);
+	const m = text.match(/\[Gemini\]\((https?:\/\/gemini\.google\.com\/[^)]+)\)/);
 	return m ? m[1] : undefined;
+}
+
+function extractGeminiSourceMetadata(text: string): string | undefined {
+	const m = text.match(/\[Gemini\]\(https?:\/\/gemini\.google\.com\/[^)]+\)\s+(.*)$/m);
+	return m ? m[1].trim() : undefined;
 }
 
 /**

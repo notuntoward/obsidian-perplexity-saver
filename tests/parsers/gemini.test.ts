@@ -186,4 +186,20 @@ world`;
 		const dialog = parseGeminiDialog("plain text with no gemini metadata");
 		expect(dialog.sourceUrl).toBeUndefined();
 	});
+
+	it("extracts source URL and metadata even with leading whitespace or newlines", () => {
+		const dialog = parseGeminiDialog(
+			"\n\n  [Gemini](https://gemini.google.com/app/abc) 2026-07-27 16:02:05 (-07:00)\n\nYou said"
+		);
+		expect(dialog.sourceUrl).toBe("https://gemini.google.com/app/abc");
+		expect(dialog.sourceMetadata).toBe("2026-07-27 16:02:05 (-07:00)");
+	});
+
+	it("extracts source URL when the metadata line is entirely surrounded by whitespace", () => {
+		const dialog = parseGeminiDialog(
+			"   [Gemini](https://gemini.google.com/app/def)   2026-07-27 16:02:05 (-07:00)   \n\nYou said"
+		);
+		expect(dialog.sourceUrl).toBe("https://gemini.google.com/app/def");
+		expect(dialog.sourceMetadata).toBe("2026-07-27 16:02:05 (-07:00)");
+	});
 });

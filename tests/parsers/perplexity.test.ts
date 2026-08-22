@@ -298,6 +298,22 @@ Yes, you can.[1]
 		);
 		expect(dialog.sourceUrl).toBe("https://perplexity.ai/search/x");
 	});
+
+	it("extracts source URL and metadata even with leading whitespace or newlines", () => {
+		const dialog = parsePerplexityDialog(
+			"\n\n  [Perplexity](https://www.perplexity.ai/search/123) · *2026-07-27 10:18 PDT*\n# Question"
+		);
+		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/123");
+		expect(dialog.sourceMetadata).toBe("2026-07-27 10:18 PDT");
+	});
+
+	it("extracts source URL when the metadata line is entirely surrounded by whitespace", () => {
+		const dialog = parsePerplexityDialog(
+			"   [Perplexity](https://www.perplexity.ai/search/456)   · *Some time*   \n\n# Question"
+		);
+		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/456");
+		expect(dialog.sourceMetadata).toBe("Some time");
+	});
 });
 
 describe("parsePerplexityDialog — question-only export (no AI response text)", () => {

@@ -130,7 +130,7 @@ describe("inline source link", () => {
 			`[Gemini](https://gemini.google.com/app/g-1) 2026-07-27 16:02:05 (-07:00)\n\nYou said\n\nhello\n\n## Gemini said\n\nworld`
 		);
 		const { body } = buildNoteBody(dialog);
-		expect(body).toContain("**Source:** [gemini](https://gemini.google.com/app/g-1)");
+		expect(body).toContain("[Gemini](https://gemini.google.com/app/g-1) · *2026-07-27 16:02:05 (-07:00)*");
 	});
 
 	it("omits the source link when no sourceUrl is present on the dialog", () => {

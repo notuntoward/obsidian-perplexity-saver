@@ -256,10 +256,15 @@
     );
 
     const finalMd = wrapMarkdown(rawMd, window.location.href);
-    try {
+    if (typeof GM_setClipboard !== "undefined") {
+      try {
+        GM_setClipboard(finalMd, "text");
+      } catch (err) {
+        console.warn("[PPLX Obsidian Exporter] GM_setClipboard failed, falling back:", err);
+        await navigator.clipboard.writeText(finalMd);
+      }
+    } else {
       await navigator.clipboard.writeText(finalMd);
-    } catch (err) {
-      GM_setClipboard(finalMd, "text");
     }
     showToast("Thread Markdown copied to clipboard.", "success");
 
