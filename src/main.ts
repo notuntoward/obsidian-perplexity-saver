@@ -4,7 +4,7 @@ import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/v
 import http from "http";
 import { createPerplexityNote } from "./note-creator";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
-import { registerSyncCommand } from "./commands/sync";
+import { registerSyncCommand, registerSyncViaLinkCommand } from "./commands/sync";
 import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
@@ -145,6 +145,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		});
 
 		registerSyncCommand(this);
+		registerSyncViaLinkCommand(this);
 		registerDeleteTurnCommand(this);
 		registerRemoveSourcesWithNoCiteCommand(this);
 		registerRemoveSourcesWithNoDialogCommand(this);

@@ -39,7 +39,7 @@ describe("syncDialogFromClipboard", () => {
 
 		const result = await syncDialogFromClipboard(mockApp, mockFile, HEADLINE_OPTIONS);
 		expect(result.success).toBe(false);
-		expect(result.error).toContain("Import AI dialog from clipboard");
+		expect(result.error).toContain("missing ^turn-N-* anchors");
 		expect(mockApp.vault.modify).not.toHaveBeenCalled();
 	});
 

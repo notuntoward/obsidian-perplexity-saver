@@ -56,7 +56,7 @@ export async function syncDialogFromClipboard(
 		return {
 			success: false,
 			error:
-				"This note has no ^turn-N-* anchors. Use 'Import AI dialog from clipboard' on a new note instead.",
+				"This note is not a valid AI dialog (missing ^turn-N-* anchors)",
 		};
 	}
 
@@ -258,3 +258,123 @@ export function registerSyncCommand(
 
 // Also export registerAppendCommand as an alias to registerSyncCommand for compatibility
 export const registerAppendCommand = registerSyncCommand;
+
+/**
+ * Finds the wikilink or embed under the editor cursor in `sourceFile` and
+ * resolves it to the TFile it points to, using Obsidian's own metadata
+ * cache (the same mechanism Obsidian's core "Follow link under cursor"
+ * command uses). Returns null if there is no link at the cursor, or if the
+ * link cannot be resolved to an existing file.
+ */
+function resolveLinkAtCursor(app: App, sourceFile: TFile, editor: Editor): TFile | null {
+	const cursor = editor.getCursor();
+	const cache = app.metadataCache.getFileCache(sourceFile);
+	const candidates = [...(cache?.links ?? []), ...(cache?.embeds ?? [])];
+
+	const hit = candidates.find(({ position }) => {
+		const { start, end } = position;
+		const afterStart =
+			cursor.line > start.line || (cursor.line === start.line && cursor.ch >= start.col);
+		const beforeEnd =
+			cursor.line < end.line || (cursor.line === end.line && cursor.ch <= end.col);
+		return afterStart && beforeEnd;
+	});
+
+	if (!hit) return null;
+
+	const dest = app.metadataCache.getFirstLinkpathDest(hit.link, sourceFile.path);
+	return dest ?? null;
+}
+
+/**
+ * Registers "Sync AI dialog from clipboard (linked note at cursor)".
+ *
+ * Unlike registerSyncCommand (which syncs into the active file), this
+ * resolves the wikilink/embed under the cursor in the active file and syncs
+ * into THAT target file instead. This lets the user run the sync from a
+ * referencing note without first navigating into the dialog note.
+ *
+ * Reuses syncDialogFromClipboard() unchanged — this is purely a different
+ * way of choosing which file to pass to it.
+ */
+export function registerSyncViaLinkCommand(
+	plugin: {
+		app: App;
+		addCommand: (cmd: unknown) => unknown;
+		headlineOptions: () => HeadlineOptions;
+		settings: {
+			autoFetchSourceTitles: boolean;
+			sourceTitleMaxChars: number;
+			autoRelinkSources: boolean;
+			zoteroPort: number;
+			litNotesFolder: string;
+			minTitleMatchScore: number;
+			collapseBlankLines: boolean;
+			collapsePromptCallouts: boolean;
+		};
+		zoteroClient?: any;
+	}
+): void {
+	plugin.addCommand({
+		id: "sync-ai-dialog-from-clipboard-via-link",
+		name: "Sync linked AI dialog from clipboard",
+		editorCallback: async (editor: Editor, view: MarkdownView) => {
+			const sourceFile = view.file;
+			if (!sourceFile) {
+				new Notice("No active file.");
+				return;
+			}
+
+			const target = resolveLinkAtCursor(plugin.app, sourceFile, editor);
+			if (!target) {
+				new Notice("Place the cursor on a link to an AI dialog note, then run this command.");
+				return;
+			}
+
+			const progressNotice = plugin.settings.autoRelinkSources
+				? new Notice("Syncing...", 0)
+				: undefined;
+
+			try {
+				const result = await syncDialogFromClipboard(
+					plugin.app,
+					target,
+					plugin.headlineOptions(),
+					plugin.settings.autoFetchSourceTitles,
+					plugin.settings.sourceTitleMaxChars,
+					{
+						autoRelinkSources: plugin.settings.autoRelinkSources,
+						zoteroPort: plugin.settings.zoteroPort,
+						litNotesFolder: plugin.settings.litNotesFolder,
+						minTitleMatchScore: plugin.settings.minTitleMatchScore,
+						zoteroClient: plugin.zoteroClient,
+						onProgress: (msg: string) => progressNotice?.setMessage(msg),
+						collapseBlankLines: plugin.settings.collapseBlankLines,
+						collapsePromptCallouts: plugin.settings.collapsePromptCallouts,
+					}
+				);
+
+				if (!result.success) {
+					const errorMsg = result.error?.includes("missing ^turn-N-* anchors")
+						? "Can't sync: this link doesn't go to an AI dialog (no ^turn-N-* anchors)"
+						: (result.error ?? "Sync failed.");
+					new Notice(errorMsg);
+					return;
+				}
+
+				if (result.nothingNew) {
+					new Notice(`Nothing new to sync into AI dialog ${target.basename}.`);
+					return;
+				}
+
+				new Notice(
+					`Synced ${result.turnsSynced} turn(s) into AI dialog ${target.basename}` +
+						(result.newSources ? ` and ${result.newSources} new source(s)` : "") +
+						"."
+				);
+			} finally {
+				progressNotice?.hide();
+			}
+		},
+	});
+}
