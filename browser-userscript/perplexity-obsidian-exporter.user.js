@@ -166,7 +166,12 @@
       toastSuppressionStyle.textContent = `
         [data-radix-toast-viewport],
         [data-sonner-toaster],
-        .toast, .notification, [class*='toast'], [class*='Toast'] {
+        [role="region"][aria-label*="Notification" i],
+        [role="region"][aria-label*="toast" i],
+        .toast, .notification, [class*='toast'], [class*='Toast'],
+        body > ol[class*="x:fixed"],
+        body > div[class*="x:fixed"] > ol,
+        body > ol[class*="x:z-100"] {
           display: none !important;
           opacity: 0 !important;
           visibility: hidden !important;
@@ -184,8 +189,12 @@
 
   function restoreNativeToasts() {
     if (toastSuppressionStyle) {
-      toastSuppressionStyle.remove();
-      toastSuppressionStyle = null;
+      setTimeout(() => {
+        if (toastSuppressionStyle) {
+          toastSuppressionStyle.remove();
+          toastSuppressionStyle = null;
+        }
+      }, 3000);
     }
   }
 
