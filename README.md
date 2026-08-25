@@ -58,7 +58,7 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 
 ### Prerequisites & Dependencies
 - **Zotero 7/8/9** running locally.
-- **[Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion)**: The companion plugin installed in Zotero 7/8/9. (This provides the "Create Lit Note" button in Zotero).
+- **[Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion)**: The companion plugin installed in Zotero 7/8/9. (This provides the "Create Lit Note" command, among others, in Zotero).
 - **Zotero Local API enabled**: Check `Zotero -> Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero`.
 - **Better BibTeX** (optional, highly recommended): Provides reliable citekeys.
 
