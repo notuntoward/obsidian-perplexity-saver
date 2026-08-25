@@ -1,5 +1,6 @@
 import { App } from "obsidian";
 import { ZoteroClient } from "./zoteroClient";
+import { autoRelinkSourcesInNote } from "./relinker";
 
 /**
  * Settings that control automatic Zotero / literature-note relinking.
@@ -50,6 +51,6 @@ export async function maybeAutoRelinkSources(
 	if (!settings.autoRelinkSources) {
 		return noteText;
 	}
-	const { autoRelinkSourcesInNote } = await import("./relinker");
 	return autoRelinkSourcesInNote(app, noteText, settings, zoteroClient, onProgress);
 }
+

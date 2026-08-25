@@ -52,7 +52,7 @@ export function normalizeString(str: string): string {
 	]);
 	const cleaned = cleanedStr
 		.toLowerCase()
-		.replace(/[^a-z0-9\s]/g, "")
+		.replace(/[^a-z0-9]/g, " ")
 		.split(/\s+/)
 		.filter((word) => word && !commonWords.has(word));
 

@@ -100,6 +100,19 @@ describe("matcher - matchTitles", () => {
 		expect(score).toBeLessThan(50);
 	});
 
+	it("matches hyphenated titles against space-separated titles", () => {
+		const score = matchTitles(
+			"KAN: Kolmogorov-Arnold Networks",
+			"KAN: Kolmogorov–Arnold Networks"
+		);
+		expect(score).toBe(100);
+
+		const score2 = matchTitles(
+			"Kolmogorov-Arnold Networks",
+			"Kolmogorov Arnold Networks"
+		);
+		expect(score2).toBe(100);
+	});
 });
 
 describe("matcher - findLitNoteForCitekey", () => {

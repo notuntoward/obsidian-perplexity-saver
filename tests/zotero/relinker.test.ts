@@ -205,7 +205,7 @@ Climate change is real[^1_1].
 
 			// Advance past the auto-relink timeout guard; without it this
 			// would hang the test (and, in the plugin, the user's save).
-			await vi.advanceTimersByTimeAsync(3100);
+			await vi.advanceTimersByTimeAsync(10100);
 
 			const result = await resultPromise;
 			expect(result).toBe(SAMPLE_NOTE);

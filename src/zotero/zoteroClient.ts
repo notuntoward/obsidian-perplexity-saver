@@ -20,7 +20,7 @@ export interface ZoteroItemData {
  */
 function nodeRequest(
 	urlStr: string,
-	options: { method?: string; headers?: Record<string, string>; body?: string } = {}
+	options: { method?: string; headers?: Record<string, string>; body?: string; timeoutMs?: number } = {}
 ): Promise<{ status: number; headers: Record<string, string>; text: string }> {
 	return new Promise((resolve, reject) => {
 		try {
@@ -52,8 +52,9 @@ function nodeRequest(
 					});
 				}
 			);
-			req.setTimeout(10000, () => {
-				req.destroy(new Error("Connection timeout"));
+			const timeout = options.timeoutMs ?? 6000;
+			req.setTimeout(timeout, () => {
+				req.destroy(new Error(`Connection timeout after ${timeout}ms`));
 			});
 			req.on("error", (err) => reject(err));
 			if (options.body) {
@@ -106,7 +107,7 @@ export class ZoteroClient {
 		return Date.now() - this.lastFetchTime < ttlMs;
 	}
 
-	private async postJson(endpointPath: string, payload: any): Promise<any> {
+	private async postJson(endpointPath: string, payload: any, timeoutMs = 3000): Promise<any> {
 		const hostsToTry = [this.host, "127.0.0.1", "localhost"];
 		const uniqueHosts = [...new Set(hostsToTry)];
 		const jsonString = JSON.stringify(payload);
@@ -125,6 +126,7 @@ export class ZoteroClient {
 							"Content-Length": String(Buffer.byteLength(jsonString)),
 						},
 						body: jsonString,
+						timeoutMs,
 					});
 					if (res.status >= 200 && res.status < 300 && res.text) {
 						return JSON.parse(res.text);
@@ -173,7 +175,8 @@ export class ZoteroClient {
 	}
 
 	private async fetchJsonWithHeaders(
-		endpointPath: string
+		endpointPath: string,
+		timeoutMs = 6000
 	): Promise<{ data: any; headers: Record<string, string> }> {
 		const hostsToTry = [this.host, "127.0.0.1", "localhost"];
 		const uniqueHosts = [...new Set(hostsToTry)];
@@ -185,7 +188,7 @@ export class ZoteroClient {
 			// 1. Try Node's native http module first in live runtime
 			if (typeof process === "undefined" || !process.env?.VITEST) {
 				try {
-					const res = await nodeRequest(url, { method: "GET" });
+					const res = await nodeRequest(url, { method: "GET", timeoutMs });
 					if (res.status >= 200 && res.status < 300 && res.text) {
 						return { data: JSON.parse(res.text), headers: res.headers };
 					}
@@ -228,17 +231,17 @@ export class ZoteroClient {
 		throw lastError || new Error("Failed to connect to local Zotero HTTP API.");
 	}
 
-	private async fetchJson(endpointPath: string): Promise<any> {
-		const res = await this.fetchJsonWithHeaders(endpointPath);
+	private async fetchJson(endpointPath: string, timeoutMs = 6000): Promise<any> {
+		const res = await this.fetchJsonWithHeaders(endpointPath, timeoutMs);
 		return res.data;
 	}
 
 	/**
-	 * Query Zotero's Last-Modified-Version header via a 2ms lightweight check.
+	 * Query Zotero's Last-Modified-Version header via a lightweight check.
 	 */
 	async getLibraryVersion(): Promise<number | null> {
 		try {
-			const res = await this.fetchJsonWithHeaders("/api/users/0/items?v=3&format=json&limit=1");
+			const res = await this.fetchJsonWithHeaders("/api/users/0/items?v=3&format=json&limit=1", 2500);
 			const verStr = res.headers["last-modified-version"];
 			if (verStr) {
 				const ver = parseInt(verStr, 10);
@@ -250,16 +253,23 @@ export class ZoteroClient {
 		return null;
 	}
 
-	private async getBbtCitekeyMap(zotkeys: string[]): Promise<Map<string, string>> {
+	/**
+	 * Resolves citekeys in batch using Better BibTeX RPC for any items missing a citekey.
+	 */
+	private async resolveBbtCitekeys(zotkeys: string[]): Promise<Map<string, string>> {
 		const keyToCitekey = new Map<string, string>();
 		if (!zotkeys || zotkeys.length === 0) return keyToCitekey;
 
 		try {
-			const res = await this.postJson("/better-bibtex/json-rpc", {
-				jsonrpc: "2.0",
-				method: "item.citationkey",
-				params: [zotkeys],
-			});
+			const res = await this.postJson(
+				"/better-bibtex/json-rpc",
+				{
+					jsonrpc: "2.0",
+					method: "item.citationkey",
+					params: [zotkeys],
+				},
+				2000
+			);
 			const obj = res?.result;
 			if (obj && typeof obj === "object") {
 				for (const [k, v] of Object.entries(obj)) {
@@ -269,49 +279,13 @@ export class ZoteroClient {
 				}
 			}
 		} catch {
-			// Ignore if item.citationkey is unsupported
-		}
-		return keyToCitekey;
-	}
-
-	private async getNativeCitekeyMap(): Promise<Map<string, string>> {
-		const keyToCitekey = new Map<string, string>();
-		try {
-			let start = 0;
-			const limit = 500;
-			while (start < 10000) {
-				const rawData = await this.fetchJson(
-					`/api/users/0/items?v=3&format=json&limit=${limit}&start=${start}`
-				);
-				if (!Array.isArray(rawData) || rawData.length === 0) break;
-
-				for (const rawItem of rawData) {
-					const itemData = rawItem.data || rawItem;
-					const zotkey = rawItem.key || itemData.key;
-					if (!zotkey) continue;
-					const citekey =
-						rawItem.citationKey ||
-						itemData.citationKey ||
-						itemData.citekey ||
-						itemData["citation-key"] ||
-						itemData.citation_key ||
-						extractCitekeyFromExtra(itemData.extra);
-					if (citekey) {
-						keyToCitekey.set(zotkey, citekey);
-					}
-				}
-				if (rawData.length < limit) break;
-				start += rawData.length;
-			}
-		} catch {
-			// Fail quietly if native API citekey map query is unavailable
+			// Fail gracefully if BBT RPC is not installed or enabled
 		}
 		return keyToCitekey;
 	}
 
 	/**
-	 * Fetch top-level items from local Zotero (via Better BibTeX JSON-RPC or standard local API).
-	 * Uses Zotero's Last-Modified-Version header for 100% reliable smart cache validation.
+	 * Fetch top-level items from local Zotero using fast parallel pagination and smart version caching.
 	 */
 	async getItems(options: boolean | GetItemsOptions = {}): Promise<ZoteroItemData[]> {
 		const opts: GetItemsOptions =
@@ -320,7 +294,7 @@ export class ZoteroClient {
 		const ttlMs = opts.ttlMs ?? 10 * 60 * 1000;
 		const forceRefresh = opts.forceRefresh ?? false;
 
-		// 1. Smart Version Validation (2ms header check)
+		// 1. Smart Version Validation (<50ms header check)
 		if (!forceRefresh && this.cachedItems && this.lastLibraryVersion !== null) {
 			opts.onProgress?.("Checking Zotero library version...");
 			const currentVersion = await this.getLibraryVersion();
@@ -344,113 +318,44 @@ export class ZoteroClient {
 
 		opts.onProgress?.(`Connecting to Zotero API (port ${this.port})...`);
 
+		// 2. Fetch top-level items using fast paginated native API
+		const pageSize = 100;
+		const initialRes = await this.fetchJsonWithHeaders(
+			`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=0`
+		);
+		const totalResults = parseInt(initialRes.headers["total-results"] || "0", 10);
+		const initialData = Array.isArray(initialRes.data) ? initialRes.data : [];
+
+		const allRawItems: any[] = [...initialData];
+
+		if (totalResults > pageSize) {
+			opts.onProgress?.(`Loading Zotero items (0/${totalResults})...`);
+			const pagePromises: Promise<any[]>[] = [];
+			for (let start = pageSize; start < totalResults; start += pageSize) {
+				pagePromises.push(
+					this.fetchJson(`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=${start}`)
+						.then((pageData) => (Array.isArray(pageData) ? pageData : []))
+						.catch((err) => {
+							console.warn(`Failed to fetch Zotero items page at start=${start}:`, err);
+							return [];
+						})
+				);
+			}
+
+			const pages = await Promise.all(pagePromises);
+			for (const page of pages) {
+				allRawItems.push(...page);
+			}
+		}
+
 		const items: ZoteroItemData[] = [];
 		this.urlMap.clear();
+		const missingCitekeyZotkeys: string[] = [];
 
-		// Query native API citekey map to ensure all items have their true BibTeX citekeys
-		const nativeCitekeyMap = await this.getNativeCitekeyMap();
-
-		// Primary Method: Query Better BibTeX JSON-RPC API (supported in Zotero 7/8/9)
-		try {
-			opts.onProgress?.("Fetching Zotero library items via Better BibTeX...");
-			let rpcResult = await this.postJson("/better-bibtex/json-rpc", {
-				jsonrpc: "2.0",
-				method: "item.search",
-				params: ["e"],
-			});
-
-			if (!rpcResult?.result || rpcResult.result.length === 0) {
-				rpcResult = await this.postJson("/better-bibtex/json-rpc", {
-					jsonrpc: "2.0",
-					method: "item.search",
-					params: [""],
-				});
-			}
-
-			const rpcItems = rpcResult?.result;
-			if (Array.isArray(rpcItems) && rpcItems.length > 0) {
-				const rpcZotkeys: string[] = [];
-				for (const item of rpcItems) {
-					let zotkey = item.key || item.zotkey;
-					if (!zotkey && typeof item.id === "string") {
-						const keyMatch = /\/items\/([A-Za-z0-9]+)/.exec(item.id);
-						if (keyMatch) zotkey = keyMatch[1];
-					}
-					if (zotkey) rpcZotkeys.push(zotkey);
-				}
-
-				const bbtCitekeyMap = await this.getBbtCitekeyMap(rpcZotkeys);
-
-				for (const item of rpcItems) {
-					// Extract zotkey from "http://zotero.org/users/.../items/KEY" or item.key/zotkey
-					let zotkey = item.key || item.zotkey;
-					if (!zotkey && typeof item.id === "string") {
-						const keyMatch = /\/items\/([A-Za-z0-9]+)/.exec(item.id);
-						if (keyMatch) zotkey = keyMatch[1];
-					}
-					const title = item.title || item.shortTitle || "";
-					if (!zotkey || !title) continue;
-
-					const citekey =
-						item.citekey ||
-						item["citation-key"] ||
-						item.citationKey ||
-						bbtCitekeyMap.get(zotkey) ||
-						nativeCitekeyMap.get(zotkey) ||
-						extractCitekeyFromExtra(item.extra) ||
-						zotkey;
-					const itemUrl = item.URL || item.url ? String(item.URL || item.url).trim() : undefined;
-					const normUrl = itemUrl ? normalizeUrl(itemUrl) : undefined;
-
-					const zotItem: ZoteroItemData = {
-						zotkey,
-						citekey,
-						title,
-						url: itemUrl,
-						normalizedUrl: normUrl,
-					};
-
-					items.push(zotItem);
-					if (normUrl && !this.urlMap.has(normUrl)) {
-						this.urlMap.set(normUrl, zotItem);
-					}
-				}
-
-				opts.onProgress?.(`Loaded ${items.length} Zotero items. Matching sources...`);
-				this.cachedItems = items;
-				this.lastFetchTime = Date.now();
-				try {
-					this.lastLibraryVersion = await this.getLibraryVersion();
-				} catch {
-					// Ignore version header check failure
-				}
-				return items;
-			}
-		} catch (rpcErr) {
-			console.debug("Better BibTeX RPC search failed or unavailable, falling back to standard local API:", rpcErr);
-		}
-
-		// Fallback Method: Query standard local API endpoints
-		let rawData: any[] = [];
-		try {
-			rawData = await this.fetchJson("/api/users/0/items?v=3&format=json");
-		} catch (err) {
-			try {
-				rawData = await this.fetchJson("/api/users/0/items/top?v=3&format=json");
-			} catch {
-				throw err;
-			}
-		}
-
-		if (!Array.isArray(rawData)) {
-			this.cachedItems = [];
-			return [];
-		}
-
-		for (const rawItem of rawData) {
+		for (const rawItem of allRawItems) {
 			const itemData = rawItem.data || rawItem;
 			const zotkey = rawItem.key || itemData.key;
-			const title = itemData.title || itemData.shortTitle || itemData.caseName || "";
+			const title = itemData.title || itemData.shortTitle || itemData.caseName || itemData.name || "";
 			if (!title || !zotkey) continue;
 
 			const citekey =
@@ -459,22 +364,45 @@ export class ZoteroClient {
 				itemData.citekey ||
 				itemData["citation-key"] ||
 				itemData.citation_key ||
-				extractCitekeyFromExtra(itemData.extra) ||
-				zotkey;
+				extractCitekeyFromExtra(itemData.extra);
+
+			if (!citekey) {
+				missingCitekeyZotkeys.push(zotkey);
+			}
+
 			const itemUrl = itemData.url ? String(itemData.url).trim() : undefined;
 			const normUrl = itemUrl ? normalizeUrl(itemUrl) : undefined;
 
 			const zotItem: ZoteroItemData = {
 				zotkey,
-				citekey,
+				citekey: citekey || zotkey,
 				title,
 				url: itemUrl,
 				normalizedUrl: normUrl,
+				dateModified: itemData.dateModified,
+				version: itemData.version,
 			};
 
 			items.push(zotItem);
 			if (normUrl && !this.urlMap.has(normUrl)) {
 				this.urlMap.set(normUrl, zotItem);
+			}
+		}
+
+		// 3. For any items still lacking a citekey, query Better BibTeX in a single targeted batch
+		if (missingCitekeyZotkeys.length > 0) {
+			try {
+				const bbtMap = await this.resolveBbtCitekeys(missingCitekeyZotkeys);
+				if (bbtMap.size > 0) {
+					for (const item of items) {
+						const resolved = bbtMap.get(item.zotkey);
+						if (resolved) {
+							item.citekey = resolved;
+						}
+					}
+				}
+			} catch {
+				// Continue with fallback keys
 			}
 		}
 
@@ -484,8 +412,9 @@ export class ZoteroClient {
 		try {
 			this.lastLibraryVersion = await this.getLibraryVersion();
 		} catch {
-			// Ignore version header check failure
+			// Version check failure
 		}
+
 		return items;
 	}
 

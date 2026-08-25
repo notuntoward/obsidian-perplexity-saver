@@ -153,6 +153,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerRelinkSourcesCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
+
+		// Pre-warm Zotero library cache in background so auto-relink is instant on first import
+		if (this.settings.autoRelinkSources) {
+			window.setTimeout(() => {
+				this.zoteroClient.getItems().catch((err) => {
+					console.debug("Background Zotero cache warming skipped:", err);
+				});
+			}, 1000);
+		}
 	}
 
 	onunload(): void {

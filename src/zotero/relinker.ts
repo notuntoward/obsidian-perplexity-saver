@@ -34,7 +34,7 @@ export interface RelinkResult {
  * for next time) while the note is saved immediately, unlinked. The user can
  * always run "Relink sources with Zotero" manually afterward.
  */
-const AUTO_RELINK_TIMEOUT_MS = 3000;
+const AUTO_RELINK_TIMEOUT_MS = 10000;
 const AUTO_RELINK_TIMEOUT_SENTINEL = "__perplexity_saver_auto_relink_timeout__";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -97,11 +97,12 @@ export async function autoRelinkSourcesInNote(
 		if (err?.message === AUTO_RELINK_TIMEOUT_SENTINEL) {
 			console.warn(`Auto-relinking timed out after ${AUTO_RELINK_TIMEOUT_MS}ms; saving note unlinked.`);
 			new Notice(
-				`Zotero didn't respond within ${AUTO_RELINK_TIMEOUT_MS / 1000}s — saved without relinking. Run "Relink sources with Zotero" later if needed.`
+				`Zotero didn't respond within ${AUTO_RELINK_TIMEOUT_MS / 1000}s — saved without relinking. Run "Relink sources with Zotero" later if needed.`,
+				19000
 			);
 		} else {
 			console.warn("Auto-relinking failed:", err);
-			new Notice("Auto-relinking with Zotero failed: Zotero may not be running.");
+			new Notice("Auto-relinking with Zotero failed: Zotero may not be running.", 19000);
 		}
 		return noteText;
 	}
