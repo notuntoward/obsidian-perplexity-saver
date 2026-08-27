@@ -1328,5 +1328,48 @@ describe("Userscript Exporter progress prompt suppression", () => {
     // Negative case: other extension like .pdf and normal HTTPS url
     expect(isExportDownload("https://www.perplexity.ai/abc-123.pdf", "file.pdf")).toBe(false);
   });
+
+  describe("userscript wrapMarkdown and export text detection", () => {
+    const userscriptPath = path.resolve(__dirname, "../../browser-userscript/perplexity-obsidian-exporter.user.js");
+    const scriptContent = fs.readFileSync(userscriptPath, "utf8");
+
+    function getScriptHelper(fnName: string) {
+      const match = scriptContent.match(new RegExp(`function\\s+${fnName}\\s*\\([\\s\\S]*?\\n  \\}`, "m"));
+      if (!match) throw new Error(`Could not find ${fnName} in userscript`);
+      return match[0];
+    }
+
+    const wrapMarkdownSrc = getScriptHelper("wrapMarkdown");
+    const formatTimestampSrc = getScriptHelper("formatTimestamp");
+    const isPerplexityExportTextSrc = getScriptHelper("isPerplexityExportText");
+
+    const sandbox = new Function(`
+      ${formatTimestampSrc}
+      ${wrapMarkdownSrc}
+      ${isPerplexityExportTextSrc}
+      return { wrapMarkdown, isPerplexityExportText };
+    `)();
+
+    it("wraps raw markdown with [Perplexity](url) and timestamp", () => {
+      const raw = "# Question\n\nAnswer[1]\n\n# Citations:\n[1] https://example.com";
+      const wrapped = sandbox.wrapMarkdown(raw, "https://www.perplexity.ai/search/test-uuid");
+      expect(wrapped).toMatch(/^\[Perplexity\]\(https:\/\/www\.perplexity\.ai\/search\/test-uuid\) · \*\d{4}-\d{2}-\d{2} .*\*$/m);
+      expect(wrapped).toContain("# Question");
+    });
+
+    it("does not double-wrap markdown that already starts with [Perplexity](", () => {
+      const alreadyWrapped = "[Perplexity](https://www.perplexity.ai/search/test-uuid) · *2026-08-27*\n# Question\n\nAnswer";
+      const wrapped = sandbox.wrapMarkdown(alreadyWrapped, "https://www.perplexity.ai/search/other-uuid");
+      expect(wrapped.trim()).toBe(alreadyWrapped.trim());
+    });
+
+    it("identifies various Perplexity export text structures", () => {
+      expect(sandbox.isPerplexityExportText("# Question\n\nAnswer[1]\n\n# Citations:\n[1] https://example.com")).toBe(true);
+      expect(sandbox.isPerplexityExportText("**You**\n\nq\n\n**AI answer**\n\na\n\n**Sources:**\n[1] https://example.com")).toBe(true);
+      expect(sandbox.isPerplexityExportText("<!-- PPLX-TURN 1 -->\n<!-- PPLX-ROLE: prompt -->\nhello\n<!-- PPLX-ROLE: sources -->\n# Sources:\n[1] https://example.com")).toBe(true);
+      expect(sandbox.isPerplexityExportText("some random paragraph without headings or citations")).toBe(false);
+    });
+  });
 });
+
 

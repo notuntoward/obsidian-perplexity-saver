@@ -68,3 +68,25 @@ export async function updateFrontMatter(
 		}
 	});
 }
+
+/**
+ * Overwrite an existing note with body-only content, then update its frontmatter fields
+ * via Obsidian's processFrontMatter API.
+ */
+export async function overwriteDialogNote(
+	app: App,
+	file: TFile,
+	bodyMarkdown: string,
+	frontmatterFields: Record<string, unknown>
+): Promise<void> {
+	await app.vault.modify(file, bodyMarkdown);
+	await app.fileManager.processFrontMatter(file, (fm) => {
+		for (const [key, value] of Object.entries(frontmatterFields)) {
+			if (value === undefined) {
+				delete fm[key];
+			} else {
+				fm[key] = value;
+			}
+		}
+	});
+}

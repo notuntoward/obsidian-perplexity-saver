@@ -64,8 +64,38 @@
   }
 
   function wrapMarkdown(rawMd, url) {
+    const trimmed = (rawMd || "").trim();
+    if (trimmed.startsWith("[Perplexity](")) {
+      return trimmed + "\n";
+    }
     const ts = formatTimestamp(new Date());
-    return `[Perplexity](${url}) · *${ts}*\n${rawMd.trim()}\n`;
+    return `[Perplexity](${url}) · *${ts}*\n${trimmed}\n`;
+  }
+
+  function isPerplexityExportText(text) {
+    if (!text || typeof text !== "string") return false;
+    const t = text.trim();
+    return (
+      (t.includes("# Citations:") ||
+        t.includes("# Sources:") ||
+        t.includes("**Sources:**") ||
+        /\[\^\d+_\d+\]:/.test(t) ||
+        /\[\d+\]\s+https?:\/\//.test(t) ||
+        t.includes("<div style=\"text-align: center\">")) &&
+      (t.startsWith("# ") || t.startsWith("**You**") || t.startsWith("<!-- PPLX-TURN") || /^\[\d+\]/m.test(t))
+    );
+  }
+
+  // Intercept direct navigator.clipboard.writeText calls (e.g. from Complexity extension)
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    const origWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
+    navigator.clipboard.writeText = async function (text) {
+      let toWrite = text;
+      if (typeof text === "string" && isPerplexityExportText(text) && !text.trim().startsWith("[Perplexity](")) {
+        toWrite = wrapMarkdown(text, window.location.href);
+      }
+      return origWriteText(toWrite);
+    };
   }
 
   // Polls for the popover instead of relying on one fixed delay, since
@@ -234,15 +264,37 @@
       return;
     }
 
-    copyBtn.click();
-    await new Promise((r) => setTimeout(r, 300));
-
-    let rawMd = null;
+    let initialClipboard = "";
     try {
-      rawMd = await navigator.clipboard.readText();
-    } catch (e) {
-      showToast("Couldn't read clipboard. Grant clipboard-read permission if prompted.", "error");
-      return;
+      initialClipboard = await navigator.clipboard.readText();
+    } catch (_) {}
+
+    copyBtn.click();
+
+    // Poll for the clipboard to change with Complexity's exported content
+    const maxWaitMs = 3500;
+    const intervalMs = 50;
+    const startTime = Date.now();
+    let rawMd = null;
+
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+      try {
+        const current = await navigator.clipboard.readText();
+        if (current && current !== initialClipboard) {
+          rawMd = current;
+          break;
+        }
+      } catch (_) {}
+    }
+
+    if (!rawMd) {
+      try {
+        rawMd = await navigator.clipboard.readText();
+      } catch (e) {
+        showToast("Couldn't read clipboard. Grant clipboard-read permission if prompted.", "error");
+        return;
+      }
     }
 
     if (!rawMd) {

@@ -27,6 +27,7 @@ function nodeRequest(
 			const u = new URL(urlStr);
 			const defaultHeaders: Record<string, string> = {
 				"Zotero-Allowed-Request": "true",
+				"Zotero-API-Version": "3",
 				...(options.headers || {}),
 			};
 			const req = http.request(
@@ -116,7 +117,7 @@ export class ZoteroClient {
 		for (const host of uniqueHosts) {
 			const url = `http://${host}:${this.port}${endpointPath}`;
 
-			// 1. Try Node's native http module first in live runtime (prevents Origin: app://obsidian.md CORS block)
+			// 1. In Electron / Node runtime: use direct Node http request (bypasses browser CORS)
 			if (typeof process === "undefined" || !process.env?.VITEST) {
 				try {
 					const res = await nodeRequest(url, {
@@ -131,18 +132,28 @@ export class ZoteroClient {
 					if (res.status >= 200 && res.status < 300 && res.text) {
 						return JSON.parse(res.text);
 					}
-				} catch (err) {
+					if (res.status === 403) {
+						throw new Error("HTTP 403: Forbidden - Local API access was rejected by Zotero");
+					}
+					lastError = new Error(`HTTP ${res.status}: ${res.text || "Request failed"}`);
+				} catch (err: any) {
+					if (err?.message?.includes("403") || err?.message?.toLowerCase()?.includes("forbidden")) {
+						throw err;
+					}
 					lastError = err;
 				}
+				continue;
 			}
 
-			// 2. Fallback to Obsidian requestUrl / fetch
+			// 2. Vitest test fallback
 			try {
 				const response = await requestUrl({
 					url,
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
+						"Zotero-API-Version": "3",
+						"Zotero-Allowed-Request": "true",
 					},
 					body: jsonString,
 				});
@@ -153,18 +164,23 @@ export class ZoteroClient {
 					parsed = JSON.parse(response.text);
 				}
 				if (parsed) return parsed;
-			} catch (err) {
+			} catch (err: any) {
 				lastError = err;
 				if (typeof fetch !== "undefined") {
 					try {
 						const res = await fetch(url, {
 							method: "POST",
-							headers: { "Content-Type": "application/json" },
+							headers: {
+								"Content-Type": "application/json",
+								"Zotero-API-Version": "3",
+								"Zotero-Allowed-Request": "true",
+							},
 							body: jsonString,
 						});
 						if (res.ok) {
 							return await res.json();
 						}
+						lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
 					} catch (fetchErr) {
 						lastError = fetchErr;
 					}
@@ -185,21 +201,36 @@ export class ZoteroClient {
 		for (const host of uniqueHosts) {
 			const url = `http://${host}:${this.port}${endpointPath}`;
 
-			// 1. Try Node's native http module first in live runtime
+			// 1. In Electron / Node runtime: use direct Node http request (bypasses browser CORS)
 			if (typeof process === "undefined" || !process.env?.VITEST) {
 				try {
 					const res = await nodeRequest(url, { method: "GET", timeoutMs });
 					if (res.status >= 200 && res.status < 300 && res.text) {
 						return { data: JSON.parse(res.text), headers: res.headers };
 					}
-				} catch (err) {
+					if (res.status === 403) {
+						throw new Error("HTTP 403: Forbidden - Local API access was rejected by Zotero");
+					}
+					lastError = new Error(`HTTP ${res.status}: ${res.text || "Request failed"}`);
+				} catch (err: any) {
+					if (err?.message?.includes("403") || err?.message?.toLowerCase()?.includes("forbidden")) {
+						throw err;
+					}
 					lastError = err;
 				}
+				continue;
 			}
 
-			// 2. Fallback to Obsidian requestUrl / fetch
+			// 2. Vitest test fallback
 			try {
-				const response = await requestUrl({ url, method: "GET" });
+				const response = await requestUrl({
+					url,
+					method: "GET",
+					headers: {
+						"Zotero-API-Version": "3",
+						"Zotero-Allowed-Request": "true",
+					},
+				});
 				const hdrs: Record<string, string> = {};
 				if (response.headers) {
 					for (const [k, v] of Object.entries(response.headers)) {
@@ -213,15 +244,21 @@ export class ZoteroClient {
 					parsed = JSON.parse(response.text);
 				}
 				if (parsed) return { data: parsed, headers: hdrs };
-			} catch (err) {
+			} catch (err: any) {
 				lastError = err;
 				if (typeof fetch !== "undefined") {
 					try {
-						const res = await fetch(url);
+						const res = await fetch(url, {
+							headers: {
+								"Zotero-API-Version": "3",
+								"Zotero-Allowed-Request": "true",
+							},
+						});
 						if (res.ok) {
 							const json = await res.json();
 							return { data: json, headers: {} };
 						}
+						lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
 					} catch (fetchErr) {
 						lastError = fetchErr;
 					}
@@ -330,21 +367,28 @@ export class ZoteroClient {
 
 		if (totalResults > pageSize) {
 			opts.onProgress?.(`Loading Zotero items (0/${totalResults})...`);
-			const pagePromises: Promise<any[]>[] = [];
+			const starts: number[] = [];
 			for (let start = pageSize; start < totalResults; start += pageSize) {
-				pagePromises.push(
-					this.fetchJson(`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=${start}`)
-						.then((pageData) => (Array.isArray(pageData) ? pageData : []))
-						.catch((err) => {
-							console.warn(`Failed to fetch Zotero items page at start=${start}:`, err);
-							return [];
-						})
-				);
+				starts.push(start);
 			}
 
-			const pages = await Promise.all(pagePromises);
-			for (const page of pages) {
-				allRawItems.push(...page);
+			const concurrency = 4;
+			for (let i = 0; i < starts.length; i += concurrency) {
+				const chunk = starts.slice(i, i + concurrency);
+				const chunkPages = await Promise.all(
+					chunk.map((start) =>
+						this.fetchJson(`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=${start}`)
+							.then((pageData) => (Array.isArray(pageData) ? pageData : []))
+							.catch((err) => {
+								console.warn(`Failed to fetch Zotero items page at start=${start}:`, err);
+								return [];
+							})
+					)
+				);
+				for (const page of chunkPages) {
+					allRawItems.push(...page);
+				}
+				opts.onProgress?.(`Loading Zotero items (${Math.min(allRawItems.length, totalResults)}/${totalResults})...`);
 			}
 		}
 

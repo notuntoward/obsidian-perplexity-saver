@@ -67,9 +67,10 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 - **"Import AI dialog from clipboard"** - parses clipboard text into a new note with formatted callouts and sources.
 - **"Sync AI dialog from clipboard"** - appends new turns to the active note.
 - **"Sync linked AI dialog from clipboard"** - identical to the sync command, but runs on the dialog note linked at your current cursor position (e.g. inside `[[My Dialog]]`), allowing you to sync new turns without leaving your referencing note.
+- **"Replace linked AI dialog from clipboard"** - completely replaces (overwrites) the AI dialog note linked at your current cursor position with the parsed dialog from your clipboard. Resets turn watermarks and regenerates all dialog turns, citations, and metadata without leaving your referencing note.
 - **"Jump to turn response"** - opens a fuzzy-searchable popup of the current dialog's headings, instantly jumping your cursor to the start of the AI's response for the selected turn. The turn you are currently reading is marked with a subtle box.
 - **"Relink sources with Zotero"** - manually relinks the current note's `# Sources` section. Shows a live progress notice and reports how many sources were matched (split into Zotero items vs. literature notes). If nothing new matches, the note is left untouched.
-- **"Auto-relink sources" setting** - when enabled, relinking runs automatically at the end of **"Import AI dialog from clipboard"** and **"Sync AI dialog from clipboard"** (the two commands that create new turns).
+- **"Auto-relink sources" setting** - when enabled, relinking runs automatically at the end of **"Import AI dialog from clipboard"**, **"Sync AI dialog from clipboard"**, and **"Replace linked AI dialog from clipboard"** (the commands that generate or modify turns).
 
 ---
 

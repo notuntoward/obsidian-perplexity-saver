@@ -7,6 +7,7 @@ import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
+import { resolveLinkAtCursor } from "../utils";
 
 export interface SyncDialogResult {
 	success: boolean;
@@ -258,33 +259,6 @@ export function registerSyncCommand(
 
 // Also export registerAppendCommand as an alias to registerSyncCommand for compatibility
 export const registerAppendCommand = registerSyncCommand;
-
-/**
- * Finds the wikilink or embed under the editor cursor in `sourceFile` and
- * resolves it to the TFile it points to, using Obsidian's own metadata
- * cache (the same mechanism Obsidian's core "Follow link under cursor"
- * command uses). Returns null if there is no link at the cursor, or if the
- * link cannot be resolved to an existing file.
- */
-function resolveLinkAtCursor(app: App, sourceFile: TFile, editor: Editor): TFile | null {
-	const cursor = editor.getCursor();
-	const cache = app.metadataCache.getFileCache(sourceFile);
-	const candidates = [...(cache?.links ?? []), ...(cache?.embeds ?? [])];
-
-	const hit = candidates.find(({ position }) => {
-		const { start, end } = position;
-		const afterStart =
-			cursor.line > start.line || (cursor.line === start.line && cursor.ch >= start.col);
-		const beforeEnd =
-			cursor.line < end.line || (cursor.line === end.line && cursor.ch <= end.col);
-		return afterStart && beforeEnd;
-	});
-
-	if (!hit) return null;
-
-	const dest = app.metadataCache.getFirstLinkpathDest(hit.link, sourceFile.path);
-	return dest ?? null;
-}
 
 /**
  * Registers "Sync AI dialog from clipboard (linked note at cursor)".

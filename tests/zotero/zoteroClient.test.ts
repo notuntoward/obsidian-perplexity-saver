@@ -100,4 +100,27 @@ describe("zoteroClient - findItemByUrl and findItemByTitle", () => {
 		expect(getLibraryVersionSpy).toHaveBeenCalled();
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
+
+	it("passes Zotero-API-Version and Zotero-Allowed-Request headers in fetchJsonWithHeaders", async () => {
+		const client = new ZoteroClient();
+		const globalFetch = global.fetch;
+		let sentHeaders: any = null;
+		global.fetch = vi.fn().mockImplementation((_url, init) => {
+			sentHeaders = init?.headers;
+			return Promise.resolve({
+				ok: true,
+				json: async () => [],
+				headers: new Map(),
+			});
+		});
+
+		try {
+			await (client as any).fetchJsonWithHeaders("/api/users/0/items/top");
+			expect(sentHeaders).toBeDefined();
+			expect(sentHeaders["Zotero-API-Version"]).toBe("3");
+			expect(sentHeaders["Zotero-Allowed-Request"]).toBe("true");
+		} finally {
+			global.fetch = globalFetch;
+		}
+	});
 });

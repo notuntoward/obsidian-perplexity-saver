@@ -314,6 +314,38 @@ Yes, you can.[1]
 		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/456");
 		expect(dialog.sourceMetadata).toBe("Some time");
 	});
+
+	it("extracts source URL for root URL without trailing slash or with query params", () => {
+		const dialog1 = parsePerplexityDialog(
+			"[Perplexity](https://perplexity.ai) · *2026-08-27 12:00 PDT*\n# Question\nAnswer[1]\n\n# Citations:\n[1] https://example.com"
+		);
+		expect(dialog1.sourceUrl).toBe("https://perplexity.ai");
+		expect(dialog1.sourceMetadata).toBe("2026-08-27 12:00 PDT");
+
+		const dialog2 = parsePerplexityDialog(
+			"[Perplexity](https://www.perplexity.ai/?q=test) · *2026-08-27 12:00 PDT*\n# Question\nAnswer"
+		);
+		expect(dialog2.sourceUrl).toBe("https://www.perplexity.ai/?q=test");
+		expect(dialog2.sourceMetadata).toBe("2026-08-27 12:00 PDT");
+	});
+
+	it("extracts source URL for subdomains like labs.perplexity.ai", () => {
+		const dialog = parsePerplexityDialog(
+			"[Perplexity](https://labs.perplexity.ai/search/test-123) · *2026-08-27 12:00 PDT*\n# Question\nAnswer"
+		);
+		expect(dialog.sourceUrl).toBe("https://labs.perplexity.ai/search/test-123");
+		expect(dialog.sourceMetadata).toBe("2026-08-27 12:00 PDT");
+	});
+
+	it("extracts source URL when followed by a single newline before prompt", () => {
+		const raw = "[Perplexity](https://www.perplexity.ai/search/single-nl) · *2026-08-27 12:00 PDT*\n# What is foo?\n\nFoo is bar.[1]\n\n# Citations:\n[1] https://example.com";
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.sourceUrl).toBe("https://www.perplexity.ai/search/single-nl");
+		expect(dialog.sourceMetadata).toBe("2026-08-27 12:00 PDT");
+		expect(dialog.turns).toHaveLength(2);
+		expect(dialog.turns[0].rawText).toContain("What is foo?");
+		expect(dialog.turns[1].rawText).toContain("Foo is bar");
+	});
 });
 
 describe("parsePerplexityDialog — question-only export (no AI response text)", () => {

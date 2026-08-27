@@ -163,6 +163,14 @@ Climate change is real[^1_1].
 		expect(result).toBe(SAMPLE_NOTE);
 	});
 
+	it("handles HTTP 403 Local API disabled errors gracefully", async () => {
+		const mockApp: any = { vault: { getMarkdownFiles: () => [] } };
+		const forbiddenClient: any = { getItems: vi.fn().mockRejectedValue(new Error("HTTP 403: Forbidden")) };
+
+		const result = await autoRelinkSourcesInNote(mockApp, SAMPLE_NOTE, RELINK_SETTINGS, forbiddenClient);
+		expect(result).toBe(SAMPLE_NOTE);
+	});
+
 	it("forwards live status messages via onProgress instead of dropping them", async () => {
 		const mockApp: any = { vault: { getMarkdownFiles: () => [] } };
 		const client = new ZoteroClient({ port: 23119 });

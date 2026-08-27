@@ -102,7 +102,19 @@ export async function autoRelinkSourcesInNote(
 			);
 		} else {
 			console.warn("Auto-relinking failed:", err);
-			new Notice("Auto-relinking with Zotero failed: Zotero may not be running.", 19000);
+			const msg = String(err?.message || "");
+			if (msg.includes("403") || msg.toLowerCase().includes("forbidden")) {
+				new Notice(
+					"Auto-relinking with Zotero failed: Local API access was rejected (HTTP 403). In Zotero, go to Settings → Advanced and ensure 'Allow other applications on this computer to communicate with Zotero' is enabled.",
+					19000
+				);
+			} else {
+				const port = settings.zoteroPort ?? 23119;
+				new Notice(
+					`Auto-relinking with Zotero failed: ${err?.message || `Could not connect to Zotero on port ${port}. Ensure Zotero is running.`}`,
+					19000
+				);
+			}
 		}
 		return noteText;
 	}

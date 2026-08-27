@@ -212,15 +212,15 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
  * "source" link in the note's frontmatter.
  */
 function extractSourceUrl(section: string): string | undefined {
-	const m = section.match(/\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)/);
+	const m = section.match(/\[Perplexity\]\((https?:\/\/(?:[a-zA-Z0-9-]+\.)*perplexity\.ai(?:\/[^)\s]*)?)\)/i);
 	return m ? m[1] : undefined;
 }
 
 function extractSourceMetadata(section: string): string | undefined {
 	const metaMatch = section.match(
-		/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+\)[ \t]*(?:·[ \t]*)?(?:\*)?(.*?)(?:\*)?[ \t]*(?:\r?\n|$)/
+		/\[Perplexity\]\((?:https?:\/\/(?:[a-zA-Z0-9-]+\.)*perplexity\.ai(?:\/[^)\s]*)?)\)[ \t]*(?:·[ \t]*)?(?:\*)?(.*?)(?:\*)?[ \t]*(?:\r?\n|$)/i
 	);
-	return metaMatch ? metaMatch[1].trim() : undefined;
+	return metaMatch && metaMatch[1] && metaMatch[1].trim() ? metaMatch[1].trim() : undefined;
 }
 
 export function unwrapFencedHeading(text: string): string {
@@ -326,7 +326,7 @@ function splitIntoPromptResponsePairs(rawText: string): string[] {
 
 function stripMetadataLine(section: string): { body: string; sourceUrl?: string } {
 	const metaMatch = section.match(
-		/^\[Perplexity\]\((https?:\/\/(?:www\.)?perplexity\.ai\/[^)]+)\)[^\n]*\n?/
+		/^[ \t]*\[Perplexity\]\((https?:\/\/(?:[a-zA-Z0-9-]+\.)*perplexity\.ai(?:\/[^)\s]*)?)\)[^\n]*\r?\n?/i
 	);
 	if (!metaMatch) return { body: section.trim() };
 	return { body: section.slice(metaMatch[0].length).trim(), sourceUrl: metaMatch[1] };
@@ -476,7 +476,7 @@ function extractCitations(responseText: string, sourceListText: string): ParsedC
 // Used by detect.ts.
 export function isPerplexityContent(text: string): boolean {
 	return (
-		/\[Perplexity\]\(https?:\/\/(?:www\.)?perplexity\.ai\//m.test(text) ||
+		/\[Perplexity\]\(https?:\/\/(?:[a-zA-Z0-9-]+\.)*perplexity\.ai/im.test(text) ||
 		/^(?:\#{1,3}|\*\*|\s*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\s*)$/im.test(text) ||
 		/<div style="text-align: ?center">/i.test(text) ||
 		/\*\*You\*\*/.test(text) ||

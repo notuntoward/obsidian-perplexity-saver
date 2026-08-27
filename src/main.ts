@@ -5,6 +5,7 @@ import http from "http";
 import { createPerplexityNote } from "./note-creator";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
 import { registerSyncCommand, registerSyncViaLinkCommand } from "./commands/sync";
+import { registerReplaceViaLinkCommand } from "./commands/replace";
 import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
@@ -146,6 +147,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		registerSyncCommand(this);
 		registerSyncViaLinkCommand(this);
+		registerReplaceViaLinkCommand(this);
 		registerDeleteTurnCommand(this);
 		registerRemoveSourcesWithNoCiteCommand(this);
 		registerRemoveSourcesWithNoDialogCommand(this);

@@ -1,5 +1,33 @@
+import { App, Editor, TFile } from "obsidian";
+
 export function sanitizeFilename(filename: string): string {
   return filename.replace(/[\\/:*?"<>|#^\[\]]/g, "");
+}
+
+/**
+ * Finds the wikilink or embed under the editor cursor in `sourceFile` and
+ * resolves it to the TFile it points to, using Obsidian's metadata
+ * cache. Returns null if there is no link at the cursor, or if the
+ * link cannot be resolved to an existing file.
+ */
+export function resolveLinkAtCursor(app: App, sourceFile: TFile, editor: Editor): TFile | null {
+	const cursor = editor.getCursor();
+	const cache = app.metadataCache.getFileCache(sourceFile);
+	const candidates = [...(cache?.links ?? []), ...(cache?.embeds ?? [])];
+
+	const hit = candidates.find(({ position }) => {
+		const { start, end } = position;
+		const afterStart =
+			cursor.line > start.line || (cursor.line === start.line && cursor.ch >= start.col);
+		const beforeEnd =
+			cursor.line < end.line || (cursor.line === end.line && cursor.ch <= end.col);
+		return afterStart && beforeEnd;
+	});
+
+	if (!hit) return null;
+
+	const dest = app.metadataCache.getFirstLinkpathDest(hit.link, sourceFile.path);
+	return dest ?? null;
 }
 
 /**
