@@ -34,10 +34,6 @@ async function handleCreate(
 	item: ZoteroItemPayload,
 	force: boolean = false
 ): Promise<LitNoteResponse> {
-	try {
-		require('fs').writeFileSync('C:/Users/scott/.gemini/antigravity-ide/brain/4b7853ee-9a6d-43f0-8aed-4f4e86dbcc6b/scratch/obsidian_payload_dump.json', JSON.stringify(item, null, 2));
-	} catch(e) {}
-
 	const citekey = (item.citekey ?? "").trim();
 	if (!citekey) {
 		return { success: false, error: "Payload missing citekey" };
@@ -61,15 +57,6 @@ async function handleCreate(
 		return { success: false, error: "exists" };
 	}
 
-	
-	// DUMP FOR DEBUGGING
-	const fsNode = require("fs");
-	try {
-		fsNode.writeFileSync("C:\\Users\\scott\\repos\\obsidian-perplexity-saver\\scratch_payload.json", JSON.stringify(item, null, 2), "utf8");
-	} catch (e) {
-		console.error("Failed to dump payload", e);
-	}
-	
 	const body = buildLitNoteBody(app, settings, item);
 	const frontmatter = buildLitNoteFrontmatter(item);
 

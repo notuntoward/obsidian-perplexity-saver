@@ -102,7 +102,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	minTitleMatchScore: 95,
 	autoRelinkSources: false,
 	litNotePort: 27124,
-	vaultRoot: "C:\\Users\\scott\\new_obsidian\\obsidian\\Obsidian Share Vault",
+	vaultRoot: "",
 };
 
 interface InlineInputData {
@@ -971,7 +971,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			)
 			.addText((text) => {
 				text
-					.setPlaceholder("C:\\Users\\scott\\new_obsidian\\obsidian\\Obsidian Share Vault")
+					.setPlaceholder("/path/to/vault")
 					.setValue(this.plugin.settings.vaultRoot)
 					.onChange(async (value) => {
 						this.plugin.settings.vaultRoot = value.trim();

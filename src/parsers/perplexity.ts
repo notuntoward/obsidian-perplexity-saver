@@ -44,8 +44,6 @@ export function stripAnnotations(text: string): string {
  * Parse a Perplexity dialog export into the shared DialogFile shape.
  */
 export function parsePerplexityDialog(rawText: string): DialogFile {
-	console.log("=== DIAGNOSTIC: parsePerplexityDialog called ===");
-	console.log("RAW TEXT PRE-NORMALIZE:", JSON.stringify(rawText.slice(0, 500)) + (rawText.length > 500 ? "..." : ""));
 	// Normalize line endings first. Every downstream regex in this file
 	// matches a literal "\n" for section/line boundaries; real clipboard
 	// content from Windows browsers is frequently CRLF, and a stray "\r"
@@ -53,15 +51,12 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
 	// separator between prompt/response pairs), collapsing what should be
 	// multiple turns into one and scrambling citation numbering across pairs.
 	const normalizedText = rawText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-	console.log("NORMALIZED TEXT:", JSON.stringify(normalizedText.slice(0, 500)) + (normalizedText.length > 500 ? "..." : ""));
 
 	if (isAnnotatedPerplexityContent(normalizedText)) {
-		console.log("FORMAT DETECTED: Annotated (HTML comments)");
 		return parseAnnotatedPerplexityDialog(normalizedText);
 	}
 
 	const sections = splitIntoPromptResponsePairs(normalizedText);
-	console.log(`SPLIT INTO ${sections.length} SECTIONS. First section:`, JSON.stringify(sections[0].slice(0, 200)));
 	const turns: DialogTurn[] = [];
 	let sourceUrl: string | undefined;
 	let sourceMetadata: string | undefined;
@@ -78,15 +73,12 @@ export function parsePerplexityDialog(rawText: string): DialogFile {
 		}
 		if (!sourceUrl) {
 			sourceUrl = extractSourceUrl(section);
-			console.log("extractSourceUrl result on section:", sourceUrl);
 		}
 		if (!sourceMetadata) {
 			sourceMetadata = extractSourceMetadata(section);
-			console.log("extractSourceMetadata result on section:", sourceMetadata);
 		}
 	}
 
-	console.log("FINAL PARSED DIALOG METADATA:", { sourceUrl, sourceMetadata });
 	return { sourceVendor: "perplexity", sourceUrl, sourceMetadata, turns };
 }
 
