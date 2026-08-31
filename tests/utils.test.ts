@@ -5,6 +5,7 @@ import {
 	formatWikilinkAlias,
 	determineWikilinkAlias,
 	buildWikilink,
+	isAiDialogNote,
 } from "../src/utils";
 
 describe("sanitizeFilename", () => {
@@ -146,6 +147,22 @@ describe("determineWikilinkAlias", () => {
 		expect(
 			determineWikilinkAlias("Custom Title", "Original Selection", "Original Selection", "Custom Title")
 		).toBeUndefined();
+	});
+});
+
+describe("isAiDialogNote", () => {
+	it("returns true for valid AI dialog note content with ^turn-N anchors", () => {
+		const noteContent = `# Dialog\n\n## Summary ^turn-1\n> [!Prompt]-\n> test prompt\n\nAI response\n`;
+		expect(isAiDialogNote(noteContent)).toBe(true);
+	});
+
+	it("returns false for regular notes without ^turn-N anchors", () => {
+		const noteContent = `# Regular Note\n\nThis is just a standard obsidian markdown note.`;
+		expect(isAiDialogNote(noteContent)).toBe(false);
+	});
+
+	it("returns false for empty or null string", () => {
+		expect(isAiDialogNote("")).toBe(false);
 	});
 });
 

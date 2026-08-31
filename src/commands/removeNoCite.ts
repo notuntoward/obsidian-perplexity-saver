@@ -1,6 +1,7 @@
-import { App, Notice, TFile } from "obsidian";
+import { App, Editor, Notice, TFile } from "obsidian";
 import { parseSourceLine, ParsedSourceLine } from "../zotero/sourceLinkState";
 import { extractSourcesSection } from "../normalize/buildNote";
+import { isAiDialogNote } from "../utils";
 
 export interface SourceWithNoCite extends ParsedSourceLine {
 	rawLine: string;
@@ -112,13 +113,17 @@ export function registerRemoveSourcesWithNoCiteCommand(
 	plugin.addCommand({
 		id: "remove-sources-with-no-cite",
 		name: "Remove sources with no cite",
-		editorCallback: async (_editor: unknown, view: { file?: TFile }) => {
+		editorCallback: async (editor: Editor, view: { file?: TFile }) => {
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
 				return;
 			}
-			const noteText = await plugin.app.vault.read(file);
+			const noteText = editor.getValue() || (await plugin.app.vault.read(file));
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
+				return;
+			}
 			const toRemove = findSourcesWithNoCite(noteText);
 			if (toRemove.length === 0) {
 				new Notice("No sources with no cite found.");

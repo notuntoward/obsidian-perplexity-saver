@@ -151,6 +151,15 @@ export function unwrapFencedHeading(text: string): string {
 	return trimmed;
 }
 
+/**
+ * Checks if the given note text represents an AI dialog note saved by Perplexity Saver
+ * by verifying the presence of turn block anchors (e.g. ^turn-N).
+ */
+export function isAiDialogNote(noteText: string): boolean {
+	if (!noteText) return false;
+	return /\^turn-\d+/.test(noteText);
+}
+
 export function normalizeUrl(url: string): string {
 	if (!url) return "";
 	try {
