@@ -151,7 +151,7 @@ describe("determineWikilinkAlias", () => {
 });
 
 describe("isAiDialogNote", () => {
-	it("returns true for valid AI dialog note content with ^turn-N anchors", () => {
+	it("returns true for valid AI dialog note content with ## ... ^turn-N headings", () => {
 		const noteContent = `# Dialog\n\n## Summary ^turn-1\n> [!Prompt]-\n> test prompt\n\nAI response\n`;
 		expect(isAiDialogNote(noteContent)).toBe(true);
 	});
@@ -159,6 +159,16 @@ describe("isAiDialogNote", () => {
 	it("returns false for regular notes without ^turn-N anchors", () => {
 		const noteContent = `# Regular Note\n\nThis is just a standard obsidian markdown note.`;
 		expect(isAiDialogNote(noteContent)).toBe(false);
+	});
+
+	it("returns false when ^turn-N appears in prose, inline code, or link text rather than a level-2 heading", () => {
+		const proseNote = `This is prose mentioning ^turn-1 anchor in text.`;
+		const codeNote = `Here is some code: \`const anchor = "^turn-2";\``;
+		const linkNote = `Check out [[Note#^turn-3]] for details.`;
+
+		expect(isAiDialogNote(proseNote)).toBe(false);
+		expect(isAiDialogNote(codeNote)).toBe(false);
+		expect(isAiDialogNote(linkNote)).toBe(false);
 	});
 
 	it("returns false for empty or null string", () => {
