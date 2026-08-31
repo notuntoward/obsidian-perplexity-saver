@@ -1,5 +1,6 @@
 import { App, Editor, MarkdownView, Notice, SuggestModal, TFile, prepareFuzzySearch, renderResults } from "obsidian";
 import { findSourcesWithNoDialog, applyNoDialogRemoval } from "./removeNoDialog";
+import { isAiDialogNote } from "../utils";
 
 export interface TurnSuggestion {
 	turnNum: number;
@@ -166,6 +167,12 @@ export function registerDeleteTurnCommand(
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
+				return;
+			}
+
+			const noteText = editor.getValue();
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
 				return;
 			}
 

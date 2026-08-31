@@ -1,4 +1,5 @@
-import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView } from "obsidian";
+import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice } from "obsidian";
+import { isAiDialogNote } from "../utils";
 
 export interface TurnItem {
 	headingText: string;
@@ -126,6 +127,12 @@ export function registerJumpCommand(plugin: { app: App; addCommand: (cmd: unknow
 		id: "jump-to-turn-response",
 		name: "Jump to turn response",
 		editorCallback: (editor: Editor, view: MarkdownView) => {
+			const noteText = editor.getValue();
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
+				return;
+			}
+
 			const { items, currentTurnIndex } = parseJumpItems(
 				editor.lineCount(),
 				(i: number) => editor.getLine(i),

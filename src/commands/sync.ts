@@ -7,7 +7,7 @@ import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
-import { resolveLinkAtCursor } from "../utils";
+import { resolveLinkAtCursor, isAiDialogNote } from "../utils";
 
 export interface SyncDialogResult {
 	success: boolean;
@@ -203,10 +203,16 @@ export function registerSyncCommand(
 	plugin.addCommand({
 		id: "sync-ai-dialog-from-clipboard",
 		name: "Sync AI dialog from clipboard",
-		editorCallback: async (_editor: Editor, view: MarkdownView) => {
+		editorCallback: async (editor: Editor, view: MarkdownView) => {
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
+				return;
+			}
+
+			const noteText = editor.getValue();
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
 				return;
 			}
 
@@ -296,6 +302,12 @@ export function registerSyncViaLinkCommand(
 			const sourceFile = view.file;
 			if (!sourceFile) {
 				new Notice("No active file.");
+				return;
+			}
+
+			const noteText = editor.getValue();
+			if (isAiDialogNote(noteText)) {
+				new Notice("This command cannot be run inside an AI dialog note.");
 				return;
 			}
 

@@ -1,6 +1,7 @@
 import { App, Editor, Notice, TFile } from "obsidian";
 import { relinkSourcesInNote } from "../zotero/relinker";
 import { ZoteroClient } from "../zotero/zoteroClient";
+import { isAiDialogNote } from "../utils";
 
 export function registerRelinkSourcesCommand(
 	plugin: {
@@ -21,6 +22,12 @@ export function registerRelinkSourcesCommand(
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
+				return;
+			}
+
+			const noteText = editor.getValue() || (await plugin.app.vault.read(file));
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
 				return;
 			}
 

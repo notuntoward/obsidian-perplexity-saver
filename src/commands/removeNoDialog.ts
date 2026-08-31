@@ -1,7 +1,8 @@
-import { App, Notice, TFile } from "obsidian";
+import { App, Editor, Notice, TFile } from "obsidian";
 import { parseSourceLine, renderSourceLine, ParsedSourceLine } from "../zotero/sourceLinkState";
 import { getSurvivingTurnIds } from "../normalize/turns";
 import { extractSourcesSection } from "../normalize/buildNote";
+import { isAiDialogNote } from "../utils";
 
 export interface SourceWithNoDialog extends ParsedSourceLine {
 	rawLine: string;
@@ -65,13 +66,17 @@ export function registerRemoveSourcesWithNoDialogCommand(
 	plugin.addCommand({
 		id: "remove-sources-with-no-dialog",
 		name: "Remove sources with no dialog",
-		editorCallback: async (_editor: unknown, view: { file?: TFile }) => {
+		editorCallback: async (editor: Editor, view: { file?: TFile }) => {
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
 				return;
 			}
-			const noteText = await plugin.app.vault.read(file);
+			const noteText = editor.getValue() || (await plugin.app.vault.read(file));
+			if (!isAiDialogNote(noteText)) {
+				new Notice("This command can only be run within an AI dialog note.");
+				return;
+			}
 			const toRemove = findSourcesWithNoDialog(noteText);
 			if (toRemove.length === 0) {
 				new Notice("No sources with no dialog found.");

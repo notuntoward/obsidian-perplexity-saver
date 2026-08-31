@@ -6,7 +6,7 @@ import { deduplicateDialogCitations, groupLogicalTurns } from "../normalize/turn
 import { HeadlineOptions } from "../normalize/headlines";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
-import { resolveLinkAtCursor } from "../utils";
+import { resolveLinkAtCursor, isAiDialogNote } from "../utils";
 
 export interface ReplaceDialogResult {
 	success: boolean;
@@ -142,6 +142,12 @@ export function registerReplaceViaLinkCommand(
 			const sourceFile = view.file;
 			if (!sourceFile) {
 				new Notice("No active file.");
+				return;
+			}
+
+			const noteText = editor.getValue();
+			if (isAiDialogNote(noteText)) {
+				new Notice("This command cannot be run inside an AI dialog note.");
 				return;
 			}
 
