@@ -82,7 +82,11 @@ class TurnJumpModal extends FuzzySuggestModal<TurnItem> {
 		// Wait a tick for the DOM and chooser items to populate before setting selection.
 		window.setTimeout(() => {
 			if (this.initialSelectionIdx >= 0 && this.initialSelectionIdx < this.items.length) {
-				const chooser = (this as unknown as { chooser: { setSelectedItem(idx: number, scroll: boolean): void } }).chooser;
+				const chooser = (
+					this as unknown as {
+						chooser: { setSelectedItem(idx: number, scroll: boolean): void };
+					}
+				).chooser;
 				if (chooser && typeof chooser.setSelectedItem === "function") {
 					chooser.setSelectedItem(this.initialSelectionIdx, true);
 				}
@@ -101,15 +105,14 @@ class TurnJumpModal extends FuzzySuggestModal<TurnItem> {
 	renderSuggestion(match: FuzzyMatch<TurnItem>, el: HTMLElement) {
 		super.renderSuggestion(match, el);
 		if (match.item.isCurrent) {
-			el.style.border = "1px solid var(--text-muted)";
-			el.style.borderRadius = "4px";
+			el.classList.add("is-current");
 		}
 	}
 
 	onChooseItem(item: TurnItem, evt: MouseEvent | KeyboardEvent): void {
 		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (!view) return;
-		
+
 		const editor = view.editor;
 		editor.setCursor(item.aiResponseLine, 0);
 		editor.scrollIntoView(
@@ -122,7 +125,10 @@ class TurnJumpModal extends FuzzySuggestModal<TurnItem> {
 	}
 }
 
-export function registerJumpCommand(plugin: { app: App; addCommand: (cmd: unknown) => unknown }): void {
+export function registerJumpCommand(plugin: {
+	app: App;
+	addCommand: (cmd: unknown) => unknown;
+}): void {
 	plugin.addCommand({
 		id: "jump-to-turn-response",
 		name: "Jump to turn response",
@@ -142,11 +148,10 @@ export function registerJumpCommand(plugin: { app: App; addCommand: (cmd: unknow
 			if (items.length === 0) {
 				return;
 			}
-			
+
 			// Select the next turn by default (or the last one if we are at the end)
-			const initialSelectionIdx = currentTurnIndex !== -1 
-				? Math.min(currentTurnIndex + 1, items.length - 1)
-				: 0;
+			const initialSelectionIdx =
+				currentTurnIndex !== -1 ? Math.min(currentTurnIndex + 1, items.length - 1) : 0;
 
 			new TurnJumpModal(plugin.app, items, initialSelectionIdx).open();
 		},

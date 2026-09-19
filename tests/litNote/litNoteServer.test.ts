@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { startLitNoteServer } from "../../src/litNote/litNoteServer";
+import { startLitNoteServer, focusObsidianWindow } from "../../src/litNote/litNoteServer";
 import * as http from "http";
 import { TFile } from "obsidian";
 
@@ -268,6 +268,33 @@ describe("Lit Note Server", () => {
 			expect(mockApp.workspace.setActiveLeaf).toHaveBeenCalledWith(mockLeaf, { focus: true });
 			expect(mockEditor.replaceRange).toHaveBeenCalledWith("\n\n", expect.anything());
 			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: 3, ch: 0 });
+		});
+
+		it("focusObsidianWindow restores, shows, and focuses window when Electron remote is present", () => {
+			const mockWin = {
+				isMinimized: vi.fn(() => true),
+				restore: vi.fn(),
+				show: vi.fn(),
+				focus: vi.fn(),
+			};
+			(globalThis as any).__electronRemote = { getCurrentWindow: () => mockWin };
+
+			focusObsidianWindow();
+
+			expect(mockWin.isMinimized).toHaveBeenCalled();
+			expect(mockWin.restore).toHaveBeenCalled();
+			expect(mockWin.show).toHaveBeenCalled();
+			expect(mockWin.focus).toHaveBeenCalled();
+
+			delete (globalThis as any).__electronRemote;
+		});
+
+		it("focusObsidianWindow falls back to window.focus when Electron remote is not present", () => {
+			const mockWindowFocus = vi.fn();
+			(window as any).focus = mockWindowFocus;
+
+			expect(() => focusObsidianWindow()).not.toThrow();
+			expect(mockWindowFocus).toHaveBeenCalled();
 		});
 	});
 });

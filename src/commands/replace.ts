@@ -116,25 +116,23 @@ export async function replaceDialogFromClipboard(
  * Resolves the wikilink/embed under the cursor in the active file and replaces
  * (overwrites) THAT target file with the parsed dialog from the clipboard.
  */
-export function registerReplaceViaLinkCommand(
-	plugin: {
-		app: App;
-		addCommand: (cmd: unknown) => unknown;
-		headlineOptions: () => HeadlineOptions;
-		settings: {
-			autoFetchSourceTitles: boolean;
-			sourceTitleMaxChars: number;
-			autoRelinkSources: boolean;
-			zoteroPort: number;
-			litNotesFolder: string;
-			minTitleMatchScore: number;
-			collapseBlankLines: boolean;
-			collapsePromptCallouts: boolean;
-			generatedTag: string;
-		};
-		zoteroClient?: any;
-	}
-): void {
+export function registerReplaceViaLinkCommand(plugin: {
+	app: App;
+	addCommand: (cmd: unknown) => unknown;
+	headlineOptions: () => HeadlineOptions;
+	settings: {
+		autoFetchSourceTitles: boolean;
+		sourceTitleMaxChars: number;
+		autoRelinkSources: boolean;
+		zoteroPort: number;
+		litNotesFolder: string;
+		minTitleMatchScore: number;
+		collapseBlankLines: boolean;
+		collapsePromptCallouts: boolean;
+		generatedTag: string;
+	};
+	zoteroClient?: any;
+}): void {
 	plugin.addCommand({
 		id: "replace-linked-ai-dialog-from-clipboard",
 		name: "Replace linked AI dialog from clipboard",
@@ -153,7 +151,9 @@ export function registerReplaceViaLinkCommand(
 
 			const target = resolveLinkAtCursor(plugin.app, sourceFile, editor);
 			if (!target) {
-				new Notice("Place the cursor on a link to an AI dialog note, then run this command.");
+				new Notice(
+					"Place the Cursor on a link to an AI dialog note, then run this command."
+				);
 				return;
 			}
 

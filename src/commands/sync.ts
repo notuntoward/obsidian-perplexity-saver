@@ -2,7 +2,11 @@ import { App, Editor, MarkdownView, Notice, TFile } from "obsidian";
 import { detectAndParse } from "../parsers/detect";
 import { buildNoteBody, extractSourcesSection } from "../normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, updateFrontMatter } from "../normalize/frontmatter";
-import { getNextTurnIndex, groupLogicalTurns, deduplicateDialogCitations } from "../normalize/turns";
+import {
+	getNextTurnIndex,
+	groupLogicalTurns,
+	deduplicateDialogCitations,
+} from "../normalize/turns";
 import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
@@ -56,8 +60,7 @@ export async function syncDialogFromClipboard(
 		// Bail out rather than corrupt the file.
 		return {
 			success: false,
-			error:
-				"This note is not a valid AI dialog (missing ^turn-N-* anchors)",
+			error: "This note is not a valid AI dialog (missing ^turn-N-* anchors)",
 		};
 	}
 
@@ -182,24 +185,22 @@ function spliceIntoNote(
 	return out;
 }
 
-export function registerSyncCommand(
-	plugin: {
-		app: App;
-		addCommand: (cmd: unknown) => unknown;
-		headlineOptions: () => HeadlineOptions;
-		settings: {
-			autoFetchSourceTitles: boolean;
-			sourceTitleMaxChars: number;
-			autoRelinkSources: boolean;
-			zoteroPort: number;
-			litNotesFolder: string;
-			minTitleMatchScore: number;
-			collapseBlankLines: boolean;
-			collapsePromptCallouts: boolean;
-		};
-		zoteroClient?: any;
-	}
-): void {
+export function registerSyncCommand(plugin: {
+	app: App;
+	addCommand: (cmd: unknown) => unknown;
+	headlineOptions: () => HeadlineOptions;
+	settings: {
+		autoFetchSourceTitles: boolean;
+		sourceTitleMaxChars: number;
+		autoRelinkSources: boolean;
+		zoteroPort: number;
+		litNotesFolder: string;
+		minTitleMatchScore: number;
+		collapseBlankLines: boolean;
+		collapsePromptCallouts: boolean;
+	};
+	zoteroClient?: any;
+}): void {
 	plugin.addCommand({
 		id: "sync-ai-dialog-from-clipboard",
 		name: "Sync AI dialog from clipboard",
@@ -277,24 +278,22 @@ export const registerAppendCommand = registerSyncCommand;
  * Reuses syncDialogFromClipboard() unchanged — this is purely a different
  * way of choosing which file to pass to it.
  */
-export function registerSyncViaLinkCommand(
-	plugin: {
-		app: App;
-		addCommand: (cmd: unknown) => unknown;
-		headlineOptions: () => HeadlineOptions;
-		settings: {
-			autoFetchSourceTitles: boolean;
-			sourceTitleMaxChars: number;
-			autoRelinkSources: boolean;
-			zoteroPort: number;
-			litNotesFolder: string;
-			minTitleMatchScore: number;
-			collapseBlankLines: boolean;
-			collapsePromptCallouts: boolean;
-		};
-		zoteroClient?: any;
-	}
-): void {
+export function registerSyncViaLinkCommand(plugin: {
+	app: App;
+	addCommand: (cmd: unknown) => unknown;
+	headlineOptions: () => HeadlineOptions;
+	settings: {
+		autoFetchSourceTitles: boolean;
+		sourceTitleMaxChars: number;
+		autoRelinkSources: boolean;
+		zoteroPort: number;
+		litNotesFolder: string;
+		minTitleMatchScore: number;
+		collapseBlankLines: boolean;
+		collapsePromptCallouts: boolean;
+	};
+	zoteroClient?: any;
+}): void {
 	plugin.addCommand({
 		id: "sync-ai-dialog-from-clipboard-via-link",
 		name: "Sync linked AI dialog from clipboard",
@@ -313,7 +312,9 @@ export function registerSyncViaLinkCommand(
 
 			const target = resolveLinkAtCursor(plugin.app, sourceFile, editor);
 			if (!target) {
-				new Notice("Place the cursor on a link to an AI dialog note, then run this command.");
+				new Notice(
+					"Place the Cursor on a link to an AI dialog note, then run this command."
+				);
 				return;
 			}
 

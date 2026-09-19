@@ -1,4 +1,14 @@
-import { App, Editor, MarkdownView, Notice, Plugin, PluginSettingTab, Setting, SettingDefinitionItem, TFile } from "obsidian";
+import {
+	App,
+	Editor,
+	MarkdownView,
+	Notice,
+	Plugin,
+	PluginSettingTab,
+	Setting,
+	SettingDefinitionItem,
+	TFile,
+} from "obsidian";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
 import http from "http";
@@ -94,7 +104,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	collapsePromptCallouts: true,
 	headlineMethod: "lead",
 	headlineMaxChars: 100,
-	headlineLeadBias: 0.20,
+	headlineLeadBias: 0.2,
 	autoFetchSourceTitles: true,
 	sourceTitleMaxChars: 100,
 	zoteroPort: 23119,
@@ -131,7 +141,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		// Start the Zotero companion HTTP listener (desktop only — node:http).
 		this.litNoteServer = startLitNoteServer(this.app, {
-			
 			litNotesFolder: this.settings.litNotesFolder,
 		});
 
@@ -301,25 +310,19 @@ class InlineInputWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const wrap = document.createElement("span");
+		const doc = activeDocument;
+		const wrap = doc.createElement("span");
 		wrap.className = "perplexity-inline-wrap";
 		this.wrapEl = wrap;
 
-		const input = document.createElement("input");
+		const input = doc.createElement("input");
 		input.type = "text";
 		input.placeholder = "Enter filename...";
 		input.value = this.data.defaultFilename;
 		input.className = "perplexity-inline-input";
-		input.style.marginLeft = "4px";
-		input.style.marginRight = "4px";
-		input.style.border = "none";
-		input.style.borderBottom = "1px solid var(--text-accent)";
-		input.style.background = "var(--background-primary-alt)";
-		input.style.padding = "2px 6px";
-		input.style.minWidth = "200px";
 		this.inputEl = input;
 
-		const spinner = document.createElement("span");
+		const spinner = doc.createElement("span");
 		spinner.className = "perplexity-inline-spinner";
 		spinner.setAttribute("aria-hidden", "true");
 
@@ -380,7 +383,8 @@ class InlineInputWidget extends WidgetType {
 	}
 
 	private async handleSubmit(filename: string): Promise<void> {
-		const { noteContent, activeFile, editorView, from, to, prefetchedDialogPromise } = this.data;
+		const { noteContent, activeFile, editorView, from, to, prefetchedDialogPromise } =
+			this.data;
 
 		// Disable the input immediately so it can't be edited or re-submitted
 		// mid-save, but don't change its appearance yet — that only happens
@@ -679,7 +683,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						desc: "Clear in-memory cached Zotero library items to force a fresh fetch from Zotero on the next relink.",
 						render: (setting) => {
 							setting.addButton((button) => {
-								button.setButtonText("Clear Cache").onClick(() => {
+								button.setButtonText("Clear cache").onClick(() => {
 									this.plugin.zoteroClient.clearCache();
 									new Notice("Zotero library cache cleared.");
 								});
@@ -697,10 +701,12 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("AI save folder")
-			.setDesc("The name of the folder where AI notes are stored (relative to the active note).")
+			.setDesc(
+				"The name of the folder where AI notes are stored (relative to the active note)."
+			)
 			.addText((text) =>
 				text
-					.setPlaceholder("ai-searches")
+					.setPlaceholder("Ai-searches")
 					.setValue(this.plugin.settings.searchesFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.searchesFolder = value;
@@ -713,7 +719,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			.setDesc("The tag inserted into the AI note's frontmatter.")
 			.addText((text) =>
 				text
-					.setPlaceholder("ai-generated")
+					.setPlaceholder("Ai-generated")
 					.setValue(this.plugin.settings.generatedTag)
 					.onChange(async (value) => {
 						this.plugin.settings.generatedTag = value;
@@ -727,12 +733,10 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				"Collapse any run of 2+ blank lines down to one, including around headings. Produces a denser, more uniform file while keeping one blank line between paragraphs and headings."
 			)
 			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.collapseBlankLines)
-					.onChange(async (value) => {
-						this.plugin.settings.collapseBlankLines = value;
-						await this.plugin.saveSettings();
-					})
+				toggle.setValue(this.plugin.settings.collapseBlankLines).onChange(async (value) => {
+					this.plugin.settings.collapseBlankLines = value;
+					await this.plugin.saveSettings();
+				})
 			);
 
 		new Setting(containerEl)
@@ -751,7 +755,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		// "Prompt heading" group: the three controls that govern how the
 		// level-2 summary heading above each user prompt is generated.
-		containerEl.createEl("h3", { text: "Prompt heading" });
+		new Setting(containerEl).setName("Prompt heading").setHeading();
 
 		// isTfidf is computed once and used to gate the lead-bias input.
 		// The max-chars input is always active because both methods use it.
@@ -763,8 +767,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				"Maximum length of the summary heading, including a possible ellipsis. 90-120 is suitable for note titles."
 			)
 			.addText((text) => {
-				text
-					.setPlaceholder("100")
+				text.setPlaceholder("100")
 					.setValue(String(this.plugin.settings.headlineMaxChars))
 					.onChange(async (value) => {
 						const n = parseInt(value, 10);
@@ -786,7 +789,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			.addDropdown((dropdown) => {
 				dropdown
 					.addOption("lead", "Lead sentence")
-					.addOption("tf-idf", "TF-IDF ranked sentence")
+					.addOption("tf-idf", "Tf-idf ranked sentence")
 					.setValue(this.plugin.settings.headlineMethod)
 					.onChange(async (value) => {
 						this.plugin.settings.headlineMethod = value as HeadlineMethod;
@@ -803,8 +806,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					: "Only applies when 'TF-IDF ranked sentence' is selected above. Grayed out until you switch to TF-IDF."
 			)
 			.addText((text) => {
-				text
-					.setPlaceholder("0.20")
+				text.setPlaceholder("0.20")
 					.setValue(String(this.plugin.settings.headlineLeadBias))
 					.onChange(async (value) => {
 						const n = parseFloat(value);
@@ -830,11 +832,13 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		}
 
 		// "Source link title fetching" group
-		containerEl.createEl("h3", { text: "Source link title fetching" });
+		new Setting(containerEl).setName("Source link title fetching").setHeading();
 
 		new Setting(containerEl)
 			.setName("Auto-fetch source titles")
-			.setDesc("Automatically fetch webpage titles to build clean markdown links for sources.")
+			.setDesc(
+				"Automatically fetch webpage titles to build clean Markdown links for sources."
+			)
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.autoFetchSourceTitles)
@@ -847,10 +851,11 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		const sourceMaxCharsSetting = new Setting(containerEl)
 			.setName("Source title max characters")
-			.setDesc("Maximum length of a fetched source link title, including a possible ellipsis.")
+			.setDesc(
+				"Maximum length of a fetched source link title, including a possible ellipsis."
+			)
 			.addText((text) => {
-				text
-					.setPlaceholder("100")
+				text.setPlaceholder("100")
 					.setValue(String(this.plugin.settings.sourceTitleMaxChars))
 					.onChange(async (value) => {
 						const n = parseInt(value, 10);
@@ -869,26 +874,25 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		}
 
 		// "Zotero & Literature Note Relinking" group
-		containerEl.createEl("h3", { text: "Zotero & Literature Note Relinking" });
+		new Setting(containerEl).setName("Zotero & literature note relinking").setHeading();
 
 		new Setting(containerEl)
 			.setName("Auto-relink sources")
 			.setDesc("Automatically run Zotero relinking when importing or syncing new turns.")
 			.addToggle((toggle) =>
-				toggle
-					.setValue(this.plugin.settings.autoRelinkSources)
-					.onChange(async (value) => {
-						this.plugin.settings.autoRelinkSources = value;
-						await this.plugin.saveSettings();
-					})
+				toggle.setValue(this.plugin.settings.autoRelinkSources).onChange(async (value) => {
+					this.plugin.settings.autoRelinkSources = value;
+					await this.plugin.saveSettings();
+				})
 			);
 
 		new Setting(containerEl)
-			.setName("Better BibTeX HTTP Port")
-			.setDesc("Port used by the Obsidian Auto-Relinker to fetch citation metadata from the Zotero Better BibTeX plugin (defaults to 23119).")
+			.setName("Better BibTeX HTTP port")
+			.setDesc(
+				"Port used by the Obsidian auto-relinker to fetch citation metadata from the Zotero better BibTeX plugin (defaults to 23119)."
+			)
 			.addText((text) => {
-				text
-					.setPlaceholder("23119")
+				text.setPlaceholder("23119")
 					.setValue(String(this.plugin.settings.zoteroPort))
 					.onChange(async (value) => {
 						const n = parseInt(value, 10);
@@ -903,11 +907,10 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Literature notes folder")
 			.setDesc(
-				"Vault folder where literature notes reside (e.g. lit/lit_notes). Leave blank to search anywhere in vault."
+				"Vault folder where literature notes reside (e.g. Lit/lit_notes). Leave blank to search anywhere in vault."
 			)
 			.addText((text) => {
-				text
-					.setPlaceholder("lit/lit_notes")
+				text.setPlaceholder("Lit/lit_notes")
 					.setValue(this.plugin.settings.litNotesFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.litNotesFolder = value.trim();
@@ -917,10 +920,11 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Minimum title match score")
-			.setDesc("Minimum fuzzy similarity score (0-100) required to match an AI source title to a Zotero item.")
+			.setDesc(
+				"Minimum fuzzy similarity score (0-100) required to match an AI source title to a Zotero item."
+			)
 			.addText((text) => {
-				text
-					.setPlaceholder("95")
+				text.setPlaceholder("95")
 					.setValue(String(this.plugin.settings.minTitleMatchScore))
 					.onChange(async (value) => {
 						const n = parseInt(value, 10);
@@ -933,26 +937,27 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Zotero library cache")
-			.setDesc("Clear in-memory cached Zotero library items to force a fresh fetch from Zotero on the next relink.")
+			.setDesc(
+				"Clear in-memory cached Zotero library items to force a fresh fetch from Zotero on the next relink."
+			)
 			.addButton((button) => {
-				button.setButtonText("Clear Cache").onClick(() => {
+				button.setButtonText("Clear cache").onClick(() => {
 					this.plugin.zoteroClient.clearCache();
 					new Notice("Zotero library cache cleared.");
 				});
 			});
 
 		// Zotero companion listener settings
-		containerEl.createEl("h3", { text: "Zotero Companion Listener" });
+		new Setting(containerEl).setName("Zotero companion listener").setHeading();
 
 		new Setting(containerEl)
 			.setName("Listener port")
 			.setDesc(
 				"Port the Zotero companion plugin POSTs to for creating/opening lit notes (default 27124). " +
-				"Restart Obsidian after changing. Must not conflict with Zotero's port (23119) or the Python webhook (5050)."
+					"Restart Obsidian after changing. Must not conflict with Zotero's port (23119) or the Python webhook (5050)."
 			)
 			.addText((text) => {
-				text
-					.setPlaceholder("27124")
+				text.setPlaceholder("27124")
 					.setValue(String(this.plugin.settings.litNotePort))
 					.onChange(async (value) => {
 						const n = parseInt(value, 10);
@@ -967,11 +972,10 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			.setName("Vault root path")
 			.setDesc(
 				"Absolute OS path to the Obsidian vault root. Used by the Zotero companion " +
-				"to resolve lit note paths. Leave as the default unless your vault has moved."
+					"to resolve lit note paths. Leave as the default unless your vault has moved."
 			)
 			.addText((text) => {
-				text
-					.setPlaceholder("/path/to/vault")
+				text.setPlaceholder("/path/to/vault")
 					.setValue(this.plugin.settings.vaultRoot)
 					.onChange(async (value) => {
 						this.plugin.settings.vaultRoot = value.trim();

@@ -50,7 +50,15 @@ export default [
       'obsidianmd/prefer-window-timers': 'error',
       'obsidianmd/regex-lookbehind': 'error',
       'obsidianmd/validate-license': 'error',
-      'obsidianmd/validate-manifest': 'error'
+      'obsidianmd/validate-manifest': 'error',
+      'obsidianmd/no-forbidden-elements': 'error',
+      'obsidianmd/no-static-styles-assignment': 'error',
+      'obsidianmd/no-view-references-in-plugin': 'error',
+      'obsidianmd/prefer-active-doc': 'error',
+      'obsidianmd/settings-tab/no-manual-html-headings': 'error',
+      'obsidianmd/settings-tab/no-problematic-settings-headings': 'error',
+      'obsidianmd/ui/sentence-case': 'error',
+      'obsidianmd/vault/iterate': 'error'
     }
   }
 ];

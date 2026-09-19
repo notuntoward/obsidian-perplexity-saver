@@ -14,10 +14,11 @@
 import http from "http";
 import { App, Notice, normalizePath, TFile, WorkspaceLeaf, MarkdownView } from "obsidian";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
-import type { 	LitNoteCreateRequest,
+import type {
+	LitNoteCreateRequest,
 	LitNoteRequest,
 	LitNoteResponse,
-	ZoteroItemPayload
+	ZoteroItemPayload,
 } from "./types";
 
 export interface LitNoteServerSettings {
@@ -85,7 +86,7 @@ async function handleCreate(
 	}
 
 	new Notice(force ? `Overwrote lit note: ${citekey}` : `Created lit note: ${citekey}`);
-	
+
 	// Open the note automatically
 	return handleOpen(app, settings, citekey);
 }
@@ -106,7 +107,8 @@ function positionCursorTwoLinesPastEnd(editor: any): void {
 	if (!text.endsWith("\n\n")) {
 		const needed = text.endsWith("\n") ? "\n" : "\n\n";
 		const lastLine = typeof editor.lineCount === "function" ? editor.lineCount() - 1 : 0;
-		const lastLineLen = typeof editor.getLine === "function" ? editor.getLine(lastLine).length : 0;
+		const lastLineLen =
+			typeof editor.getLine === "function" ? editor.getLine(lastLine).length : 0;
 		if (typeof editor.replaceRange === "function") {
 			editor.replaceRange(needed, { line: lastLine, ch: lastLineLen });
 		}
@@ -115,48 +117,50 @@ function positionCursorTwoLinesPastEnd(editor: any): void {
 	if (typeof editor.setCursor === "function") {
 		editor.setCursor({ line: targetLine, ch: 0 });
 	}
-	console.log(
-		`[LitNoteServer] Cursor positioned at line ${targetLine}, ch 0 (lineCount: ${
-			typeof editor.lineCount === "function" ? editor.lineCount() : "unknown"
-		})`
-	);
 }
 
 /** Bring the Obsidian Electron window to the foreground using the Electron API. */
-function focusObsidianWindow(): void {
+export function focusObsidianWindow(): void {
 	try {
-		// Obsidian exposes 'electron' on the global object in its renderer process.
-		// Accessing it via (window as any).electron or require('electron') both work.
-		const electron = (window as any).electron ?? (typeof require === "function" ? require("electron") : null);
-		if (electron?.ipcRenderer) {
-			// Use IPC to tell main process to focus the window.
-			// Obsidian's main process responds to the "obsidian:focus-window" message.
-			// If that doesn't exist, we try calling BrowserWindow.getFocusedWindow or getCurrentWindow.
-			console.log("[LitNoteServer] Attempting to focus Obsidian OS window via Electron IPC...");
+		const win =
+			typeof activeWindow !== "undefined"
+				? (activeWindow as any)
+				: typeof window !== "undefined"
+					? (window as any)
+					: null;
+		if (!win) return;
+
+		let electron: any = win.electron;
+		if (!electron && typeof win.require === "function") {
 			try {
-				electron.ipcRenderer.invoke("obsidian:focus-window").catch(() => {});
-			} catch(_) {}
+				electron = win.require("electron");
+			} catch {
+				// Ignore
+			}
 		}
-		// Fallback: use the @electron/remote getCurrentWindow().show() + focus() pattern.
-		const remote = (window as any).require?.("@electron/remote") ?? (window as any).__electronRemote;
+
+		let remote: any = win.__electronRemote ?? electron?.remote;
+		if (!remote && typeof win.require === "function") {
+			try {
+				remote = win.require("@electron/remote");
+			} catch {
+				// Ignore
+			}
+		}
+
 		if (remote?.getCurrentWindow) {
-			console.log("[LitNoteServer] Focusing OS window via @electron/remote.getCurrentWindow().show().focus()...");
-			const win = remote.getCurrentWindow();
-			if (win.isMinimized()) win.restore();
-			win.show();
-			win.focus();
+			const currentWin = remote.getCurrentWindow();
+			if (typeof currentWin.isMinimized === "function" && currentWin.isMinimized()) {
+				currentWin.restore();
+			}
+			currentWin.show?.();
+			currentWin.focus?.();
 			return;
 		}
-		// Second fallback: Obsidian 1.5+ sometimes exposes BrowserWindow through app internal.
-		const obsApp = (window as any).app;
-		if (obsApp?.emulateMobile !== undefined && electron?.remote?.getCurrentWindow) {
-			const win = electron.remote.getCurrentWindow();
-			if (win.isMinimized()) win.restore();
-			win.show();
+
+		if (typeof win.focus === "function") {
 			win.focus();
-			return;
 		}
-		console.log("[LitNoteServer] No Electron window focus API found; relying on workspace activation only.");
 	} catch (err) {
 		console.warn("[LitNoteServer] focusObsidianWindow error:", err);
 	}
@@ -167,10 +171,6 @@ async function handleOpen(
 	settings: LitNoteServerSettings,
 	citekey: string
 ): Promise<LitNoteResponse> {
-	console.log(
-		`[LitNoteServer] handleOpen requested for citekey: "${citekey}" | document.hasFocus: ${typeof document !== "undefined" ? document.hasFocus() : "n/a"} | visibilityState: ${typeof document !== "undefined" ? document.visibilityState : "n/a"}`
-	);
-
 	const folderPath = normalizePath(settings.litNotesFolder);
 	const notePath = normalizePath(`${folderPath}/${citekey}.md`);
 
@@ -185,34 +185,24 @@ async function handleOpen(
 
 	const file = fileOrFolder;
 
-	// Step 1: Bring the Obsidian OS window to the foreground immediately.
-	// This is the main fix: make the OS window visible so Chromium tab switching works.
+	// Bring the Obsidian OS window to the foreground immediately so Chromium activates the view.
 	focusObsidianWindow();
 
-	// Step 2: Check for an existing leaf matching this file (including deferred leaves)
+	// Check for an existing leaf matching this file (including deferred leaves)
 	let targetLeaf: WorkspaceLeaf | null = null;
 	if (typeof app.workspace.iterateAllLeaves === "function") {
 		app.workspace.iterateAllLeaves((leaf) => {
 			const view = leaf.view as any;
-			const viewFile = view?.file?.path ||
-				(typeof leaf.getViewState === "function" ? (leaf.getViewState()?.state as any)?.file : undefined);
+			const viewFile =
+				view?.file?.path ||
+				(typeof leaf.getViewState === "function"
+					? (leaf.getViewState()?.state as any)?.file
+					: undefined);
 			if (viewFile === file.path && !targetLeaf) {
 				targetLeaf = leaf;
 			}
 		});
 	}
-	if (!targetLeaf) {
-		const existingLeaves = app.workspace.getLeavesOfType("markdown");
-		for (const leaf of existingLeaves) {
-			const view = leaf.view as any;
-			if (view?.file?.path === file.path) {
-				targetLeaf = leaf;
-				break;
-			}
-		}
-	}
-
-	console.log(`[LitNoteServer] Target leaf found: ${!!targetLeaf} (isDeferred: ${(targetLeaf as any)?.isDeferred})`);
 
 	const cursorState = {
 		cursor: {
@@ -223,133 +213,39 @@ async function handleOpen(
 	};
 
 	if (!targetLeaf) {
-		console.log(`[LitNoteServer] Opening new tab leaf for file: ${file.path}`);
 		targetLeaf = app.workspace.getLeaf("tab");
 	}
 
-	console.log(`[LitNoteServer] Calling targetLeaf.openFile...`);
 	await targetLeaf.openFile(file, {
 		active: true,
 		eState: cursorState,
 	});
 
-	const activateLeafAndEditor = async (source: string) => {
-		console.log(
-			`[LitNoteServer] activateLeafAndEditor triggered via: ${source} | document.hasFocus: ${typeof document !== "undefined" ? document.hasFocus() : "n/a"} | visibilityState: ${typeof document !== "undefined" ? document.visibilityState : "n/a"}`
-		);
-		if (!targetLeaf) return;
+	if (
+		(targetLeaf as any).isDeferred &&
+		typeof (targetLeaf as any).loadIfDeferred === "function"
+	) {
+		await (targetLeaf as any).loadIfDeferred();
+	}
+	if (typeof app.workspace.revealLeaf === "function") {
+		await app.workspace.revealLeaf(targetLeaf);
+	}
+	if (typeof app.workspace.setActiveLeaf === "function") {
+		app.workspace.setActiveLeaf(targetLeaf, { focus: true });
+	}
+	if (typeof targetLeaf.setEphemeralState === "function") {
+		targetLeaf.setEphemeralState(cursorState);
+	}
 
-		try {
-			if ((targetLeaf as any).isDeferred && typeof (targetLeaf as any).loadIfDeferred === "function") {
-				console.log(`[LitNoteServer] Leaf is deferred; calling loadIfDeferred()...`);
-				await (targetLeaf as any).loadIfDeferred();
-			}
-			if (typeof app.workspace.revealLeaf === "function") {
-				console.log(`[LitNoteServer] Calling workspace.revealLeaf...`);
-				await app.workspace.revealLeaf(targetLeaf);
-			}
-			if (typeof app.workspace.setActiveLeaf === "function") {
-				console.log(`[LitNoteServer] Calling workspace.setActiveLeaf(targetLeaf, { focus: true })...`);
-				app.workspace.setActiveLeaf(targetLeaf, { focus: true });
-			}
-			if (typeof targetLeaf.setEphemeralState === "function") {
-				targetLeaf.setEphemeralState(cursorState);
-			}
-
-			const v = targetLeaf.view as any;
-			if (v?.editor) {
-				console.log(`[LitNoteServer] Focusing editor...`);
-				v.editor.focus?.();
-				positionCursorTwoLinesPastEnd(v.editor);
-			} else {
-				console.log(`[LitNoteServer] view.editor not available yet (viewType: ${v?.getViewType?.()})`);
-			}
-		} catch (err) {
-			console.error(`[LitNoteServer] Error during activateLeafAndEditor:`, err);
-		}
-	};
-
-	// 1. Immediate activation
-	await activateLeafAndEditor("immediate");
-
-	// 2. Short follow-up activation (after view transition)
-	window.setTimeout(() => {
-		activateLeafAndEditor("timeout-50ms");
-	}, 50);
-
-	// 3. Multi-channel window activation watcher.
-	// IMPORTANT: Only trigger on visibilitychange (tab becoming visible) and pointerdown (user clicking).
-	// Do NOT use window.focus because that fires from our own blur() calls and from the OS without
-	// the page actually becoming visible (visibilityState remains "hidden" when covered by fullscreen).
-	if (typeof window !== "undefined" && typeof document !== "undefined") {
-		let cleaned = false;
-		let focusWindowRetries = 0;
-
-		const cleanup = () => {
-			if (cleaned) return;
-			cleaned = true;
-			console.log("[LitNoteServer] Window activation watcher cleaned up.");
-			document.removeEventListener("visibilitychange", onVisChange);
-			document.removeEventListener("pointerdown", onPointerDown, { capture: true });
-			document.removeEventListener("click", onClick, { capture: true });
-		};
-
-		const onActivationEvent = async (evtName: string) => {
-			console.log(
-				`[LitNoteServer] Window activation event detected: "${evtName}" | visibilityState: ${document.visibilityState}`
-			);
-			cleanup();
-			await activateLeafAndEditor(`event:${evtName}`);
-
-			// Re-assert check after 150ms in case another plugin or layout handler diverted focus
-			window.setTimeout(async () => {
-				if (targetLeaf && app.workspace.activeLeaf !== targetLeaf) {
-					console.warn(
-						`[LitNoteServer] Active leaf diverted from targetLeaf after "${evtName}"; re-asserting!`
-					);
-					await activateLeafAndEditor("re-assert");
-				}
-			}, 150);
-		};
-
-		// Only trigger on visibility becoming visible (not on spurious focus events)
-		const onVisChange = () => {
-			if (document.visibilityState === "visible") {
-				onActivationEvent("document.visibilitychange");
-			}
-		};
-
-		const onPointerDown = () => onActivationEvent("document.pointerdown");
-		const onClick = () => onActivationEvent("document.click");
-
-		document.addEventListener("visibilitychange", onVisChange);
-		document.addEventListener("pointerdown", onPointerDown, { capture: true });
-		document.addEventListener("click", onClick, { capture: true });
-
-		// Retry focusObsidianWindow up to 3 times in case the first call didn't work
-		// (race condition with fullscreen window getting focus back)
-		const retryFocus = () => {
-			if (cleaned || focusWindowRetries >= 3) return;
-			focusWindowRetries++;
-			console.log(`[LitNoteServer] Retrying focusObsidianWindow (attempt ${focusWindowRetries})...`);
-			focusObsidianWindow();
-			if (!cleaned) {
-				window.setTimeout(retryFocus, 300);
-			}
-		};
-		window.setTimeout(retryFocus, 300);
-
-		// Keep watcher active for up to 60 seconds
-		window.setTimeout(() => {
-			if (!cleaned) {
-				console.log("[LitNoteServer] Window activation watcher timed out after 60s.");
-				cleanup();
-			}
-		}, 60000);
+	const v = targetLeaf.view as any;
+	if (v?.editor) {
+		v.editor.focus?.();
+		positionCursorTwoLinesPastEnd(v.editor);
 	}
 
 	return { success: true, path: notePath };
 }
+
 // ---------------------------------------------------------------------------
 // Request router
 // ---------------------------------------------------------------------------
@@ -426,18 +322,24 @@ async function handleRequest(
 				lastResult = await handleCreate(app, settings, item, force);
 				if (!lastResult.success) break;
 			}
-			const statusCode = lastResult.success ? 200 : (lastResult.error === "exists" ? 200 : 500);
+			const statusCode = lastResult.success ? 200 : lastResult.error === "exists" ? 200 : 500;
 			sendJson(res, statusCode, lastResult);
 		} else if (parsed.action === "open") {
 			const citekey = (parsed as { action: "open"; citekey: string }).citekey?.trim();
 			if (!citekey) {
-				sendJson(res, 400, { success: false, error: "citekey is required for open action" });
+				sendJson(res, 400, {
+					success: false,
+					error: "citekey is required for open action",
+				});
 				return;
 			}
 			const result = await handleOpen(app, settings, citekey);
 			sendJson(res, 200, result);
 		} else {
-			sendJson(res, 400, { success: false, error: `Unknown action: ${(parsed as { action: string }).action}` });
+			sendJson(res, 400, {
+				success: false,
+				error: `Unknown action: ${(parsed as { action: string }).action}`,
+			});
 		}
 	} catch (err: unknown) {
 		const msg = err instanceof Error ? err.message : String(err);
@@ -455,10 +357,7 @@ async function handleRequest(
  * Returns the server instance so the caller can call `stopLitNoteServer` in
  * `onunload()`.
  */
-export function startLitNoteServer(
-	app: App,
-	settings: LitNoteServerSettings
-): http.Server {
+export function startLitNoteServer(app: App, settings: LitNoteServerSettings): http.Server {
 	const server = http.createServer((req, res) => {
 		handleRequest(app, settings, req, res).catch((err) => {
 			console.error("[LitNoteServer] Fatal request error:", err);

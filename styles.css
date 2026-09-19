@@ -59,3 +59,18 @@
 		transform: rotate(360deg);
 	}
 }
+
+.perplexity-inline-input {
+	margin-left: 4px;
+	margin-right: 4px;
+	border: none;
+	border-bottom: 1px solid var(--text-accent);
+	background: var(--background-primary-alt);
+	padding: 2px 6px;
+	min-width: 200px;
+}
+
+.suggestion-item.is-current {
+	border: 1px solid var(--text-muted);
+	border-radius: 4px;
+}

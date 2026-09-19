@@ -95,7 +95,9 @@ export async function autoRelinkSourcesInNote(
 		// `TypeError: Failed to resolve module specifier 'obsidian'`,
 		// silently swallowing whatever error actually triggered this catch.
 		if (err?.message === AUTO_RELINK_TIMEOUT_SENTINEL) {
-			console.warn(`Auto-relinking timed out after ${AUTO_RELINK_TIMEOUT_MS}ms; saving note unlinked.`);
+			console.warn(
+				`Auto-relinking timed out after ${AUTO_RELINK_TIMEOUT_MS}ms; saving note unlinked.`
+			);
 			new Notice(
 				`Zotero didn't respond within ${AUTO_RELINK_TIMEOUT_MS / 1000}s — saved without relinking. Run "Relink sources with Zotero" later if needed.`,
 				19000
@@ -105,7 +107,7 @@ export async function autoRelinkSourcesInNote(
 			const msg = String(err?.message || "");
 			if (msg.includes("403") || msg.toLowerCase().includes("forbidden")) {
 				new Notice(
-					"Auto-relinking with Zotero failed: Local API access was rejected (HTTP 403). In Zotero, go to Settings → Advanced and ensure 'Allow other applications on this computer to communicate with Zotero' is enabled.",
+					"Auto-relinking with Zotero failed: Local API access was rejected (HTTP 403). In Zotero, go to settings → advanced and ensure 'allow other applications on this computer to communicate with Zotero' is enabled.",
 					19000
 				);
 			} else {
@@ -189,11 +191,20 @@ export async function relinkSourcesInNote(
 
 			if (match) {
 				const title = targetTitle || match.title;
-				const litNoteStem = findLitNoteForCitekey(app, match.citekey, options.litNotesFolder);
+				const litNoteStem = findLitNoteForCitekey(
+					app,
+					match.citekey,
+					options.litNotesFolder
+				);
 				if (litNoteStem) {
 					newState = { kind: "lit-note", citekey: litNoteStem, title };
 				} else {
-					newState = { kind: "zotero-item", citekey: match.citekey, zotkey: match.zotkey, title };
+					newState = {
+						kind: "zotero-item",
+						citekey: match.citekey,
+						zotkey: match.zotkey,
+						title,
+					};
 				}
 				preservedRawUrl = targetUrl || match.url || "";
 			}
