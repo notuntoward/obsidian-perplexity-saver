@@ -148,5 +148,126 @@ describe("Lit Note Server", () => {
 
 			expect(res.writeHead).toHaveBeenCalledWith(404, expect.any(Object));
 		});
+
+		it("activates, reveals, positions cursor, and focuses when opening a lit note", async () => {
+			const mockLeaf = {
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: {
+					editor: {
+						focus: vi.fn(),
+					},
+				},
+			};
+			// Make view an instance of MarkdownView-like object or mock
+			const mockApp = {
+				vault: {
+					getAbstractFileByPath: vi.fn((path) => {
+						if (path === "lit/lit_notes") return { path };
+						if (path.includes("test-note")) return Object.assign(Object.create(TFile.prototype), { path });
+						return null;
+					}),
+				},
+				workspace: {
+					getLeavesOfType: vi.fn(() => []),
+					getLeaf: vi.fn(() => mockLeaf),
+					revealLeaf: vi.fn(),
+					setActiveLeaf: vi.fn(),
+				},
+			} as any;
+			const mockSettings = { litNotesFolder: "lit/lit_notes" } as any;
+			startLitNoteServer(mockApp, mockSettings);
+
+			const req = createMockReq("POST", "/lit-note", {
+				action: "open",
+				citekey: "test-note",
+			});
+			const { res, endPromise } = createMockRes();
+
+			requestHandler(req, res);
+			await endPromise;
+
+			expect(mockApp.workspace.getLeaf).toHaveBeenCalledWith("tab");
+			expect(mockLeaf.openFile).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					active: true,
+					eState: expect.objectContaining({
+						cursor: { from: { line: 99999, ch: 0 }, to: { line: 99999, ch: 0 } },
+						line: 99999,
+					}),
+				})
+			);
+			expect(mockApp.workspace.revealLeaf).toHaveBeenCalledWith(mockLeaf);
+			expect(mockApp.workspace.setActiveLeaf).toHaveBeenCalledWith(mockLeaf, { focus: true });
+			expect(mockLeaf.setEphemeralState).toHaveBeenCalledWith(
+				expect.objectContaining({
+					cursor: { from: { line: 99999, ch: 0 }, to: { line: 99999, ch: 0 } },
+					line: 99999,
+				})
+			);
+		});
+
+
+		it("handles deferred leaves by awaiting loadIfDeferred and positions cursor two blank lines below", async () => {
+			let docText = "# Note Title\n> citation text";
+			const mockEditor = {
+				focus: vi.fn(),
+				getValue: vi.fn(() => docText),
+				lineCount: vi.fn(() => docText.split("\n").length),
+				getLine: vi.fn((l: number) => docText.split("\n")[l] || ""),
+				replaceRange: vi.fn((insert: string) => {
+					docText += insert;
+				}),
+				setCursor: vi.fn(),
+			};
+
+			const mockLeaf = {
+				isDeferred: true,
+				loadIfDeferred: vi.fn(async () => {
+					mockLeaf.isDeferred = false;
+				}),
+				getViewState: vi.fn(() => ({ state: { file: "lit/lit_notes/deferred-note.md" } })),
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: {
+					editor: mockEditor,
+				},
+			};
+
+			const mockApp = {
+				vault: {
+					getAbstractFileByPath: vi.fn((path) => {
+						if (path === "lit/lit_notes") return { path };
+						if (path.includes("deferred-note")) return Object.assign(Object.create(TFile.prototype), { path });
+						return null;
+					}),
+				},
+				workspace: {
+					iterateAllLeaves: vi.fn((cb) => cb(mockLeaf)),
+					getLeavesOfType: vi.fn(() => [mockLeaf]),
+					getLeaf: vi.fn(() => mockLeaf),
+					revealLeaf: vi.fn(async () => {}),
+					setActiveLeaf: vi.fn(),
+				},
+			} as any;
+			const mockSettings = { litNotesFolder: "lit/lit_notes" } as any;
+			startLitNoteServer(mockApp, mockSettings);
+
+			const req = createMockReq("POST", "/lit-note", {
+				action: "open",
+				citekey: "deferred-note",
+			});
+			const { res, endPromise } = createMockRes();
+
+			requestHandler(req, res);
+			await endPromise;
+
+			expect(mockLeaf.loadIfDeferred).toHaveBeenCalled();
+			expect(mockApp.workspace.revealLeaf).toHaveBeenCalledWith(mockLeaf);
+			expect(mockApp.workspace.setActiveLeaf).toHaveBeenCalledWith(mockLeaf, { focus: true });
+			expect(mockEditor.replaceRange).toHaveBeenCalledWith("\n\n", expect.anything());
+			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: 3, ch: 0 });
+		});
 	});
 });

@@ -334,7 +334,7 @@ export function buildLitNoteBody(
 		}
 	}
 
-	return lines.join("\n");
+	return lines.join("\n") + "\n\n";
 }
 
 // ---------------------------------------------------------------------------
