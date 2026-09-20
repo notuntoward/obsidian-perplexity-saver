@@ -25,11 +25,11 @@ describe("Lit Note Builder", () => {
 	});
 
 	describe("Callout components", () => {
-		it("builds links with all attachment types", () => {
+		it("builds links with all attachment types using itemkey", () => {
 			const item: ZoteroItemPayload = {
 				title: "Test",
 				citekey: "test",
-				desktopURI: "zotero://select/items/1",
+				itemkey: "VVUZBQM2",
 				DOI: "10.1234/test",
 				url: "https://example.com",
 				attachments: [
@@ -38,7 +38,41 @@ describe("Lit Note Builder", () => {
 				],
 			};
 			const links = buildInfoCalloutLinks(item);
-			expect(links).toBe("[**Zotero**](zotero://select/items/1) | [**DOI**](https://doi.org/10.1234/test) | [**URL**](https://example.com) | **[[doc.pdf|PDF]]** | **[[file.epub|EPUB]]**");
+			expect(links).toBe("[**Zotero**](zotero://select/library/items/VVUZBQM2) | [**DOI**](https://doi.org/10.1234/test) | [**URL**](https://example.com) | **[[doc.pdf|PDF]]** | **[[file.epub|EPUB]]**");
+		});
+
+		it("always builds clean item select links using itemkey regardless of collections", () => {
+			const itemWithCollections: ZoteroItemPayload = {
+				title: "Test",
+				citekey: "test",
+				itemkey: "6EX2GZ5P",
+				collections: ["Scratch Space"],
+			};
+			expect(buildInfoCalloutLinks(itemWithCollections)).toBe("[**Zotero**](zotero://select/library/items/6EX2GZ5P)");
+
+			const itemWithEmptyCollections: ZoteroItemPayload = {
+				title: "Test",
+				citekey: "test",
+				itemkey: "VVUZBQM2",
+				collections: [],
+			};
+			expect(buildInfoCalloutLinks(itemWithEmptyCollections)).toBe("[**Zotero**](zotero://select/library/items/VVUZBQM2)");
+		});
+
+		it("falls back to desktopURI or extracts item key if itemkey is not directly provided", () => {
+			const itemWithHttpDesktopUri: ZoteroItemPayload = {
+				title: "Test",
+				citekey: "test",
+				desktopURI: "http://zotero.org/users/local/123/items/SWDUCE7N",
+			};
+			expect(buildInfoCalloutLinks(itemWithHttpDesktopUri)).toBe("[**Zotero**](zotero://select/library/items/SWDUCE7N)");
+
+			const itemWithCustomDesktopUri: ZoteroItemPayload = {
+				title: "Test",
+				citekey: "test",
+				desktopURI: "zotero://select/library/items/ABC123",
+			};
+			expect(buildInfoCalloutLinks(itemWithCustomDesktopUri)).toBe("[**Zotero**](zotero://select/library/items/ABC123)");
 		});
 
 		it("builds prefix with abstract and creators", () => {

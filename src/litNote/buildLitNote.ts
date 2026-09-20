@@ -86,12 +86,25 @@ const ATTACHMENT_LABELS: Record<string, string> = {
 
 /**
  * Build the `[!info]-` callout title link bar.
- * Always includes the Zotero desktop URI; adds DOI, URL, and
- * Wikilinked attachment links only when the corresponding field is present.
+ * Always includes the Zotero desktop select URI (zotero://select/library/items/<itemkey>);
+ * adds DOI, URL, and Wikilinked attachment links only when the corresponding field is present.
  * Ported from `build_info_callout_links()`.
  */
 export function buildInfoCalloutLinks(item: ZoteroItemPayload): string {
-	const links: string[] = [`[**Zotero**](${item.desktopURI ?? ""})`];
+	let zoteroUri = "";
+
+	if (item.itemkey) {
+		zoteroUri = `zotero://select/library/items/${item.itemkey}`;
+	} else if (item.desktopURI) {
+		const match = item.desktopURI.match(/items\/([A-Za-z0-9]+)/);
+		if (match) {
+			zoteroUri = `zotero://select/library/items/${match[1]}`;
+		} else {
+			zoteroUri = item.desktopURI;
+		}
+	}
+
+	const links: string[] = [`[**Zotero**](${encodeURI(zoteroUri)})`];
 
 	if (item.DOI) {
 		links.push(`[**DOI**](https://doi.org/${item.DOI})`);
