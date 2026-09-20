@@ -53,18 +53,35 @@ export interface LitNoteCreateRequest {
 	action: "create";
 	/** The sender wraps items in a data array (matching existing sender JS shape). */
 	data: ZoteroItemPayload[];
-	force?: boolean;
 }
 
 export interface LitNoteOpenRequest {
 	action: "open";
-	citekey: string;
+	/** Full payloads, so a missing note can be created if the user chooses. */
+	data?: ZoteroItemPayload[];
+	/** Legacy single-citekey form; opens only, never creates. */
+	citekey?: string;
 }
 
 export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest;
 
+export type LitNoteItemStatus =
+	| "created"
+	| "overwritten"
+	| "opened"
+	| "skipped"
+	| "missing"
+	| "error";
+
+export interface LitNoteItemResult {
+	citekey: string;
+	status: LitNoteItemStatus;
+	error?: string;
+}
+
 export interface LitNoteResponse {
 	success: boolean;
+	results?: LitNoteItemResult[];
 	path?: string;
 	error?: string;
 }

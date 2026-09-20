@@ -6,16 +6,26 @@
  *
  * Supported endpoints:
  *   POST /lit-note   { action: "create", data: ZoteroItemPayload[] }
- *                    → creates lit note(s) in the vault
- *   POST /lit-note   { action: "open", citekey: string }
- *                    → opens/focuses a lit note in Obsidian
+ *                    → creates lit note(s); if any already exist, prompts in
+ *                      Obsidian (Overwrite / Open existing / Skip / Cancel)
+ *   POST /lit-note   { action: "open", data: ZoteroItemPayload[] }
+ *                    → opens lit note(s); if any are missing, prompts in
+ *                      Obsidian (Create / Skip / Cancel)
+ *                    Legacy form { action: "open", citekey } opens only.
+ *
+ * Decisions are always shown as an Obsidian modal, so the prompt is never
+ * hidden behind Obsidian or another window and looks the same every time.
  */
 
 import http from "http";
-import { App, Notice, normalizePath, TFile, WorkspaceLeaf, MarkdownView } from "obsidian";
+import { App, Notice, normalizePath, TFile } from "obsidian";
+import type { WorkspaceLeaf } from "obsidian";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
+import { askNoteDecision, type NoteDecision } from "./decisionModal";
 import type {
-	LitNoteCreateRequest,
+	LitNoteItemResult,
+	LitNoteItemStatus,
+	LitNoteOpenRequest,
 	LitNoteRequest,
 	LitNoteResponse,
 	ZoteroItemPayload,
@@ -26,24 +36,42 @@ export interface LitNoteServerSettings {
 }
 
 // ---------------------------------------------------------------------------
-// Handler: create lit note
+// Shared helpers
 // ---------------------------------------------------------------------------
 
-async function handleCreate(
+/** Serialize create/open handling so two requests can't race on the vault. */
+let opChain: Promise<unknown> = Promise.resolve();
+
+function runSerialized<T>(fn: () => Promise<T>): Promise<T> {
+	const run = opChain.then(fn, fn);
+	opChain = run.catch(() => undefined);
+	return run;
+}
+
+function errorMessage(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+function citekeyOf(item: ZoteroItemPayload): string {
+	return (item.citekey ?? "").trim();
+}
+
+function notePathFor(settings: LitNoteServerSettings, citekey: string): string {
+	const folderPath = normalizePath(settings.litNotesFolder);
+	return normalizePath(`${folderPath}/${citekey}.md`);
+}
+
+function existingFile(
 	app: App,
 	settings: LitNoteServerSettings,
-	item: ZoteroItemPayload,
-	force: boolean = false
-): Promise<LitNoteResponse> {
-	const citekey = (item.citekey ?? "").trim();
-	if (!citekey) {
-		return { success: false, error: "Payload missing citekey" };
-	}
+	citekey: string
+): TFile | null {
+	const file = app.vault.getAbstractFileByPath(notePathFor(settings, citekey));
+	return file instanceof TFile ? file : null;
+}
 
+async function ensureFolder(app: App, settings: LitNoteServerSettings): Promise<void> {
 	const folderPath = normalizePath(settings.litNotesFolder);
-	const notePath = normalizePath(`${folderPath}/${citekey}.md`);
-
-	// Ensure folder exists
 	if (!app.vault.getAbstractFileByPath(folderPath)) {
 		try {
 			await app.vault.createFolder(folderPath);
@@ -51,27 +79,25 @@ async function handleCreate(
 			// Ignore if it was created by a concurrent request
 		}
 	}
+}
 
-	const existing = app.vault.getAbstractFileByPath(notePath);
-	if (existing instanceof TFile && !force) {
-		// Return a specific "exists" error so Zotero can prompt the user
-		return { success: false, error: "exists" };
-	}
-
+/** Create or overwrite the note body/frontmatter and return the file. */
+async function writeNote(
+	app: App,
+	settings: LitNoteServerSettings,
+	item: ZoteroItemPayload,
+	existing: TFile | null
+): Promise<TFile> {
+	const citekey = citekeyOf(item);
 	const body = buildLitNoteBody(app, settings, item);
 	const frontmatter = buildLitNoteFrontmatter(item);
 
 	let file: TFile;
-	try {
-		if (existing instanceof TFile && force) {
-			await app.vault.modify(existing, body);
-			file = existing;
-		} else {
-			file = await app.vault.create(notePath, body);
-		}
-	} catch (err: unknown) {
-		const msg = err instanceof Error ? err.message : String(err);
-		return { success: false, error: `vault ${force ? "modify" : "create"} failed: ${msg}` };
+	if (existing) {
+		await app.vault.modify(existing, body);
+		file = existing;
+	} else {
+		file = await app.vault.create(notePathFor(settings, citekey), body);
 	}
 
 	try {
@@ -85,14 +111,117 @@ async function handleCreate(
 		console.warn("[LitNoteServer] processFrontMatter failed:", err);
 	}
 
-	new Notice(force ? `Overwrote lit note: ${citekey}` : `Created lit note: ${citekey}`);
+	return file;
+}
 
-	// Open the note automatically
-	return handleOpen(app, settings, citekey);
+function noticeSummary(results: LitNoteItemResult[]): void {
+	const counts: Record<LitNoteItemStatus, number> = {
+		created: 0,
+		overwritten: 0,
+		opened: 0,
+		skipped: 0,
+		missing: 0,
+		error: 0,
+	};
+	for (const r of results) counts[r.status] += 1;
+	const parts: string[] = [];
+	if (counts.created) parts.push(`${counts.created} created`);
+	if (counts.overwritten) parts.push(`${counts.overwritten} overwritten`);
+	if (counts.opened) parts.push(`${counts.opened} opened`);
+	if (counts.skipped) parts.push(`${counts.skipped} skipped`);
+	if (counts.missing) parts.push(`${counts.missing} missing`);
+	if (counts.error) parts.push(`${counts.error} failed`);
+	if (parts.length) new Notice(`Lit notes: ${parts.join(", ")}`);
 }
 
 // ---------------------------------------------------------------------------
-// Handler: open / focus lit note
+// Handler: create lit notes
+// ---------------------------------------------------------------------------
+
+async function handleCreateBatch(
+	app: App,
+	settings: LitNoteServerSettings,
+	items: ZoteroItemPayload[]
+): Promise<LitNoteItemResult[]> {
+	await ensureFolder(app, settings);
+
+	const entries = items.map((item) => ({ item, citekey: citekeyOf(item) }));
+	const existingEntries = entries.filter(
+		(e) => e.citekey && existingFile(app, settings, e.citekey)
+	);
+
+	let decision: NoteDecision = "overwrite";
+	if (existingEntries.length) {
+		const citekeys = existingEntries.map((e) => e.citekey).join("\n");
+		focusObsidianWindow();
+		decision = await askNoteDecision(
+			app,
+			existingEntries.length === 1
+				? "Lit note already exists"
+				: `${existingEntries.length} lit notes already exist`,
+			`Already in the Obsidian vault:\n\n${citekeys}\n\nOverwrite with the Zotero data, open the existing note, or skip it?`,
+			[
+				{ label: "Overwrite", value: "overwrite", cta: true },
+				{ label: "Open existing", value: "open-existing" },
+				{ label: "Skip", value: "skip" },
+				{ label: "Cancel", value: "cancel" },
+			]
+		);
+	}
+
+	const results: LitNoteItemResult[] = [];
+	if (decision === "cancel") {
+		return entries.map((e) => ({
+			citekey: e.citekey,
+			status: "skipped" as const,
+		}));
+	}
+
+	for (const entry of entries) {
+		if (!entry.citekey) {
+			results.push({
+				citekey: "",
+				status: "error",
+				error: "Payload missing citekey",
+			});
+			continue;
+		}
+
+		const existing = existingFile(app, settings, entry.citekey);
+		try {
+			if (existing) {
+				if (decision === "skip") {
+					results.push({ citekey: entry.citekey, status: "skipped" });
+					continue;
+				}
+				if (decision === "open-existing") {
+					await openFile(app, existing);
+					results.push({ citekey: entry.citekey, status: "opened" });
+					continue;
+				}
+				await writeNote(app, settings, entry.item, existing);
+				await openFile(app, existing);
+				results.push({ citekey: entry.citekey, status: "overwritten" });
+			} else {
+				const created = await writeNote(app, settings, entry.item, null);
+				await openFile(app, created);
+				results.push({ citekey: entry.citekey, status: "created" });
+			}
+		} catch (err: unknown) {
+			results.push({
+				citekey: entry.citekey,
+				status: "error",
+				error: errorMessage(err),
+			});
+		}
+	}
+
+	noticeSummary(results);
+	return results;
+}
+
+// ---------------------------------------------------------------------------
+// Handler: open / focus lit notes
 // ---------------------------------------------------------------------------
 
 function positionCursorTwoLinesPastEnd(editor: any): void {
@@ -107,8 +236,7 @@ function positionCursorTwoLinesPastEnd(editor: any): void {
 	if (!text.endsWith("\n\n")) {
 		const needed = text.endsWith("\n") ? "\n" : "\n\n";
 		const lastLine = typeof editor.lineCount === "function" ? editor.lineCount() - 1 : 0;
-		const lastLineLen =
-			typeof editor.getLine === "function" ? editor.getLine(lastLine).length : 0;
+		const lastLineLen = typeof editor.getLine === "function" ? editor.getLine(lastLine).length : 0;
 		if (typeof editor.replaceRange === "function") {
 			editor.replaceRange(needed, { line: lastLine, ch: lastLineLen });
 		}
@@ -166,24 +294,22 @@ export function focusObsidianWindow(): void {
 	}
 }
 
-async function handleOpen(
-	app: App,
-	settings: LitNoteServerSettings,
-	citekey: string
-): Promise<LitNoteResponse> {
-	const folderPath = normalizePath(settings.litNotesFolder);
-	const notePath = normalizePath(`${folderPath}/${citekey}.md`);
-
-	const fileOrFolder = app.vault.getAbstractFileByPath(notePath);
-	if (!(fileOrFolder instanceof TFile)) {
-		console.warn(`[LitNoteServer] Lit note file not found at: "${notePath}"`);
-		return {
-			success: false,
-			error: `Lit note not found: ${notePath}`,
-		};
+async function openFile(app: App, file: TFile): Promise<void> {
+	// If Obsidian is still starting up, wait for workspace layout to be ready
+	// so opening the tab is not overridden when Obsidian finishes loading workspace.json.
+	if (
+		app.workspace &&
+		!app.workspace.layoutReady &&
+		typeof app.workspace.onLayoutReady === "function"
+	) {
+		await new Promise<void>((resolve) => {
+			const timeout = window.setTimeout(() => resolve(), 5000);
+			app.workspace.onLayoutReady(() => {
+				window.clearTimeout(timeout);
+				resolve();
+			});
+		});
 	}
-
-	const file = fileOrFolder;
 
 	// Bring the Obsidian OS window to the foreground immediately so Chromium activates the view.
 	focusObsidianWindow();
@@ -237,13 +363,111 @@ async function handleOpen(
 		targetLeaf.setEphemeralState(cursorState);
 	}
 
-	const v = targetLeaf.view as any;
-	if (v?.editor) {
-		v.editor.focus?.();
-		positionCursorTwoLinesPastEnd(v.editor);
+	let editor = (targetLeaf.view as any)?.editor;
+	if (!editor) {
+		await new Promise((resolve) => window.setTimeout(resolve, 50));
+		editor = (targetLeaf.view as any)?.editor;
+	}
+	if (editor) {
+		editor.focus?.();
+		positionCursorTwoLinesPastEnd(editor);
 	}
 
-	return { success: true, path: notePath };
+	focusObsidianWindow();
+}
+
+interface OpenEntry {
+	citekey: string;
+	item?: ZoteroItemPayload;
+}
+
+async function handleOpenBatch(
+	app: App,
+	settings: LitNoteServerSettings,
+	entries: OpenEntry[]
+): Promise<LitNoteItemResult[]> {
+	const results: LitNoteItemResult[] = [];
+	const found: OpenEntry[] = [];
+	const missing: OpenEntry[] = [];
+
+	for (const entry of entries) {
+		if (!entry.citekey) {
+			results.push({
+				citekey: "",
+				status: "error",
+				error: "Missing citekey",
+			});
+			continue;
+		}
+		if (existingFile(app, settings, entry.citekey)) {
+			found.push(entry);
+		} else {
+			missing.push(entry);
+		}
+	}
+
+	for (const entry of found) {
+		const file = existingFile(app, settings, entry.citekey);
+		if (!file) {
+			missing.push(entry);
+			continue;
+		}
+		try {
+			await openFile(app, file);
+			results.push({ citekey: entry.citekey, status: "opened" });
+		} catch (err: unknown) {
+			results.push({
+				citekey: entry.citekey,
+				status: "error",
+				error: errorMessage(err),
+			});
+		}
+	}
+
+	if (missing.length) {
+		const creatable = missing.filter((e) => e.item);
+		let decision: NoteDecision = "skip";
+		if (creatable.length) {
+			const citekeys = missing.map((e) => e.citekey).join("\n");
+			focusObsidianWindow();
+			decision = await askNoteDecision(
+				app,
+				creatable.length === 1
+					? "Lit note not found"
+					: `${creatable.length} lit notes not found`,
+				`Not in the Obsidian vault:\n\n${citekeys}\n\nCreate ${creatable.length === 1 ? "it" : "them"} from the Zotero data?`,
+				[
+					{ label: "Create", value: "create", cta: true },
+					{ label: "Skip", value: "skip" },
+					{ label: "Cancel", value: "cancel" },
+				]
+			);
+		}
+
+		if (decision === "create") {
+			await ensureFolder(app, settings);
+			for (const entry of creatable) {
+				try {
+					const file = await writeNote(app, settings, entry.item!, null);
+					await openFile(app, file);
+					results.push({ citekey: entry.citekey, status: "created" });
+				} catch (err: unknown) {
+					results.push({
+						citekey: entry.citekey,
+						status: "error",
+						error: errorMessage(err),
+					});
+				}
+			}
+		} else {
+			for (const entry of missing) {
+				results.push({ citekey: entry.citekey, status: "missing" });
+			}
+		}
+	}
+
+	noticeSummary(results);
+	return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +481,13 @@ function sendJson(res: http.ServerResponse, status: number, body: LitNoteRespons
 		"Content-Length": Buffer.byteLength(json),
 	});
 	res.end(json);
+}
+
+function resultsResponse(results: LitNoteItemResult[]): LitNoteResponse {
+	return {
+		success: !results.some((r) => r.status === "error"),
+		results,
+	};
 }
 
 async function handleRequest(
@@ -315,26 +546,29 @@ async function handleRequest(
 				sendJson(res, 400, { success: false, error: "data array is empty or missing" });
 				return;
 			}
-			const force = !!(parsed as LitNoteCreateRequest).force;
-			// Process items sequentially to avoid vault race conditions
-			let lastResult: LitNoteResponse = { success: true };
-			for (const item of items) {
-				lastResult = await handleCreate(app, settings, item, force);
-				if (!lastResult.success) break;
-			}
-			const statusCode = lastResult.success ? 200 : lastResult.error === "exists" ? 200 : 500;
-			sendJson(res, statusCode, lastResult);
+			const results = await runSerialized(() =>
+				handleCreateBatch(app, settings, items)
+			);
+			sendJson(res, 200, resultsResponse(results));
 		} else if (parsed.action === "open") {
-			const citekey = (parsed as { action: "open"; citekey: string }).citekey?.trim();
-			if (!citekey) {
+			const openRequest = parsed as LitNoteOpenRequest;
+			const data = Array.isArray(openRequest.data) ? openRequest.data : [];
+			const entries: OpenEntry[] = data.length
+				? data.map((item) => ({ item, citekey: citekeyOf(item) }))
+				: openRequest.citekey
+					? [{ citekey: openRequest.citekey.trim() }]
+					: [];
+			if (!entries.length) {
 				sendJson(res, 400, {
 					success: false,
-					error: "citekey is required for open action",
+					error: "data array or citekey is required for open action",
 				});
 				return;
 			}
-			const result = await handleOpen(app, settings, citekey);
-			sendJson(res, 200, result);
+			const results = await runSerialized(() =>
+				handleOpenBatch(app, settings, entries)
+			);
+			sendJson(res, 200, resultsResponse(results));
 		} else {
 			sendJson(res, 400, {
 				success: false,
@@ -342,7 +576,7 @@ async function handleRequest(
 			});
 		}
 	} catch (err: unknown) {
-		const msg = err instanceof Error ? err.message : String(err);
+		const msg = errorMessage(err);
 		console.error("[LitNoteServer] Unhandled error:", err);
 		sendJson(res, 500, { success: false, error: msg });
 	}

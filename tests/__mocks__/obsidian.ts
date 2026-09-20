@@ -77,16 +77,71 @@ export class Notice {
 
 export class Modal {
 	app: any;
-	contentEl: any;
+	titleEl: MockElement;
+	contentEl: MockElement;
+	modalEl: MockElement;
 
 	constructor(app: any) {
 		this.app = app;
+		this.titleEl = new MockElement("h2");
+		this.contentEl = new MockElement("div");
+		this.modalEl = new MockElement("div");
+		createdModals.push(this);
 	}
 
-	open(): void {}
-	close(): void {}
+	open(): void {
+		this.onOpen();
+	}
+	close(): void {
+		this.onClose();
+	}
 	onOpen(): void {}
 	onClose(): void {}
+}
+
+/** Registry of Modal instances so tests can drive button clicks. */
+export const createdModals: Modal[] = [];
+
+/**
+ * Tiny DOM-element stand-in so modal code can build button rows and tests can
+ * find and click the buttons without a real DOM.
+ */
+export class MockElement {
+	tag: string;
+	text = "";
+	cls = "";
+	children: MockElement[] = [];
+	listeners: Record<string, Array<() => void>> = {};
+
+	constructor(tag: string) {
+		this.tag = tag;
+	}
+
+	setText(text: string): this {
+		this.text = text;
+		return this;
+	}
+	createEl(tag: string, opts?: { text?: string; cls?: string }): MockElement {
+		const el = new MockElement(tag);
+		if (opts?.text) el.text = opts.text;
+		if (opts?.cls) el.cls = opts.cls;
+		this.children.push(el);
+		return el;
+	}
+	createDiv(opts?: { text?: string; cls?: string }): MockElement {
+		return this.createEl("div", opts);
+	}
+	addClass(cls: string): void {
+		this.cls = this.cls ? `${this.cls} ${cls}` : cls;
+	}
+	empty(): this {
+		this.children = [];
+		this.text = "";
+		return this;
+	}
+	addEventListener(type: string, cb: () => void): void {
+		(this.listeners[type] ??= []).push(cb);
+	}
 }
 
 export class SuggestModal<T> {
