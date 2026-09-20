@@ -108,3 +108,56 @@ When modifying the Tampermonkey script (`browser-userscript/perplexity-obsidian-
 > If you fail to exclude `Node`, `Element`, and `window` during a recursive search, the script will attempt to search the *entire browser environment*, completely locking up the main thread and hanging the browser tab. 
 > 
 > **Never remove the DOM/window guards from the `deepSearch` function.**
+
+---
+
+# Zotero ↔ Obsidian lit-note bridge (do not break this contract)
+
+The `Zotero Obsidian Companion` Zotero plugin talks to this plugin's local HTTP
+server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
+
+## Protocol (`POST /lit-note`)
+
+- `{ action: "create", data: ZoteroItemPayload[] }` — create notes. If any
+  already exist, prompt once in an Obsidian modal (Overwrite / Open existing /
+  Skip / Cancel) before writing.
+- `{ action: "open", data: ZoteroItemPayload[] }` — open notes. If any are
+  missing, prompt once (Create / Skip / Cancel). Payloads are included so a
+  missing note can be created from the Zotero data.
+- Legacy `{ action: "open", citekey }` still opens a single existing note and
+  never creates.
+
+Response: `{ success, results: [{ citekey, status, error? }] }` where `status`
+is `created | overwritten | opened | skipped | missing | error`. The Zotero side
+tags items and reports errors from `results`; it no longer shows its own
+overwrite dialog.
+
+## Invariants
+
+- The decision prompt MUST stay in Obsidian (`src/litNote/decisionModal.ts`),
+  raised via `focusObsidianWindow()` first, so it is never hidden behind
+  Obsidian or another window and looks the same in every case.
+- Never return a non-200 for an application-level outcome (`exists`, `missing`,
+  `skipped`). Only malformed requests (400) and bad routes (404) use other
+  codes. This avoids the Zotero client mistaking a normal outcome for a crash.
+- Process a batch with one modal per request, not one modal per note.
+- `askNoteDecision` serializes prompts; keep that so overlapping requests can't
+  stack modals.
+- The Zotero client allows up to 120s for these requests because the user may be
+  answering the modal. Do not make the server reject slow decisions.
+- Do existence checks and writes only after `ensureWorkspaceReady(app)`. During
+  a cold start the vault index is unreliable, so an existing note can look new,
+  and `vault.create()`/`modify()` can resolve before the index updates.
+  `writeNote()` re-resolves the file by path and `openFile()` rejects a null
+  file, so a timing race surfaces as a clear error instead of a null `.path`
+  TypeError.
+
+## Tests
+
+- `tests/litNote/litNoteServer.test.ts` mocks `decisionModal` and drives each
+  branch. Add a case for any new status or path.
+- `tests/litNote/decisionModal.test.ts` drives the mock `Modal` exported by
+  `tests/__mocks__/obsidian.ts` (which exposes `createdModals`). Extend that
+  mock rather than re-implementing DOM stubs.
+- Run `npm run test:run` before declaring a change done.
+

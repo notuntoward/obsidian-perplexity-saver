@@ -23,16 +23,6 @@ import { findLitNoteForCitekey } from "../zotero/matcher";
 // ---------------------------------------------------------------------------
 
 /**
- * Escape a string for safe inclusion in YAML double-quoted string values.
- * Handles backslashes and double quotes (the two characters that break
- * YAML quoting inside "...").
- */
-export function yamlEscape(value: string): string {
-	if (typeof value !== "string") return value;
-	return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
-/**
  * Return the first n words of a title joined by spaces.
  * Mirrors the Jinja2 `truncateTitle` macro: `' '.join(title.split(' ')[:n])`.
  */

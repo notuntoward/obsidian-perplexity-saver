@@ -21,8 +21,6 @@ export interface SyncDialogResult {
 	error?: string;
 }
 
-export type AppendDialogResult = SyncDialogResult;
-
 export interface SyncDialogOptions {
 	autoRelinkSources?: boolean;
 	zoteroPort?: number;
@@ -145,9 +143,6 @@ export async function syncDialogFromClipboard(
 		newSources: Math.max(0, allSourceLines.length - existingSourceCount),
 	};
 }
-
-// Keep a compatibility alias for any existing code or tests
-export const appendDialogFromClipboard = syncDialogFromClipboard;
 
 function countSourceLines(sourcesText: string): number {
 	return sourcesText.split("\n").filter((line) => /^\[\^/.test(line)).length;

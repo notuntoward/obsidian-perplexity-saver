@@ -430,4 +430,70 @@ describe("Lit Note Server", () => {
 			expect(app.workspace.setActiveLeaf).toHaveBeenCalledWith(mockLeaf, { focus: true });
 		});
 	});
+
+	describe("cold start / vault-index races", () => {
+		it("waits for the workspace, then detects an existing note instead of recreating it", async () => {
+			vi.mocked(askNoteDecision).mockResolvedValue("overwrite");
+			let layoutReadyCb: (() => void) | null = null;
+			const { app, created, modified } = makeApp([`${FOLDER}/existing.md`], {
+				layoutReady: false,
+				onLayoutReady: vi.fn((cb: () => void) => {
+					layoutReadyCb = cb;
+				}),
+			});
+
+			startLitNoteServer(app, { litNotesFolder: FOLDER } as any);
+			const req = createMockReq("POST", "/lit-note", {
+				action: "create",
+				data: [{ citekey: "existing", title: "Existing" }],
+			});
+			const { res, endPromise } = createMockRes();
+			requestHandler(req, res);
+
+			// Nothing should be decided while the workspace is still loading.
+			await new Promise((r) => setTimeout(r, 10));
+			expect(askNoteDecision).not.toHaveBeenCalled();
+
+			app.workspace.layoutReady = true;
+			if (layoutReadyCb) (layoutReadyCb as () => void)();
+			await endPromise;
+
+			const json = JSON.parse((res.end as any).mock.calls[0][0]);
+			expect(json.results).toEqual([{ citekey: "existing", status: "overwritten" }]);
+			expect(modified.map((m) => m.path)).toEqual([`${FOLDER}/existing.md`]);
+			// Regression: the existing note must NOT be recreated as a new file.
+			expect(created).toHaveLength(0);
+		});
+
+		it("re-resolves the created file when vault.create resolves before the index updates", async () => {
+			const { app, files } = makeApp();
+			app.vault.create = vi.fn(async (path: string) => {
+				// Simulate the vault index lagging: the file lands on disk but
+				// create() returns null until the index catches up.
+				files.set(path, Object.assign(Object.create(TFile.prototype), { path }));
+				return null;
+			});
+
+			const json = await post(app, {
+				action: "create",
+				data: [{ citekey: "lagged", title: "Lagged" }],
+			});
+
+			expect(json.results).toEqual([{ citekey: "lagged", status: "created" }]);
+		});
+
+		it("reports a clear error (not a null 'path' TypeError) when a written note cannot be resolved", async () => {
+			const { app } = makeApp();
+			app.vault.create = vi.fn(async () => null);
+
+			const json = await post(app, {
+				action: "create",
+				data: [{ citekey: "ghost", title: "Ghost" }],
+			});
+
+			expect(json.results[0].status).toBe("error");
+			expect(json.results[0].error).toContain("could not be resolved");
+			expect(json.results[0].error).not.toContain("reading 'path'");
+		});
+	});
 });

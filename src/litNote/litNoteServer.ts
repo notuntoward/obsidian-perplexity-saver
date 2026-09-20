@@ -81,6 +81,23 @@ async function ensureFolder(app: App, settings: LitNoteServerSettings): Promise<
 	}
 }
 
+/**
+ * Obsidian's vault index is not reliable until the workspace is ready. Wait for
+ * it before checking whether notes exist or writing files, so a cold-start
+ * request cannot treat an existing note as new (or the reverse).
+ */
+async function ensureWorkspaceReady(app: App): Promise<void> {
+	if (app.workspace?.layoutReady) return;
+	if (typeof app.workspace?.onLayoutReady !== "function") return;
+	await new Promise<void>((resolve) => {
+		const timeout = window.setTimeout(() => resolve(), 5000);
+		app.workspace.onLayoutReady(() => {
+			window.clearTimeout(timeout);
+			resolve();
+		});
+	});
+}
+
 /** Create or overwrite the note body/frontmatter and return the file. */
 async function writeNote(
 	app: App,
@@ -89,15 +106,29 @@ async function writeNote(
 	existing: TFile | null
 ): Promise<TFile> {
 	const citekey = citekeyOf(item);
+	const notePath = notePathFor(settings, citekey);
 	const body = buildLitNoteBody(app, settings, item);
 	const frontmatter = buildLitNoteFrontmatter(item);
 
-	let file: TFile;
+	let file: TFile | null;
 	if (existing) {
 		await app.vault.modify(existing, body);
 		file = existing;
 	} else {
-		file = await app.vault.create(notePathFor(settings, citekey), body);
+		file = await app.vault.create(notePath, body);
+	}
+
+	// create()/modify() can resolve before the vault index catches up (notably
+	// during a cold start), leaving `file` null. Re-resolve by path so we never
+	// hand a null file to processFrontMatter() or openFile().
+	if (!file) {
+		const resolved = app.vault.getAbstractFileByPath(notePath);
+		file = resolved instanceof TFile ? resolved : null;
+	}
+	if (!file) {
+		throw new Error(
+			`Note was written but could not be resolved in the vault: ${notePath}`
+		);
 	}
 
 	try {
@@ -143,6 +174,7 @@ async function handleCreateBatch(
 	settings: LitNoteServerSettings,
 	items: ZoteroItemPayload[]
 ): Promise<LitNoteItemResult[]> {
+	await ensureWorkspaceReady(app);
 	await ensureFolder(app, settings);
 
 	const entries = items.map((item) => ({ item, citekey: citekeyOf(item) }));
@@ -295,20 +327,10 @@ export function focusObsidianWindow(): void {
 }
 
 async function openFile(app: App, file: TFile): Promise<void> {
-	// If Obsidian is still starting up, wait for workspace layout to be ready
-	// so opening the tab is not overridden when Obsidian finishes loading workspace.json.
-	if (
-		app.workspace &&
-		!app.workspace.layoutReady &&
-		typeof app.workspace.onLayoutReady === "function"
-	) {
-		await new Promise<void>((resolve) => {
-			const timeout = window.setTimeout(() => resolve(), 5000);
-			app.workspace.onLayoutReady(() => {
-				window.clearTimeout(timeout);
-				resolve();
-			});
-		});
+	if (!file) {
+		// Defensive: callers ensure the workspace is ready and writeNote()
+		// returns a resolved TFile, so this should be unreachable.
+		throw new Error("Cannot open lit note: no file was provided");
 	}
 
 	// Bring the Obsidian OS window to the foreground immediately so Chromium activates the view.
@@ -386,6 +408,7 @@ async function handleOpenBatch(
 	settings: LitNoteServerSettings,
 	entries: OpenEntry[]
 ): Promise<LitNoteItemResult[]> {
+	await ensureWorkspaceReady(app);
 	const results: LitNoteItemResult[] = [];
 	const found: OpenEntry[] = [];
 	const missing: OpenEntry[] = [];
