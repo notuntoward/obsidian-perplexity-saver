@@ -388,34 +388,57 @@ export function focusObsidianWindow(app?: App): void {
 				// via ShowWindow(SW_RESTORE = 9), and brings it above obscuring windows
 				// via SetWindowPos(HWND_TOPMOST -> HWND_NOTOPMOST) and SetForegroundWindow.
 				const pyScript = [
-					"import ctypes",
-					"u=ctypes.windll.user32",
-					"d=u.OpenDesktopW('Default',0,False,0x01FF)",
+					"import ctypes, sys",
+					"u = ctypes.windll.user32",
+					"k = ctypes.windll.kernel32",
+					"d = u.OpenDesktopW('Default', 0, False, 0x01FF)",
 					"if d: u.SetThreadDesktop(d)",
-					"def cb(h,l):",
-					" b=ctypes.create_unicode_buffer(512);u.GetWindowTextW(h,b,512)",
-					" c=ctypes.create_unicode_buffer(256);u.GetClassNameW(h,c,256)",
-					" if 'Obsidian' in b.value and c.value=='Chrome_WidgetWin_1':",
-					"  u.ShowWindow(h,9)",
-					"  u.SetWindowPos(h,-1,0,0,0,0,3)",
-					"  u.SetWindowPos(h,-2,0,0,0,0,3)",
-					"  u.SetForegroundWindow(h)",
+					"obs_hwnd = None",
+					"def cb(h, l):",
+					" global obs_hwnd",
+					" if not u.IsWindowVisible(h): return True",
+					" pid = ctypes.c_ulong()",
+					" u.GetWindowThreadProcessId(h, ctypes.byref(pid))",
+					" hp = k.OpenProcess(0x1000, False, pid.value)",
+					" if hp:",
+					"  n = ctypes.create_unicode_buffer(512)",
+					"  k.QueryFullProcessImageNameW(hp, 0, n, ctypes.byref(ctypes.c_ulong(512)))",
+					"  k.CloseHandle(hp)",
+					"  if n.value.lower().endswith('obsidian.exe'):",
+					"   c = ctypes.create_unicode_buffer(256)",
+					"   u.GetClassNameW(h, c, 256)",
+					"   if c.value == 'Chrome_WidgetWin_1':",
+					"    obs_hwnd = h",
+					"    return False",
 					" return True",
-					"u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool,ctypes.c_void_p,ctypes.c_void_p)(cb),0)",
+					"u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), 0)",
+					"if not obs_hwnd: sys.exit(1)",
+					"if u.IsIconic(obs_hwnd):",
+					" u.ShowWindow(obs_hwnd, 9)",
+					"else:",
+					" u.ShowWindow(obs_hwnd, 5)",
+					"u.SetWindowPos(obs_hwnd, -1, 0, 0, 0, 0, 3)",
+					"u.SetWindowPos(obs_hwnd, -2, 0, 0, 0, 0, 3)",
+					"u.keybd_event(0x12, 0, 0, 0)",
+					"u.keybd_event(0x12, 0, 2, 0)",
+					"ret = u.SetForegroundWindow(obs_hwnd)",
+					"u.BringWindowToTop(obs_hwnd)",
+					"if not ret: u.SwitchToThisWindow(obs_hwnd, True)",
+					"sys.exit(0 if u.GetForegroundWindow() == obs_hwnd else 1)",
 				].join("\n");
 				const b64 = Buffer.from(pyScript).toString("base64");
 				exec(
 					`python -c "import base64; exec(base64.b64decode('${b64}').decode('utf-8'))"`,
 					(err) => {
 						if (err) {
-							// Fallback if Python is not on PATH: invoke shell URI
+							// Fallback if Python is not on PATH or failed to focus: invoke shell URI
 							const resolvedApp =
 								app ?? (typeof window !== "undefined" ? (window as any).app : null);
 							const vaultName = resolvedApp?.vault?.getName?.();
-							if (vaultName) {
-								const uri = `obsidian://open?vault=${encodeURIComponent(vaultName)}`;
-								exec(`start "" "${uri}"`, () => {});
-							}
+							const uri = vaultName
+								? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
+								: "obsidian://";
+							exec(`start "" "${uri}"`, () => {});
 						}
 					}
 				);

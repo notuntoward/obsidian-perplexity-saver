@@ -511,6 +511,45 @@ describe("Lit Note Server", () => {
 			expect(mockWindowFocus).toHaveBeenCalled();
 		});
 
+		it("focusObsidianWindow on Windows executes targeted python script with Alt-key bypass and obsidian.exe validation", () => {
+			mockExec.mockClear();
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+			try {
+				focusObsidianWindow();
+				expect(mockExec).toHaveBeenCalled();
+				const cmd = mockExec.mock.calls[0][0];
+				expect(cmd).toContain("python -c");
+				const match = cmd.match(/b64decode\('([A-Za-z0-9+/=]+)'\)/);
+				expect(match).not.toBeNull();
+				const decodedScript = Buffer.from(match![1], "base64").toString("utf-8");
+				expect(decodedScript).toContain("obsidian.exe");
+				expect(decodedScript).toContain("keybd_event(0x12");
+				expect(decodedScript).toContain("BringWindowToTop");
+				expect(decodedScript).toContain("IsIconic");
+				expect(decodedScript).toContain("ShowWindow(obs_hwnd, 5)");
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			}
+		});
+
+		it("focusObsidianWindow on Windows falls back to obsidian protocol URI when python execution fails", () => {
+			mockExec.mockClear();
+			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
+				if (cb) cb(new Error("python failed"));
+			});
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+			try {
+				const mockApp = { vault: { getName: () => "TestVault" } } as any;
+				focusObsidianWindow(mockApp);
+				expect(mockExec).toHaveBeenCalledTimes(2);
+				expect(mockExec.mock.calls[1][0]).toContain('start "" "obsidian://open?vault=TestVault"');
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			}
+		});
+
 		it("waits for onLayoutReady when layoutReady is false before opening file", async () => {
 			let layoutReadyCallback: (() => void) | null = null;
 			let fileOpened = false;

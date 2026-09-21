@@ -152,6 +152,30 @@ overwrite dialog.
   file, so a timing race surfaces as a clear error instead of a null `.path`
   TypeError.
 
+## Window Focus and Tab State Invariants (CRITICAL: Do Not Regress)
+
+### 1. Window Focusing Across OS Boundaries (`focusObsidianWindow()`)
+When requests arrive from Zotero via HTTP, Obsidian is in the background and might be minimized or obscured behind maximized windows (such as IDEs or browsers). Native DOM `window.focus()` is blocked by Chromium's anti-focus-stealing policy.
+
+On Windows (`win32`), background processes are subject to the **Windows Foreground Lock**:
+- Simply calling `SetForegroundWindow()` fails silently (returns `0`), causing only a taskbar flash.
+- Calling `ShowWindow(h, SW_RESTORE=9)` on a window that is already open (not minimized) can un-maximize a maximized window.
+- Searching windows by title (`"Obsidian"`) or class (`"Chrome_WidgetWin_1"`) alone is dangerous because IDEs (Antigravity/VS Code) or browser tabs researching Obsidian can match before `Obsidian.exe`.
+
+Therefore, the Windows focus logic in `src/litNote/litNoteServer.ts` MUST adhere to the following sequence:
+1. Attach to the interactive desktop (`winsta0\default` via `OpenDesktopW('Default', ...)` and `SetThreadDesktop`).
+2. Verify process identity: query the process image name via `QueryFullProcessImageNameW` to confirm the window belongs to `obsidian.exe` with class `Chrome_WidgetWin_1`.
+3. Check `IsIconic(h)`: if minimized, restore with `ShowWindow(h, SW_RESTORE=9)`. If already open, preserve maximized/restored geometry using `ShowWindow(h, SW_SHOW=5)`.
+4. Float to the top of the Z-order: toggle `SetWindowPos` with `HWND_TOPMOST` then `HWND_NOTOPMOST` (`SWP_NOMOVE | SWP_NOSIZE`).
+5. **Bypass Foreground Lock**: simulate an Alt-key event (`keybd_event(0x12, 0, 0, 0)` then `keybd_event(0x12, 0, KEYEVENTF_KEYUP=2, 0)`) immediately before calling `SetForegroundWindow()`. This resets the Windows foreground lock timeout.
+6. Verify foreground state (`GetForegroundWindow() == h`). If it does not match, exit with code 1 so the shell protocol URI fallback (`start "" "obsidian://open?vault=..."`) executes.
+
+### 2. Note Overwrite and Missing Note Tab Lifecycle
+- **Create collisions (`handleCreateBatch`)**: If a note already exists in the vault, before showing the overwrite decision modal, focus the existing note's tab (or open a tab for it if not open) via `openFile(..., { modifyText: false })`. The modal must open directly over the existing note so the user can see what already exists before deciding.
+- **Open non-existent notes (`handleOpenBatch`)**: If an open request targets a missing note that can be created from Zotero, create a new blank tab (`app.workspace.getLeaf("tab")`), activate it, and raise the prompt over it.
+  - If the user chooses "Create": write the note and populate it inside that blank tab.
+  - If the user chooses "Skip", "Cancel", or dismisses the dialog: detach the blank tab (`blankLeaf.detach()`) AND call `restorePreviousLeaf()` to restore the user's previously active tab and editor focus so the user never loses their place.
+
 ## Tests
 
 - `tests/litNote/litNoteServer.test.ts` mocks `decisionModal` and drives each
@@ -160,4 +184,5 @@ overwrite dialog.
   `tests/__mocks__/obsidian.ts` (which exposes `createdModals`). Extend that
   mock rather than re-implementing DOM stubs.
 - Run `npm run test:run` before declaring a change done.
+
 
