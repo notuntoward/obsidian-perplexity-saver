@@ -68,12 +68,22 @@ export class Setting {
 }
 
 export class Notice {
-	constructor(_message: string, _timeout?: number) {}
-	setMessage(_message: string): this {
+	message: string;
+	timeout?: number;
+
+	constructor(message: string, timeout?: number) {
+		this.message = message;
+		this.timeout = timeout;
+		createdNotices.push(this);
+	}
+	setMessage(message: string): this {
+		this.message = message;
 		return this;
 	}
 	hide(): void {}
 }
+
+export const createdNotices: Notice[] = [];
 
 export class Modal {
 	app: any;

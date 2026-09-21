@@ -18,6 +18,7 @@
  */
 
 import http from "http";
+import { exec } from "child_process";
 import { App, Notice, normalizePath, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
@@ -145,7 +146,10 @@ async function writeNote(
 	return file;
 }
 
-function noticeSummary(results: LitNoteItemResult[]): void {
+function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
+	if (prompted && !results.some((r) => r.status === "error")) {
+		return;
+	}
 	const counts: Record<LitNoteItemStatus, number> = {
 		created: 0,
 		overwritten: 0,
@@ -155,6 +159,36 @@ function noticeSummary(results: LitNoteItemResult[]): void {
 		error: 0,
 	};
 	for (const r of results) counts[r.status] += 1;
+
+	if (results.length === 1) {
+		const r = results[0];
+		const name = r.citekey ? `@${r.citekey}` : "note";
+		if (r.status === "opened") {
+			new Notice(`Opened literature note from Zotero: ${name}`, 5000);
+			return;
+		}
+		if (r.status === "created") {
+			new Notice(`Created literature note from Zotero: ${name}`, 5000);
+			return;
+		}
+		if (r.status === "overwritten") {
+			new Notice(`Updated literature note from Zotero: ${name}`, 5000);
+			return;
+		}
+		if (r.status === "missing") {
+			new Notice(`Literature note not found in vault: ${name}`, 5000);
+			return;
+		}
+		if (r.status === "skipped") {
+			new Notice(`Skipped literature note from Zotero: ${name}`, 4000);
+			return;
+		}
+		if (r.status === "error") {
+			new Notice(`Error with Zotero note ${name}: ${r.error || "unknown error"}`, 6000);
+			return;
+		}
+	}
+
 	const parts: string[] = [];
 	if (counts.created) parts.push(`${counts.created} created`);
 	if (counts.overwritten) parts.push(`${counts.overwritten} overwritten`);
@@ -162,7 +196,14 @@ function noticeSummary(results: LitNoteItemResult[]): void {
 	if (counts.skipped) parts.push(`${counts.skipped} skipped`);
 	if (counts.missing) parts.push(`${counts.missing} missing`);
 	if (counts.error) parts.push(`${counts.error} failed`);
-	if (parts.length) new Notice(`Lit notes: ${parts.join(", ")}`);
+
+	if (counts.opened && !counts.created && !counts.overwritten && !counts.error && !counts.missing) {
+		new Notice(`Opened ${counts.opened} literature notes from Zotero`, 5000);
+	} else if (counts.created && !counts.opened && !counts.overwritten && !counts.error && !counts.missing) {
+		new Notice(`Created ${counts.created} literature notes from Zotero`, 5000);
+	} else if (parts.length) {
+		new Notice(`Zotero literature notes: ${parts.join(", ")}`, 5000);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +215,7 @@ async function handleCreateBatch(
 	settings: LitNoteServerSettings,
 	items: ZoteroItemPayload[]
 ): Promise<LitNoteItemResult[]> {
+	focusObsidianWindow(app);
 	await ensureWorkspaceReady(app);
 	await ensureFolder(app, settings);
 
@@ -183,9 +225,11 @@ async function handleCreateBatch(
 	);
 
 	let decision: NoteDecision = "overwrite";
+	let prompted = false;
 	if (existingEntries.length) {
 		const citekeys = existingEntries.map((e) => e.citekey).join("\n");
-		focusObsidianWindow();
+		focusObsidianWindow(app);
+		prompted = true;
 		decision = await askNoteDecision(
 			app,
 			existingEntries.length === 1
@@ -248,7 +292,7 @@ async function handleCreateBatch(
 		}
 	}
 
-	noticeSummary(results);
+	noticeSummary(results, prompted);
 	return results;
 }
 
@@ -279,8 +323,13 @@ function positionCursorTwoLinesPastEnd(editor: any): void {
 	}
 }
 
-/** Bring the Obsidian Electron window to the foreground using the Electron API. */
-export function focusObsidianWindow(): void {
+/**
+ * Bring the Obsidian window to the foreground, un-minimizing it if minimized.
+ * Combines DOM/Electron APIs with OS-level commands (Python ctypes / Win32 API,
+ * shell protocol URLs, osascript on macOS) so that Windows/macOS/Linux restores
+ * minimized windows and brings Obsidian above any obscuring windows.
+ */
+export function focusObsidianWindow(app?: App): void {
 	try {
 		const win =
 			typeof activeWindow !== "undefined"
@@ -288,41 +337,89 @@ export function focusObsidianWindow(): void {
 				: typeof window !== "undefined"
 					? (window as any)
 					: null;
-		if (!win) return;
-
-		let electron: any = win.electron;
-		if (!electron && typeof win.require === "function") {
-			try {
-				electron = win.require("electron");
-			} catch {
-				// Ignore
+		if (win) {
+			let electron: any = win.electron;
+			if (!electron && typeof win.require === "function") {
+				try {
+					electron = win.require("electron");
+				} catch {
+					// Ignore
+				}
 			}
-		}
 
-		let remote: any = win.__electronRemote ?? electron?.remote;
-		if (!remote && typeof win.require === "function") {
-			try {
-				remote = win.require("@electron/remote");
-			} catch {
-				// Ignore
+			let remote: any = win.__electronRemote ?? electron?.remote;
+			if (!remote && typeof win.require === "function") {
+				try {
+					remote = win.require("@electron/remote");
+				} catch {
+					// Ignore
+				}
 			}
-		}
 
-		if (remote?.getCurrentWindow) {
-			const currentWin = remote.getCurrentWindow();
-			if (typeof currentWin.isMinimized === "function" && currentWin.isMinimized()) {
-				currentWin.restore();
+			if (remote?.getCurrentWindow) {
+				const currentWin = remote.getCurrentWindow();
+				if (typeof currentWin.isMinimized === "function" && currentWin.isMinimized()) {
+					currentWin.restore();
+				}
+				currentWin.show?.();
+				currentWin.focus?.();
+			} else if (typeof win.focus === "function") {
+				win.focus();
 			}
-			currentWin.show?.();
-			currentWin.focus?.();
-			return;
-		}
-
-		if (typeof win.focus === "function") {
-			win.focus();
 		}
 	} catch (err) {
 		console.warn("[LitNoteServer] focusObsidianWindow error:", err);
+	}
+
+	try {
+		if (typeof process !== "undefined" && process.platform) {
+			const platform = process.platform;
+			if (platform === "win32") {
+				// Windows OS foreground lock prevents background processes from un-minimizing
+				// or focusing via window.focus(). We execute a targeted Python ctypes Win32
+				// script that switches to the interactive desktop, un-minimizes the window
+				// via ShowWindow(SW_RESTORE = 9), and brings it above obscuring windows
+				// via SetWindowPos(HWND_TOPMOST -> HWND_NOTOPMOST) and SetForegroundWindow.
+				const pyScript = [
+					"import ctypes",
+					"u=ctypes.windll.user32",
+					"d=u.OpenDesktopW('Default',0,False,0x01FF)",
+					"if d: u.SetThreadDesktop(d)",
+					"def cb(h,l):",
+					" b=ctypes.create_unicode_buffer(512);u.GetWindowTextW(h,b,512)",
+					" c=ctypes.create_unicode_buffer(256);u.GetClassNameW(h,c,256)",
+					" if 'Obsidian' in b.value and c.value=='Chrome_WidgetWin_1':",
+					"  u.ShowWindow(h,9)",
+					"  u.SetWindowPos(h,-1,0,0,0,0,3)",
+					"  u.SetWindowPos(h,-2,0,0,0,0,3)",
+					"  u.SetForegroundWindow(h)",
+					" return True",
+					"u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool,ctypes.c_void_p,ctypes.c_void_p)(cb),0)",
+				].join("\n");
+				const b64 = Buffer.from(pyScript).toString("base64");
+				exec(
+					`python -c "import base64; exec(base64.b64decode('${b64}').decode('utf-8'))"`,
+					(err) => {
+						if (err) {
+							// Fallback if Python is not on PATH: invoke shell URI
+							const resolvedApp =
+								app ?? (typeof window !== "undefined" ? (window as any).app : null);
+							const vaultName = resolvedApp?.vault?.getName?.();
+							if (vaultName) {
+								const uri = `obsidian://open?vault=${encodeURIComponent(vaultName)}`;
+								exec(`start "" "${uri}"`, () => {});
+							}
+						}
+					}
+				);
+			} else if (platform === "darwin") {
+				exec('osascript -e \'tell application "Obsidian" to activate\'', () => {});
+			} else if (platform === "linux") {
+				exec('wmctrl -x -a "obsidian" || xdotool search --class "obsidian" windowactivate', () => {});
+			}
+		}
+	} catch (err) {
+		console.warn("[LitNoteServer] OS focus error:", err);
 	}
 }
 
@@ -334,7 +431,7 @@ async function openFile(app: App, file: TFile): Promise<void> {
 	}
 
 	// Bring the Obsidian OS window to the foreground immediately so Chromium activates the view.
-	focusObsidianWindow();
+	focusObsidianWindow(app);
 
 	// Check for an existing leaf matching this file (including deferred leaves)
 	let targetLeaf: WorkspaceLeaf | null = null;
@@ -395,7 +492,7 @@ async function openFile(app: App, file: TFile): Promise<void> {
 		positionCursorTwoLinesPastEnd(editor);
 	}
 
-	focusObsidianWindow();
+	focusObsidianWindow(app);
 }
 
 interface OpenEntry {
@@ -408,10 +505,12 @@ async function handleOpenBatch(
 	settings: LitNoteServerSettings,
 	entries: OpenEntry[]
 ): Promise<LitNoteItemResult[]> {
+	focusObsidianWindow(app);
 	await ensureWorkspaceReady(app);
 	const results: LitNoteItemResult[] = [];
 	const found: OpenEntry[] = [];
 	const missing: OpenEntry[] = [];
+	let prompted = false;
 
 	for (const entry of entries) {
 		if (!entry.citekey) {
@@ -452,7 +551,8 @@ async function handleOpenBatch(
 		let decision: NoteDecision = "skip";
 		if (creatable.length) {
 			const citekeys = missing.map((e) => e.citekey).join("\n");
-			focusObsidianWindow();
+			focusObsidianWindow(app);
+			prompted = true;
 			decision = await askNoteDecision(
 				app,
 				creatable.length === 1
@@ -489,7 +589,7 @@ async function handleOpenBatch(
 		}
 	}
 
-	noticeSummary(results);
+	noticeSummary(results, prompted);
 	return results;
 }
 

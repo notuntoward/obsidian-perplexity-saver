@@ -5,6 +5,20 @@ import {
 } from "../../src/litNote/litNoteServer";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import { TFile } from "obsidian";
+import * as Obsidian from "obsidian";
+
+const createdNotices = (
+	Obsidian as unknown as {
+		createdNotices: Array<{ message: string; timeout?: number }>;
+	}
+).createdNotices;
+
+const mockExec = vi.fn((_cmd: string, cb?: any) => {
+	if (cb) cb(null, "", "");
+});
+vi.mock("child_process", () => ({
+	exec: (cmd: string, cb: any) => mockExec(cmd, cb),
+}));
 
 vi.mock("../../src/litNote/decisionModal", () => ({
 	askNoteDecision: vi.fn(),
@@ -58,6 +72,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 				modified.push({ path: file.path, body });
 			}),
 			getFiles: vi.fn(() => Array.from(files.values())),
+			getName: vi.fn(() => "TestVault"),
 		},
 		fileManager: {
 			processFrontMatter: vi.fn(async (_file: any, cb: (fm: any) => void) => cb({})),
@@ -114,6 +129,7 @@ describe("Lit Note Server", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(askNoteDecision).mockResolvedValue("overwrite");
+		createdNotices.length = 0;
 	});
 
 	it("starts server on configured port 27124", () => {
@@ -494,6 +510,114 @@ describe("Lit Note Server", () => {
 			expect(json.results[0].status).toBe("error");
 			expect(json.results[0].error).toContain("could not be resolved");
 			expect(json.results[0].error).not.toContain("reading 'path'");
+		});
+
+		describe("visual feedback notices and window focus", () => {
+			it("shows a descriptive notice when a note is opened", async () => {
+				const { app } = makeApp([`${FOLDER}/existing.md`]);
+				await post(app, {
+					action: "open",
+					data: [{ citekey: "existing" }],
+				});
+
+				expect(
+					createdNotices.some((n) =>
+						n.message.includes("Opened literature note from Zotero: @existing")
+					)
+				).toBe(true);
+			});
+
+			it("shows a descriptive notice when a note is created", async () => {
+				const { app } = makeApp();
+				await post(app, {
+					action: "create",
+					data: [{ citekey: "brand-new", title: "Brand New" }],
+				});
+
+				expect(
+					createdNotices.some((n) =>
+						n.message.includes("Created literature note from Zotero: @brand-new")
+					)
+				).toBe(true);
+			});
+
+			it("shows batch notice when multiple notes are opened", async () => {
+				const { app } = makeApp([`${FOLDER}/n1.md`, `${FOLDER}/n2.md`]);
+				await post(app, {
+					action: "open",
+					data: [{ citekey: "n1" }, { citekey: "n2" }],
+				});
+
+				expect(
+					createdNotices.some((n) =>
+						n.message.includes("Opened 2 literature notes from Zotero")
+					)
+				).toBe(true);
+			});
+
+			it("focusObsidianWindow restores minimized Electron window", () => {
+				const restore = vi.fn();
+				const focus = vi.fn();
+				const show = vi.fn();
+				(global as any).window = {
+					__electronRemote: {
+						getCurrentWindow: () => ({
+							isMinimized: () => true,
+							restore,
+							focus,
+							show,
+						}),
+					},
+				};
+
+				focusObsidianWindow();
+				expect(restore).toHaveBeenCalled();
+				expect(focus).toHaveBeenCalled();
+			});
+
+			it("does not show toast notice when user is prompted with an overwrite decision modal", async () => {
+				const { app } = makeApp([`${FOLDER}/existing.md`]);
+				await post(app, {
+					action: "create",
+					data: [{ citekey: "existing", title: "Existing" }],
+				});
+
+				expect(askNoteDecision).toHaveBeenCalled();
+				expect(createdNotices).toHaveLength(0);
+			});
+
+			it("does not show toast notice when user is prompted with a create missing note modal", async () => {
+				vi.mocked(askNoteDecision).mockResolvedValue("create");
+				const { app } = makeApp();
+				await post(app, {
+					action: "open",
+					data: [{ citekey: "missing-key", title: "Missing" }],
+				});
+
+				expect(askNoteDecision).toHaveBeenCalled();
+				expect(createdNotices).toHaveLength(0);
+			});
+
+			it("focusObsidianWindow triggers Win32 restore command, falling back to vault open URI", () => {
+				mockExec.mockClear();
+				const { app } = makeApp();
+				focusObsidianWindow(app);
+
+				expect(mockExec).toHaveBeenCalledWith(
+					expect.stringContaining("python -c"),
+					expect.any(Function)
+				);
+
+				// Test fallback when python execution fails
+				const pyCallCb = mockExec.mock.calls[0][1];
+				if (pyCallCb) {
+					pyCallCb(new Error("python not found"));
+					expect(mockExec).toHaveBeenCalledWith(
+						expect.stringContaining("obsidian://open?vault=TestVault"),
+						expect.any(Function)
+					);
+				}
+			});
 		});
 	});
 });
