@@ -227,6 +227,13 @@ async function handleCreateBatch(
 	let decision: NoteDecision = "overwrite";
 	let prompted = false;
 	if (existingEntries.length) {
+		for (const e of existingEntries) {
+			const file = existingFile(app, settings, e.citekey);
+			if (file) {
+				await openFile(app, file, null, { modifyText: false });
+			}
+		}
+
 		const citekeys = existingEntries.map((e) => e.citekey).join("\n");
 		focusObsidianWindow(app);
 		prompted = true;
@@ -300,7 +307,7 @@ async function handleCreateBatch(
 // Handler: open / focus lit notes
 // ---------------------------------------------------------------------------
 
-function positionCursorTwoLinesPastEnd(editor: any): void {
+function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): void {
 	if (!editor) return;
 	if (typeof editor.getValue !== "function") {
 		if (typeof editor.setCursor === "function") {
@@ -309,7 +316,7 @@ function positionCursorTwoLinesPastEnd(editor: any): void {
 		return;
 	}
 	const text = editor.getValue();
-	if (!text.endsWith("\n\n")) {
+	if (modifyText && !text.endsWith("\n\n")) {
 		const needed = text.endsWith("\n") ? "\n" : "\n\n";
 		const lastLine = typeof editor.lineCount === "function" ? editor.lineCount() - 1 : 0;
 		const lastLineLen = typeof editor.getLine === "function" ? editor.getLine(lastLine).length : 0;
@@ -423,7 +430,12 @@ export function focusObsidianWindow(app?: App): void {
 	}
 }
 
-async function openFile(app: App, file: TFile): Promise<void> {
+async function openFile(
+	app: App,
+	file: TFile,
+	preferredLeaf?: WorkspaceLeaf | null,
+	options?: { modifyText?: boolean }
+): Promise<void> {
 	if (!file) {
 		// Defensive: callers ensure the workspace is ready and writeNote()
 		// returns a resolved TFile, so this should be unreachable.
@@ -434,8 +446,8 @@ async function openFile(app: App, file: TFile): Promise<void> {
 	focusObsidianWindow(app);
 
 	// Check for an existing leaf matching this file (including deferred leaves)
-	let targetLeaf: WorkspaceLeaf | null = null;
-	if (typeof app.workspace.iterateAllLeaves === "function") {
+	let targetLeaf: WorkspaceLeaf | null = preferredLeaf ?? null;
+	if (!targetLeaf && typeof app.workspace.iterateAllLeaves === "function") {
 		app.workspace.iterateAllLeaves((leaf) => {
 			const view = leaf.view as any;
 			const viewFile =
@@ -489,10 +501,46 @@ async function openFile(app: App, file: TFile): Promise<void> {
 	}
 	if (editor) {
 		editor.focus?.();
-		positionCursorTwoLinesPastEnd(editor);
+		positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
 	}
 
 	focusObsidianWindow(app);
+}
+
+async function restorePreviousLeaf(
+	app: App,
+	leaf: WorkspaceLeaf | null
+): Promise<void> {
+	if (!leaf) return;
+	try {
+		await new Promise((resolve) => window.setTimeout(resolve, 10));
+
+		let isAttached = false;
+		if (typeof app.workspace.iterateAllLeaves === "function") {
+			app.workspace.iterateAllLeaves((l) => {
+				if (l === leaf) isAttached = true;
+			});
+		} else {
+			isAttached = (leaf as any).parent !== null;
+		}
+
+		let target: WorkspaceLeaf | null = isAttached ? leaf : null;
+		if (!target && typeof app.workspace.getMostRecentLeaf === "function") {
+			target = app.workspace.getMostRecentLeaf();
+		}
+		if (target) {
+			if (typeof app.workspace.revealLeaf === "function") {
+				await app.workspace.revealLeaf(target);
+			}
+			if (typeof app.workspace.setActiveLeaf === "function") {
+				app.workspace.setActiveLeaf(target, { focus: true });
+			}
+			const editor = (target.view as any)?.editor;
+			editor?.focus?.();
+		}
+	} catch (err) {
+		console.warn("[LitNoteServer] Failed to restore previous leaf:", err);
+	}
 }
 
 interface OpenEntry {
@@ -550,36 +598,92 @@ async function handleOpenBatch(
 		const creatable = missing.filter((e) => e.item);
 		let decision: NoteDecision = "skip";
 		if (creatable.length) {
+			const previousLeaf: WorkspaceLeaf | null =
+				(typeof app.workspace.getMostRecentLeaf === "function"
+					? app.workspace.getMostRecentLeaf()
+					: null) ??
+				(app.workspace as any).activeLeaf ??
+				null;
+			let blankLeaf: WorkspaceLeaf | null = null;
+			let blankLeafConsumed = false;
+			if (typeof app.workspace.getLeaf === "function") {
+				blankLeaf = app.workspace.getLeaf("tab");
+				if (typeof app.workspace.revealLeaf === "function") {
+					await app.workspace.revealLeaf(blankLeaf);
+				}
+				if (typeof app.workspace.setActiveLeaf === "function") {
+					app.workspace.setActiveLeaf(blankLeaf, { focus: true });
+				}
+			}
+
 			const citekeys = missing.map((e) => e.citekey).join("\n");
 			focusObsidianWindow(app);
 			prompted = true;
-			decision = await askNoteDecision(
-				app,
-				creatable.length === 1
-					? "Lit note not found"
-					: `${creatable.length} lit notes not found`,
-				`Not in the Obsidian vault:\n\n${citekeys}\n\nCreate ${creatable.length === 1 ? "it" : "them"} from the Zotero data?`,
-				[
-					{ label: "Create", value: "create", cta: true },
-					{ label: "Skip", value: "skip" },
-					{ label: "Cancel", value: "cancel" },
-				]
-			);
-		}
+			try {
+				decision = await askNoteDecision(
+					app,
+					creatable.length === 1
+						? "Lit note not found"
+						: `${creatable.length} lit notes not found`,
+					`Not in the Obsidian vault:\n\n${citekeys}\n\nCreate ${creatable.length === 1 ? "it" : "them"} from the Zotero data?`,
+					[
+						{ label: "Create", value: "create", cta: true },
+						{ label: "Skip", value: "skip" },
+						{ label: "Cancel", value: "cancel" },
+					]
+				);
+			} catch (err) {
+				if (blankLeaf && typeof blankLeaf.detach === "function") {
+					try {
+						blankLeaf.detach();
+					} catch {
+						// Ignore
+					}
+					await restorePreviousLeaf(app, previousLeaf);
+				}
+				throw err;
+			}
 
-		if (decision === "create") {
-			await ensureFolder(app, settings);
-			for (const entry of creatable) {
-				try {
-					const file = await writeNote(app, settings, entry.item!, null);
-					await openFile(app, file);
-					results.push({ citekey: entry.citekey, status: "created" });
-				} catch (err: unknown) {
-					results.push({
-						citekey: entry.citekey,
-						status: "error",
-						error: errorMessage(err),
-					});
+			if (decision === "create") {
+				await ensureFolder(app, settings);
+				for (let i = 0; i < creatable.length; i++) {
+					const entry = creatable[i];
+					try {
+						const file = await writeNote(app, settings, entry.item!, null);
+						if (i === 0 && blankLeaf) {
+							blankLeafConsumed = true;
+							await openFile(app, file, blankLeaf);
+						} else {
+							await openFile(app, file);
+						}
+						results.push({ citekey: entry.citekey, status: "created" });
+					} catch (err: unknown) {
+						results.push({
+							citekey: entry.citekey,
+							status: "error",
+							error: errorMessage(err),
+						});
+					}
+				}
+				if (blankLeaf && !blankLeafConsumed && typeof blankLeaf.detach === "function") {
+					try {
+						blankLeaf.detach();
+					} catch {
+						// Ignore
+					}
+					await restorePreviousLeaf(app, previousLeaf);
+				}
+			} else {
+				if (blankLeaf && typeof blankLeaf.detach === "function") {
+					try {
+						blankLeaf.detach();
+					} catch (err: unknown) {
+						console.warn("[LitNoteServer] Failed to detach blank leaf:", err);
+					}
+					await restorePreviousLeaf(app, previousLeaf);
+				}
+				for (const entry of missing) {
+					results.push({ citekey: entry.citekey, status: "missing" });
 				}
 			}
 		} else {

@@ -83,10 +83,12 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 				openFile: vi.fn(),
 				setEphemeralState: vi.fn(),
 				view: { editor: { focus: vi.fn() } },
+				detach: vi.fn(),
 			})),
 			revealLeaf: vi.fn(),
 			setActiveLeaf: vi.fn(),
 			iterateAllLeaves: vi.fn(() => {}),
+			getMostRecentLeaf: vi.fn(() => null),
 			...workspaceOverrides,
 		},
 	};
@@ -222,6 +224,32 @@ describe("Lit Note Server", () => {
 			expect(modified).toHaveLength(0);
 		});
 
+		it("focuses the existing note tab before prompting when note already exists", async () => {
+			let openedBeforePrompt = false;
+			const { app } = makeApp([`${FOLDER}/existing.md`], {
+				getLeaf: vi.fn(() => ({
+					openFile: vi.fn(() => {
+						openedBeforePrompt = true;
+					}),
+					setEphemeralState: vi.fn(),
+					view: { editor: { focus: vi.fn() } },
+					detach: vi.fn(),
+				})),
+			});
+			vi.mocked(askNoteDecision).mockImplementation(async () => {
+				expect(openedBeforePrompt).toBe(true);
+				return "open-existing";
+			});
+
+			const json = await post(app, {
+				action: "create",
+				data: [{ citekey: "existing", title: "Existing" }],
+			});
+
+			expect(askNoteDecision).toHaveBeenCalledTimes(1);
+			expect(json.results).toEqual([{ citekey: "existing", status: "opened" }]);
+		});
+
 		it("returns HTTP 400 for an empty data array", async () => {
 			const { app } = makeApp();
 			startLitNoteServer(app, { litNotesFolder: FOLDER } as any);
@@ -268,6 +296,88 @@ describe("Lit Note Server", () => {
 
 			expect(json.results).toEqual([{ citekey: "missing", status: "missing" }]);
 			expect(created).toHaveLength(0);
+		});
+
+		it("creates a blank tab for prompt and populates it when user chooses Create", async () => {
+			const mockLeaf = {
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: { editor: { focus: vi.fn() } },
+				detach: vi.fn(),
+			};
+			const { app } = makeApp([], {
+				getLeaf: vi.fn(() => mockLeaf),
+			});
+			vi.mocked(askNoteDecision).mockResolvedValue("create");
+
+			const json = await post(app, {
+				action: "open",
+				data: [{ citekey: "missing", title: "Missing" }],
+			});
+
+			expect(app.workspace.getLeaf).toHaveBeenCalledWith("tab");
+			expect(app.workspace.revealLeaf).toHaveBeenCalledWith(mockLeaf);
+			expect(mockLeaf.openFile).toHaveBeenCalledWith(
+				expect.objectContaining({ path: `${FOLDER}/missing.md` }),
+				expect.anything()
+			);
+			expect(mockLeaf.detach).not.toHaveBeenCalled();
+			expect(json.results).toEqual([{ citekey: "missing", status: "created" }]);
+		});
+
+		it("detaches the blank tab when user chooses Skip or Cancel", async () => {
+			const mockLeaf = {
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: { editor: { focus: vi.fn() } },
+				detach: vi.fn(),
+			};
+			const { app } = makeApp([], {
+				getLeaf: vi.fn(() => mockLeaf),
+			});
+			vi.mocked(askNoteDecision).mockResolvedValue("skip");
+
+			const json = await post(app, {
+				action: "open",
+				data: [{ citekey: "missing", title: "Missing" }],
+			});
+
+			expect(app.workspace.getLeaf).toHaveBeenCalledWith("tab");
+			expect(mockLeaf.detach).toHaveBeenCalledTimes(1);
+			expect(json.results).toEqual([{ citekey: "missing", status: "missing" }]);
+		});
+
+		it("restores the previously active leaf when a blank tab is cancelled", async () => {
+			const previousEditor = { focus: vi.fn() };
+			const previousLeaf = {
+				view: { editor: previousEditor },
+				parent: {},
+			};
+			const mockLeaf = {
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: { editor: { focus: vi.fn() } },
+				detach: vi.fn(),
+			};
+			const { app } = makeApp([], {
+				getMostRecentLeaf: vi.fn(() => previousLeaf),
+				getLeaf: vi.fn(() => mockLeaf),
+				iterateAllLeaves: vi.fn((cb: any) => {
+					cb(previousLeaf);
+				}),
+			});
+			vi.mocked(askNoteDecision).mockResolvedValue("cancel");
+
+			const json = await post(app, {
+				action: "open",
+				data: [{ citekey: "missing", title: "Missing" }],
+			});
+
+			expect(mockLeaf.detach).toHaveBeenCalledTimes(1);
+			expect(app.workspace.revealLeaf).toHaveBeenCalledWith(previousLeaf);
+			expect(app.workspace.setActiveLeaf).toHaveBeenCalledWith(previousLeaf, { focus: true });
+			expect(previousEditor.focus).toHaveBeenCalled();
+			expect(json.results).toEqual([{ citekey: "missing", status: "missing" }]);
 		});
 
 		it("returns 200 and reports missing for the legacy citekey form", async () => {

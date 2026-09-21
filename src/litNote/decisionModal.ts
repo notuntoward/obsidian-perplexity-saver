@@ -51,7 +51,22 @@ export function askNoteDecision(
 				const modal = new (class extends Modal {
 					onOpen(): void {
 						this.titleEl.setText(title);
-						this.contentEl.createEl("p", { text: message });
+						for (const p of message.split("\n\n")) {
+							const trimmed = p.trim();
+							if (!trimmed) continue;
+							const lines = trimmed.split("\n");
+							if (lines.length === 1) {
+								this.contentEl.createEl("p", { text: trimmed });
+							} else {
+								const pEl = this.contentEl.createEl("p");
+								for (let i = 0; i < lines.length; i++) {
+									if (i > 0) {
+										pEl.createEl("br");
+									}
+									pEl.createEl("span", { text: lines[i] });
+								}
+							}
+						}
 						const row = this.contentEl.createDiv({
 							cls: "modal-button-container",
 						});
