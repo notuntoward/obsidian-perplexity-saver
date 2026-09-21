@@ -550,6 +550,42 @@ describe("Lit Note Server", () => {
 			}
 		});
 
+		it("focusObsidianWindow on macOS calls osascript and falls back to open URI", () => {
+			mockExec.mockClear();
+			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
+				if (cb) cb(new Error("osascript failed"));
+			});
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+			try {
+				const mockApp = { vault: { getName: () => "MacVault" } } as any;
+				focusObsidianWindow(mockApp);
+				expect(mockExec).toHaveBeenCalledTimes(2);
+				expect(mockExec.mock.calls[0][0]).toContain('tell application "Obsidian" to activate');
+				expect(mockExec.mock.calls[1][0]).toBe('open "obsidian://open?vault=MacVault"');
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			}
+		});
+
+		it("focusObsidianWindow on Linux calls wmctrl/xdotool and falls back to xdg-open URI", () => {
+			mockExec.mockClear();
+			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
+				if (cb) cb(new Error("wmctrl failed"));
+			});
+			const originalPlatform = process.platform;
+			Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+			try {
+				const mockApp = { vault: { getName: () => "LinuxVault" } } as any;
+				focusObsidianWindow(mockApp);
+				expect(mockExec).toHaveBeenCalledTimes(2);
+				expect(mockExec.mock.calls[0][0]).toContain('wmctrl -x -a "obsidian"');
+				expect(mockExec.mock.calls[1][0]).toBe('xdg-open "obsidian://open?vault=LinuxVault"');
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+			}
+		});
+
 		it("waits for onLayoutReady when layoutReady is false before opening file", async () => {
 			let layoutReadyCallback: (() => void) | null = null;
 			let fileOpened = false;

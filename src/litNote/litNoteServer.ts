@@ -443,9 +443,29 @@ export function focusObsidianWindow(app?: App): void {
 					}
 				);
 			} else if (platform === "darwin") {
-				exec('osascript -e \'tell application "Obsidian" to activate\'', () => {});
+				exec('osascript -e \'tell application "Obsidian" to activate\'', (err) => {
+					if (err) {
+						const resolvedApp =
+							app ?? (typeof window !== "undefined" ? (window as any).app : null);
+						const vaultName = resolvedApp?.vault?.getName?.();
+						const uri = vaultName
+							? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
+							: "obsidian://";
+						exec(`open "${uri}"`, () => {});
+					}
+				});
 			} else if (platform === "linux") {
-				exec('wmctrl -x -a "obsidian" || xdotool search --class "obsidian" windowactivate', () => {});
+				exec('wmctrl -x -a "obsidian" || xdotool search --class "obsidian" windowactivate', (err) => {
+					if (err) {
+						const resolvedApp =
+							app ?? (typeof window !== "undefined" ? (window as any).app : null);
+						const vaultName = resolvedApp?.vault?.getName?.();
+						const uri = vaultName
+							? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
+							: "obsidian://";
+						exec(`xdg-open "${uri}"`, () => {});
+					}
+				});
 			}
 		}
 	} catch (err) {
