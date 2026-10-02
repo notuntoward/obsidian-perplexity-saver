@@ -495,4 +495,87 @@ export class ZoteroClient {
 
 		return bestMatch ? { item: bestMatch, score: bestScore } : undefined;
 	}
+
+	/**
+	 * Fast check whether the local Zotero HTTP service is running and responsive.
+	 */
+	async isAvailable(timeoutMs = 1500): Promise<boolean> {
+		try {
+			const res = await this.fetchJsonWithHeaders(
+				"/api/users/0/items?v=3&format=json&limit=1",
+				timeoutMs
+			);
+			return !!res && !!res.headers;
+		} catch {
+			return false;
+		}
+	}
+
+	async getItemByKey(itemKey: string): Promise<any> {
+		if (!itemKey) return null;
+		try {
+			const res = await this.fetchJson(`/api/users/0/items/${encodeURIComponent(itemKey)}?v=3&format=json`);
+			if (res) {
+				return res.data || res;
+			}
+		} catch {
+			// Item not found or network error
+		}
+		return null;
+	}
+
+	async getItemByCitekey(citekey: string): Promise<any> {
+		if (!citekey) return null;
+		const cleanCite = citekey.trim().toLowerCase();
+
+		// 1. Search cached items if available
+		if (this.cachedItems) {
+			const match = this.cachedItems.find(
+				(i) => i.citekey.toLowerCase() === cleanCite || i.zotkey.toLowerCase() === cleanCite
+			);
+			if (match) {
+				return await this.getItemByKey(match.zotkey);
+			}
+		}
+
+		// 2. Query Zotero API by search (everything mode)
+		try {
+			const res = await this.fetchJson(
+				`/api/users/0/items?v=3&format=json&q=${encodeURIComponent(citekey)}&qmode=everything`
+			);
+			if (Array.isArray(res) && res.length > 0) {
+				for (const raw of res) {
+					const data = raw.data || raw;
+					const extraKey = extractCitekeyFromExtra(data.extra);
+					if (
+						(extraKey && extraKey.toLowerCase() === cleanCite) ||
+						(data.key && data.key.toLowerCase() === cleanCite)
+					) {
+						return data;
+					}
+				}
+				// If no exact match in extra, verify first result key via Better BibTeX RPC
+				const firstData = res[0].data || res[0];
+				if (firstData && firstData.key) {
+					const bbtMap = await this.resolveBbtCitekeys([firstData.key]);
+					if (bbtMap.get(firstData.key)?.toLowerCase() === cleanCite) {
+						return firstData;
+					}
+				}
+			}
+		} catch {
+			// Fallback: try direct citationKey query for backward compatibility
+			try {
+				const res = await this.fetchJson(
+					`/api/users/0/items?v=3&format=json&citationKey=${encodeURIComponent(citekey)}`
+				);
+				if (Array.isArray(res) && res.length > 0) {
+					return res[0].data || res[0];
+				}
+			} catch {
+				// Fail silently
+			}
+		}
+		return null;
+	}
 }

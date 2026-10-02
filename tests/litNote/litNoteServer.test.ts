@@ -4,6 +4,7 @@ import {
 	focusObsidianWindow,
 } from "../../src/litNote/litNoteServer";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
+import { askAuthorFormatDecision } from "../../src/litNote/authorFormatModal";
 import { TFile } from "obsidian";
 import * as Obsidian from "obsidian";
 
@@ -22,6 +23,10 @@ vi.mock("child_process", () => ({
 
 vi.mock("../../src/litNote/decisionModal", () => ({
 	askNoteDecision: vi.fn(),
+}));
+
+vi.mock("../../src/litNote/authorFormatModal", () => ({
+	askAuthorFormatDecision: vi.fn(),
 }));
 
 let requestHandler: (req: any, res: any) => Promise<void>;
@@ -55,6 +60,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 	}
 	const created: Array<{ path: string; body: string }> = [];
 	const modified: Array<{ path: string; body: string }> = [];
+	const writtenFrontmatter = new Map<string, any>();
 
 	const app: any = {
 		vault: {
@@ -75,7 +81,11 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 			getName: vi.fn(() => "TestVault"),
 		},
 		fileManager: {
-			processFrontMatter: vi.fn(async (_file: any, cb: (fm: any) => void) => cb({})),
+			processFrontMatter: vi.fn(async (file: any, cb: (fm: any) => void) => {
+				const fm: any = {};
+				cb(fm);
+				writtenFrontmatter.set(file.path, fm);
+			}),
 		},
 		workspace: {
 			layoutReady: true,
@@ -93,7 +103,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 		},
 	};
 
-	return { app, files, created, modified };
+	return { app, files, created, modified, writtenFrontmatter };
 }
 
 const createMockRes = () => {
@@ -118,8 +128,8 @@ const createMockReq = (method: string, url: string, bodyObj: any) => {
 	};
 };
 
-async function post(app: any, bodyObj: any) {
-	startLitNoteServer(app, { litNotesFolder: FOLDER } as any);
+async function post(app: any, bodyObj: any, settings: any = { litNotesFolder: FOLDER }) {
+	startLitNoteServer(app, settings);
 	const req = createMockReq("POST", "/lit-note", bodyObj);
 	const { res, endPromise } = createMockRes();
 	requestHandler(req, res);
@@ -131,6 +141,7 @@ describe("Lit Note Server", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		vi.mocked(askNoteDecision).mockResolvedValue("overwrite");
+		vi.mocked(askAuthorFormatDecision).mockResolvedValue("create-anyway");
 		createdNotices.length = 0;
 	});
 
@@ -764,7 +775,7 @@ describe("Lit Note Server", () => {
 				const { app } = makeApp([`${FOLDER}/existing.md`]);
 				await post(app, {
 					action: "create",
-					data: [{ citekey: "existing", title: "Existing" }],
+					data: [{ citekey: "existing", title: "Existing", creators: [{ firstName: "John", lastName: "Doe" }] }],
 				});
 
 				expect(askNoteDecision).toHaveBeenCalled();
@@ -776,7 +787,7 @@ describe("Lit Note Server", () => {
 				const { app } = makeApp();
 				await post(app, {
 					action: "open",
-					data: [{ citekey: "missing-key", title: "Missing" }],
+					data: [{ citekey: "missing-key", title: "Missing", creators: [{ firstName: "John", lastName: "Doe" }] }],
 				});
 
 				expect(askNoteDecision).toHaveBeenCalled();
@@ -785,23 +796,203 @@ describe("Lit Note Server", () => {
 
 			it("focusObsidianWindow triggers Win32 restore command, falling back to vault open URI", () => {
 				mockExec.mockClear();
-				const { app } = makeApp();
-				focusObsidianWindow(app);
+				const originalPlatform = process.platform;
+				Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+				try {
+					const { app } = makeApp();
+					focusObsidianWindow(app);
 
-				expect(mockExec).toHaveBeenCalledWith(
-					expect.stringContaining("python -c"),
-					expect.any(Function)
-				);
-
-				// Test fallback when python execution fails
-				const pyCallCb = mockExec.mock.calls[0][1];
-				if (pyCallCb) {
-					pyCallCb(new Error("python not found"));
 					expect(mockExec).toHaveBeenCalledWith(
-						expect.stringContaining("obsidian://open?vault=TestVault"),
+						expect.stringContaining("python -c"),
 						expect.any(Function)
 					);
+
+					// Test fallback when python execution fails
+					const pyCallCb = mockExec.mock.calls[0][1];
+					if (pyCallCb) {
+						pyCallCb(new Error("python not found"));
+						expect(mockExec).toHaveBeenCalledWith(
+							expect.stringContaining("obsidian://open?vault=TestVault"),
+							expect.any(Function)
+						);
+					}
+				} finally {
+					Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
 				}
+			});
+		});
+
+		describe("validateAuthorNameFormat setting", () => {
+			it("does not validate author formats when setting is false", async () => {
+				const { app, created } = makeApp();
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								creators: [{ creatorType: "author", name: "Single Field No Comma" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: false }
+				);
+
+				expect(askAuthorFormatDecision).not.toHaveBeenCalled();
+				expect(res.success).toBe(true);
+				expect(created).toHaveLength(1);
+			});
+
+			it("prompts author format decision on create batch when invalid author format found", async () => {
+				const { app, created } = makeApp();
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("create-anyway");
+
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								creators: [{ creatorType: "author", name: "John Doe" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("created");
+				expect(created).toHaveLength(1);
+			});
+
+			it("skips note creation when user chooses edit in Zotero", async () => {
+				const { app, created } = makeApp();
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("edit");
+
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								itemkey: "ZOT123",
+								creators: [{ creatorType: "author", name: "John Doe" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("skipped");
+				expect(created).toHaveLength(0);
+			});
+
+			it("skips note creation when user chooses cancel", async () => {
+				const { app, created } = makeApp();
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("cancel");
+
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								creators: [{ creatorType: "author", name: "John Doe" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("skipped");
+				expect(created).toHaveLength(0);
+			});
+
+			it("validates author format during open batch when missing note is chosen for creation", async () => {
+				const { app, created } = makeApp();
+				vi.mocked(askNoteDecision).mockResolvedValue("create");
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("cancel");
+
+				const res = await post(
+					app,
+					{
+						action: "open",
+						data: [
+							{
+								citekey: "missing-key",
+								title: "Missing Key",
+								creators: [{ creatorType: "author", name: "Invalid Author" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("skipped");
+				expect(created).toHaveLength(0);
+			});
+
+			it("auto-corrects author name and creates note when user chooses auto-correct", async () => {
+				const { app, created, writtenFrontmatter } = makeApp();
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("auto-correct");
+
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								creators: [{ creatorType: "author", name: "John Doe" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("created");
+				expect(created).toHaveLength(1);
+				const fm = writtenFrontmatter.get("lit/lit_notes/unformatted.md");
+				expect(fm?.authors).toEqual(["Doe, John"]);
+			});
+
+			it("creates note as-is when user chooses create-anyway", async () => {
+				const { app, created, writtenFrontmatter } = makeApp();
+				vi.mocked(askAuthorFormatDecision).mockResolvedValue("create-anyway");
+
+				const res = await post(
+					app,
+					{
+						action: "create",
+						data: [
+							{
+								citekey: "unformatted",
+								title: "Unformatted Author",
+								creators: [{ creatorType: "author", name: "John Doe" }],
+							},
+						],
+					},
+					{ litNotesFolder: FOLDER, validateAuthorNameFormat: true }
+				);
+
+				expect(askAuthorFormatDecision).toHaveBeenCalled();
+				expect(res.results[0].status).toBe("created");
+				expect(created).toHaveLength(1);
+				const fm = writtenFrontmatter.get("lit/lit_notes/unformatted.md");
+				expect(fm?.authors).toEqual(["John Doe"]);
 			});
 		});
 	});

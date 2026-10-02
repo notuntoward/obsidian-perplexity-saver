@@ -8,6 +8,7 @@ import {
 	Setting,
 	SettingDefinitionItem,
 	TFile,
+	debounce,
 } from "obsidian";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
@@ -20,6 +21,8 @@ import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
 import { registerJumpCommand } from "./commands/jump";
+import { registerDataviewConverterCommands } from "./commands/dataviewConverter";
+import { registerGetLitNoteLinkCommand } from "./commands/getLitNoteLink";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { sanitizeFilename, suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
 import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
@@ -29,7 +32,9 @@ import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
 import { DialogFile } from "./parsers/types";
 import { ZoteroClient } from "./zotero/zoteroClient";
 import { deduplicateDialogCitations } from "./normalize/turns";
-import { startLitNoteServer, stopLitNoteServer } from "./litNote/litNoteServer";
+import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
+import type { NameStyle } from "./litNote/bibtexName";
+import { ViewTracker } from "./litNote/viewTracker";
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -85,16 +90,20 @@ export interface PerplexitySaverSettings {
 	 * Automatically relink sources with Zotero and Obsidian literature notes when importing/syncing.
 	 */
 	autoRelinkSources: boolean;
+	litNoteLastViewed: Record<string, number>;
 	/**
-	 * Port for the Zotero companion HTTP listener (lit-note create/open endpoint).
+	 * When enabled, validates that author and creator names are in '<last_name>, <first_name>'
+	 * format before creating literature notes from Zotero items.
 	 */
-	litNotePort: number;
+	validateAuthorNameFormat: boolean;
 	/**
-	 * Absolute OS path to the Obsidian vault root. Defaults to the current
-	 * vault's basePath but can be overridden if the vault is accessed via a
-	 * symlink or junction that Obsidian reports differently.
+	 * Format style for author names in literature notes ('last-first', 'bibtex', 'first-last', 'von-last', 'initials').
 	 */
-	vaultRoot: string;
+	authorFormatStyle: NameStyle;
+	/**
+	 * When enabled with 'last-first' style, drops 'von' particles (e.g. "Beethoven, Ludwig" instead of "van Beethoven, Ludwig").
+	 */
+	authorDropVon: boolean;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -111,8 +120,10 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	litNotesFolder: "lit/lit_notes",
 	minTitleMatchScore: 95,
 	autoRelinkSources: false,
-	litNotePort: 27124,
-	vaultRoot: "",
+	litNoteLastViewed: {},
+	validateAuthorNameFormat: false,
+	authorFormatStyle: "last-first" as NameStyle,
+	authorDropVon: false,
 };
 
 interface InlineInputData {
@@ -133,16 +144,46 @@ const clearPerplexityInput = StateEffect.define<null>();
 export default class PerplexitySaverPlugin extends Plugin {
 	settings!: PerplexitySaverSettings;
 	zoteroClient!: ZoteroClient;
+	viewTracker!: ViewTracker;
+	litNoteServerSettings: LitNoteServerSettings | null = null;
 	private litNoteServer: http.Server | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
+		this.viewTracker = new ViewTracker(this.settings.litNoteLastViewed);
+		this.viewTracker.seedIfEmpty(this.app.workspace.getLastOpenFiles(), Date.now());
+
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				if (file) {
+					this.viewTracker.record(file.path, Date.now());
+					this.persistViews();
+				}
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => {
+				this.viewTracker.rename(oldPath, file.path);
+				this.persistViews();
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				this.viewTracker.remove(file.path);
+				this.persistViews();
+			})
+		);
+
 		// Start the Zotero companion HTTP listener (desktop only — node:http).
-		this.litNoteServer = startLitNoteServer(this.app, {
+		this.litNoteServerSettings = {
 			litNotesFolder: this.settings.litNotesFolder,
-		});
+			validateAuthorNameFormat: this.settings.validateAuthorNameFormat,
+			authorFormatStyle: this.settings.authorFormatStyle,
+			authorDropVon: this.settings.authorDropVon,
+		};
+		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -162,6 +203,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerRemoveSourcesWithNoDialogCommand(this);
 		registerJumpCommand(this);
 		registerRelinkSourcesCommand(this);
+		registerDataviewConverterCommands(this);
+		registerGetLitNoteLinkCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));
 
@@ -181,6 +224,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 			this.litNoteServer = null;
 		}
 	}
+
+	private persistViews = debounce(() => {
+		this.settings.litNoteLastViewed = this.viewTracker.toRecord();
+		void this.saveSettings();
+	}, 5000, true);
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
 		const activeFile = view.file;
@@ -531,6 +579,26 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				this.plugin.zoteroClient = new ZoteroClient({ port: n });
 			}
 		}
+		if (key === "litNotesFolder") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.litNotesFolder = String(value).trim();
+			}
+		}
+		if (key === "validateAuthorNameFormat") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.validateAuthorNameFormat = Boolean(value);
+			}
+		}
+		if (key === "authorFormatStyle") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.authorFormatStyle = value as NameStyle;
+			}
+		}
+		if (key === "authorDropVon") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.authorDropVon = Boolean(value);
+			}
+		}
 		await this.plugin.saveSettings();
 		this.refreshDomState();
 	}
@@ -688,6 +756,44 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 									new Notice("Zotero library cache cleared.");
 								});
 							});
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Zotero companion listener",
+				items: [
+					{
+						name: "Validate author name format",
+						desc: "When enabled, warns before creating literature notes if any author or creator name with multiple words is not in 'Last, First' format. Single-word names (mononyms such as Aristotle or Prince) are always accepted. The check catches ambiguous entries like 'John Smith' where it is unclear which part is the last name — Obsidian Bases sorts by the first element of the authors property, so 'Last, First' ordering is required for last-name search to work.",
+						control: {
+							type: "toggle",
+							key: "validateAuthorNameFormat",
+						},
+					},
+					{
+						name: "Author name format style",
+						desc: "Output format style for author names in literature notes. 'Last, First' (default) preserves standard catalog ordering; 'BibTeX' uses 'von Last, Jr, First'; 'First Last' uses natural name order; 'Last only' keeps just the surname; 'Initials' uses 'J. Smith' (or 'J.-P. Smith' for hyphenated names).",
+						control: {
+							type: "dropdown",
+							key: "authorFormatStyle",
+							options: {
+								"last-first": "Last, First (default)",
+								"bibtex": "BibTeX (von Last, Jr, First)",
+								"first-last": "First Last",
+								"von-last": "Last only",
+								"initials": "Initials (J. Smith)",
+							},
+						},
+					},
+					{
+						name: "Drop 'von' particle",
+						desc: "When enabled with 'Last, First' style, omits lowercase surname particles such as 'von', 'van', or 'de la' (e.g. 'Beethoven, Ludwig' instead of 'van Beethoven, Ludwig').",
+						control: {
+							type: "toggle",
+							key: "authorDropVon",
+							disabled: () => this.plugin.settings.authorFormatStyle !== "last-first",
 						},
 					},
 				],
@@ -914,6 +1020,9 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.litNotesFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.litNotesFolder = value.trim();
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.litNotesFolder = value.trim();
+						}
 						await this.plugin.saveSettings();
 					});
 			});
@@ -951,34 +1060,62 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("Zotero companion listener").setHeading();
 
 		new Setting(containerEl)
-			.setName("Listener port")
+			.setName("Validate author name format")
 			.setDesc(
-				"Port the Zotero companion plugin POSTs to for creating/opening lit notes (default 27124). " +
-					"Restart Obsidian after changing. Must not conflict with Zotero's port (23119) or the Python webhook (5050)."
+				"When enabled, warns before creating literature notes if any author or creator name with multiple words is not in 'Last, First' format. " +
+				"Single-word names (mononyms such as Aristotle or Prince) are always accepted. " +
+				"The check catches ambiguous entries like 'John Smith' where it is unclear which part is the last name — " +
+				"Obsidian Bases sorts by the first element of the authors property, so 'Last, First' ordering is required for last-name search to work."
 			)
-			.addText((text) => {
-				text.setPlaceholder("27124")
-					.setValue(String(this.plugin.settings.litNotePort))
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.validateAuthorNameFormat)
 					.onChange(async (value) => {
-						const n = parseInt(value, 10);
-						if (!isNaN(n) && n > 0 && n < 65536) {
-							this.plugin.settings.litNotePort = n;
-							await this.plugin.saveSettings();
+						this.plugin.settings.validateAuthorNameFormat = value;
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.validateAuthorNameFormat = value;
 						}
+						await this.plugin.saveSettings();
 					});
 			});
 
 		new Setting(containerEl)
-			.setName("Vault root path")
+			.setName("Author name format style")
 			.setDesc(
-				"Absolute OS path to the Obsidian vault root. Used by the Zotero companion " +
-					"to resolve lit note paths. Leave as the default unless your vault has moved."
+				"Output format style for author names in literature notes."
 			)
-			.addText((text) => {
-				text.setPlaceholder("/path/to/vault")
-					.setValue(this.plugin.settings.vaultRoot)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOption("last-first", "Last, first (default)")
+					.addOption("bibtex", "BibTeX (von last, jr, first)")
+					.addOption("first-last", "First last")
+					.addOption("von-last", "Last only")
+					.addOption("initials", "Initials (j. Smith)")
+					.setValue(this.plugin.settings.authorFormatStyle)
 					.onChange(async (value) => {
-						this.plugin.settings.vaultRoot = value.trim();
+						this.plugin.settings.authorFormatStyle = value as NameStyle;
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.authorFormatStyle = value as NameStyle;
+						}
+						await this.plugin.saveSettings();
+						this.display();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Drop 'von' particle")
+			.setDesc(
+				"When enabled with 'last, first' style, omits lowercase surname particles such as 'von', 'van', or 'de la'."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.authorDropVon)
+					.setDisabled(this.plugin.settings.authorFormatStyle !== "last-first")
+					.onChange(async (value) => {
+						this.plugin.settings.authorDropVon = value;
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.authorDropVon = value;
+						}
 						await this.plugin.saveSettings();
 					});
 			});

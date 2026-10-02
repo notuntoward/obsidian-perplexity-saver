@@ -1,24 +1,44 @@
 # Agent Instructions for this Obsidian plugin template
 
-## Build verification rule
+## Fast Build & Artifact Verification Rules (Speedup Guide for AI Agents)
 
-This project produces a pre-built artifact (`main.js`) that the Obsidian runtime
-loads directly. After editing any source file under `src/`, you MUST:
+This project produces a pre-built artifact (`main.js`) that the Obsidian runtime loads directly.
+Follow this fast cycle to avoid sluggish multi-turn build/verify bottlenecks:
 
-1. Run `npm run build`.
-2. Grep the built `main.js` for a fingerprint of your change to confirm the
-   bundle on disk reflects the edit.
+### 1. Fast Inner-Loop Bundling (Sub-second)
+- Run `npm run bundle` (`node esbuild.config.mjs production`).
+- This generates `main.js` with an updated build timestamp banner in under 1 second.
+- Do NOT run the full `npm run build` during iterative code edits (full build includes lint and typecheck).
 
-Do not declare a task done without grepping the built artifact for evidence.
+### 2. Instant Artifact Verification (`npm run verify`)
+- Run `npm run verify -- "<fingerprint>"`.
+- This script checks the bundle age and prints the exact byte offset and context snippet without buffer limits.
+- **CRITICAL MINIFICATION NOTE**: `esbuild` minifies top-level identifiers and functions (e.g., `myFunction` becomes `Ia` or `Rt`). **Never** grep for TypeScript function or variable names. Always verify against a unique string literal, UI text, error message, or regex snippet added by your edit.
+- Example: `npm run verify -- "category: [\"literaturenote\"]"`
 
-## Tooling
+### 3. Fast Targeted Testing
+- During development, run only the relevant test file or folder to avoid unneeded test runs:
+  ```bash
+  npx vitest run tests/litNote/
+  ```
+- Before declaring a task done, run the full test suite: `npm run test:run`.
 
-- Lint: `npm run lint` (ESLint with `eslint-plugin-obsidianmd` rules, zero warnings).
-- Type-check + bundle: `npm run build`.
-- Unit tests: `npm run test:run` (Vitest). `obsidian` resolves to a mock in
-  `tests/__mocks__/obsidian.ts`.
-- Browser tests: `npm run test:browser` (Playwright, requires
-  `npx playwright install chromium`).
+### 4. Final Completion Gate
+Before declaring a task done, verify code health:
+- `npm run check` (ESLint with `--cache` + `tsc --noEmit`, passes in ~6-8s).
+- `npm run test:run` (Vitest, zero failures).
+- `npm run verify -- "<fingerprint>"` (proves `main.js` includes the change).
+
+## Tooling Commands
+
+- Fast bundle: `npm run bundle` (esbuild only, <1s).
+- Verify artifact: `npm run verify -- "<fingerprint>"` (checks build timestamp & fingerprint, <100ms).
+- Lint: `npm run lint` (ESLint with `--cache` and `eslint-plugin-obsidianmd`, zero warnings).
+- Typecheck: `npm run typecheck` (`tsc --noEmit -skipLibCheck`).
+- Check all: `npm run check` (runs `lint` and `typecheck`).
+- Full CI Build: `npm run build` (runs `check` then `bundle`).
+- Unit tests: `npm run test:run` (Vitest). `obsidian` resolves to a mock in `tests/__mocks__/obsidian.ts`.
+- Browser tests: `npm run test:browser` (Playwright, requires `npx playwright install chromium`).
 
 ## When building an Obsidian plugin inside a git worktree
 
