@@ -131,9 +131,14 @@
 	color: var(--text-muted);
 }
 
-.litnote-suggestion .litnote-citekey .suggestion-highlight {
-	color: var(--text-accent);
-	font-weight: var(--bold-weight, 700);
+/* Same match emphasis on title and citekey: no background. */
+.litnote-suggestion .suggestion-highlight {
+	color: var(--text-normal);
+	font-weight: var(--font-bold, 700);
+	text-decoration: underline;
+	text-decoration-color: var(--text-accent);
+	text-decoration-thickness: 1px;
+	text-underline-offset: 2px;
 }
 
 

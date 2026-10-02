@@ -1,4 +1,4 @@
-import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, TFile, parseYaml, renderResults } from "obsidian";
+import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, SearchResult, TFile, parseYaml, renderResults } from "obsidian";
 import { getLitNoteFiles } from "../litNote/litNoteFinder";
 import type { ZoteroClient } from "../zotero/zoteroClient";
 import { sortByEngagement } from "../litNote/engagementSort";
@@ -16,6 +16,14 @@ export interface LitNoteInfo {
 export interface LinkOption {
 	displayText: string;
 	linkText: string;
+}
+
+const MIN_HIGHLIGHT_RUN = 2;
+
+/** Drop single-character match ranges so scattered fuzzy hits don't speckle the row. */
+function pruneShortRuns(result: SearchResult): SearchResult {
+	const matches = result.matches.filter(([start, end]) => end - start >= MIN_HIGHLIGHT_RUN);
+	return matches.length > 0 ? { score: result.score, matches } : result;
 }
 
 /**
@@ -46,17 +54,18 @@ export class LitNoteSelectModal extends FuzzySuggestModal<LitNoteInfo> {
 	renderSuggestion(match: FuzzyMatch<LitNoteInfo>, el: HTMLElement): void {
 		el.addClass("litnote-suggestion");
 		const item = match.item;
+		const result = pruneShortRuns(match.match);
 		if (!item.title) {
-			renderResults(el.createDiv({ cls: "litnote-title" }), item.file.basename, match.match);
+			renderResults(el.createDiv({ cls: "litnote-title" }), item.file.basename, result);
 			return;
 		}
 
-		renderResults(el.createDiv({ cls: "litnote-title" }), item.title, match.match);
+		renderResults(el.createDiv({ cls: "litnote-title" }), item.title, result);
 		// The + 2 accounts for the " (" between title and key in getItemText.
 		renderResults(
 			el.createDiv({ cls: "litnote-citekey" }),
 			this.keyOf(item),
-			match.match,
+			result,
 			-(item.title.length + 2)
 		);
 	}
