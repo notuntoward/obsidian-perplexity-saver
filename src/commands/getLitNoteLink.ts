@@ -1,0 +1,183 @@
+import { App, Editor, FuzzySuggestModal, MarkdownView, Notice, TFile, parseYaml } from "obsidian";
+import { getLitNoteFiles } from "../litNote/litNoteFinder";
+import type { ZoteroClient } from "../zotero/zoteroClient";
+import { sortByEngagement } from "../litNote/engagementSort";
+import type { ViewTracker } from "../litNote/viewTracker";
+import { readLitNote } from "../litNote/litNoteReader";
+
+export interface LitNoteInfo {
+	file: TFile;
+	title: string;
+	aliases: string[];
+	citekey: string;
+	publication_date?: string;
+}
+
+export interface LinkOption {
+	displayText: string;
+	linkText: string;
+}
+
+/**
+ * Level 1 Modal: Select a Literature Note from the vault folder.
+ */
+export class LitNoteSelectModal extends FuzzySuggestModal<LitNoteInfo> {
+	constructor(
+		app: App,
+		private items: LitNoteInfo[],
+		private onSelectNote: (note: LitNoteInfo) => void
+	) {
+		super(app);
+		this.setPlaceholder("Select a literature note...");
+	}
+
+	getItems(): LitNoteInfo[] {
+		return this.items;
+	}
+
+	getItemText(item: LitNoteInfo): string {
+		return item.title ? `${item.title} (${item.citekey || item.file.basename})` : item.file.basename;
+	}
+
+	onChooseItem(item: LitNoteInfo, _evt: MouseEvent | KeyboardEvent): void {
+		this.onSelectNote(item);
+	}
+}
+
+/**
+ * Level 2 Modal: Select link display text option (title, then aliases, then citekey).
+ */
+export class LinkOptionSelectModal extends FuzzySuggestModal<LinkOption> {
+	constructor(
+		app: App,
+		private options: LinkOption[],
+		private onSelectOption: (option: LinkOption) => void
+	) {
+		super(app);
+		this.setPlaceholder("Select link text...");
+	}
+
+	getItems(): LinkOption[] {
+		return this.options;
+	}
+
+	getItemText(item: LinkOption): string {
+		return item.displayText;
+	}
+
+	onChooseItem(item: LinkOption, _evt: MouseEvent | KeyboardEvent): void {
+		this.onSelectOption(item);
+	}
+}
+
+export async function parseLitNoteInfo(app: App, file: TFile): Promise<LitNoteInfo> {
+	const content = await app.vault.read(file);
+	const meta = readLitNote(content, file.basename);
+	return {
+		file,
+		title: meta.title,
+		aliases: meta.aliases,
+		citekey: meta.citekey,
+		publication_date: meta.publication_date,
+	};
+}
+
+export function buildLinkOptionsForNote(note: LitNoteInfo): LinkOption[] {
+	const options: LinkOption[] = [];
+	const stem = note.file.basename;
+	const addedTexts = new Set<string>();
+
+	// 1. Note title property first
+	if (note.title) {
+		const text = note.title.trim();
+		if (text && !addedTexts.has(text.toLowerCase())) {
+			addedTexts.add(text.toLowerCase());
+			options.push({
+				displayText: text,
+				linkText: text === stem ? `[[${stem}]]` : `[[${stem}|${text}]]`,
+			});
+		}
+	}
+
+	// 2. Whatever is in aliases property
+	for (const alias of note.aliases) {
+		const text = alias.trim();
+		if (text && !addedTexts.has(text.toLowerCase())) {
+			addedTexts.add(text.toLowerCase());
+			options.push({
+				displayText: text,
+				linkText: text === stem ? `[[${stem}]]` : `[[${stem}|${text}]]`,
+			});
+		}
+	}
+
+	// 3. Citekey / basename last
+	const citekeyText = (note.citekey || note.file.basename).trim();
+	if (citekeyText && !addedTexts.has(citekeyText.toLowerCase())) {
+		addedTexts.add(citekeyText.toLowerCase());
+		options.push({
+			displayText: citekeyText,
+			linkText: citekeyText === stem ? `[[${stem}]]` : `[[${stem}|${citekeyText}]]`,
+		});
+	}
+
+	// Default fallback if no options added
+	if (options.length === 0) {
+		options.push({
+			displayText: stem,
+			linkText: `[[${stem}]]`,
+		});
+	}
+
+	return options;
+}
+
+export function registerGetLitNoteLinkCommand(plugin: {
+	app: App;
+	addCommand: (cmd: unknown) => unknown;
+	settings: {
+		litNotesFolder: string;
+	};
+	zoteroClient?: ZoteroClient;
+	viewTracker: ViewTracker;
+}): void {
+	plugin.addCommand({
+		id: "get-literature-note-link",
+		name: "Get literature note link",
+		editorCallback: async (editor: Editor, _view: MarkdownView) => {
+			const files = getLitNoteFiles(plugin.app, plugin.settings.litNotesFolder);
+			if (files.length === 0) {
+				new Notice(`No literature notes found in '${plugin.settings.litNotesFolder}'.`);
+				return;
+			}
+
+			// Sort BEFORE the async parse. Promise.all keeps input order.
+			const sortedFiles = sortByEngagement(files, plugin.viewTracker.map);
+			const notesInfo = await Promise.all(
+				sortedFiles.map((f) => parseLitNoteInfo(plugin.app, f))
+			);
+
+			// Level 1: Select a Literature Note
+			const level1Modal = new LitNoteSelectModal(
+				plugin.app,
+				notesInfo,
+				(selectedNote) => {
+					const linkOptions = buildLinkOptionsForNote(selectedNote);
+
+					// Level 2: Select Link Text Option (Title -> Aliases -> Citekey)
+					const level2Modal = new LinkOptionSelectModal(
+						plugin.app,
+						linkOptions,
+						(selectedOption) => {
+							editor.replaceSelection(selectedOption.linkText);
+						}
+					);
+
+					window.setTimeout(() => level2Modal.open(), 50);
+				}
+			);
+
+			level1Modal.open();
+		},
+	});
+}

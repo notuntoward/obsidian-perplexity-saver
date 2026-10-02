@@ -112,54 +112,5 @@ export function matchTitles(
 	return Math.round(finalScore);
 }
 
-/**
- * Check whether an Obsidian Literature Note exists for a given citekey.
- * Returns the matching Markdown file basename/stem if found, or null if not found.
- */
-export function findLitNoteForCitekey(
-	app: App,
-	citekey: string,
-	litNotesFolder?: string
-): string | null {
-	if (!citekey || !app || !app.vault) return null;
+export { findLitNoteForCitekey } from "../litNote/litNoteFinder";
 
-	const targetStem = citekey.toLowerCase().trim();
-	const files = app.vault.getMarkdownFiles();
-
-	let normalizedFolder = "";
-	if (litNotesFolder && litNotesFolder.trim()) {
-		normalizedFolder = normalizePath(litNotesFolder.trim()).toLowerCase();
-		while (normalizedFolder.endsWith("/")) {
-			normalizedFolder = normalizedFolder.slice(0, -1);
-		}
-	}
-
-	// 1. Primary check inside litNotesFolder
-	for (const file of files) {
-		const stem = file.basename.toLowerCase().trim();
-		const isMatch =
-			stem === targetStem || stem.startsWith(targetStem + " ") || stem.startsWith(targetStem + "-");
-		if (isMatch) {
-			if (normalizedFolder) {
-				const parentPath = normalizePath(file.parent?.path || "").toLowerCase();
-				if (parentPath === normalizedFolder || parentPath.startsWith(normalizedFolder + "/")) {
-					return file.basename;
-				}
-			} else {
-				return file.basename;
-			}
-		}
-	}
-
-	// 2. Secondary check across whole vault
-	for (const file of files) {
-		const stem = file.basename.toLowerCase().trim();
-		const isMatch =
-			stem === targetStem || stem.startsWith(targetStem + " ") || stem.startsWith(targetStem + "-");
-		if (isMatch) {
-			return file.basename;
-		}
-	}
-
-	return null;
-}

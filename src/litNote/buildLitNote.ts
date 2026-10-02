@@ -10,11 +10,11 @@
  *   - bibliography conditional
  *   - notes conditional (HTML → markdown)
  *   - infoCalloutLinks: Zotero URI always; DOI, URL, and each attachment type only if present
- *   - infoCalloutPrefix: abstract block and grouped-creator block only if present
+ *   - infoCalloutPrefix: abstract block (if present)
  */
 
 import { htmlToMarkdown, App } from "obsidian";
-import type { ZoteroAttachment, ZoteroCreator, ZoteroItemPayload } from "./types";
+import type { ZoteroAttachment, ZoteroItemPayload } from "./types";
 import { findLitNoteForCitekey } from "../zotero/matcher";
 
 
@@ -28,6 +28,80 @@ import { findLitNoteForCitekey } from "../zotero/matcher";
  */
 export function truncateTitle(title: string, n: number): string {
 	return title.split(" ").slice(0, n).join(" ");
+}
+
+import {
+	formatObsidianDate,
+	parseObsidianDate,
+	cleanTextValue,
+	canonicalizeDoi,
+	isEmptyValue,
+	orderFrontmatter,
+	formatTimestampWithOffset,
+	extractAuthorsFromZoteroCreators,
+} from "./propertyUtils";
+
+export {
+	formatObsidianDate,
+	parseObsidianDate,
+	cleanTextValue,
+	canonicalizeDoi,
+	isEmptyValue,
+};
+
+/**
+ * Clean up quotes and escape characters from title/field strings.
+ */
+export function cleanFieldValue(val: string): string {
+	let trimmed = val.trim();
+	if (
+		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+		(trimmed.startsWith("'") && trimmed.endsWith("'"))
+	) {
+		trimmed = trimmed.slice(1, -1).trim();
+	}
+	return trimmed.replace(/\\"/g, '"');
+}
+
+/**
+ * Build the aliases list for a literature note.
+ * Guarantees that the first item is always the exact article title (when title is present).
+ * If the title is longer than 5 words, the 5-word truncated title is added next.
+ * Any other existing aliases are appended after, deduplicated case-insensitively.
+ */
+export function buildAliases(title?: string, existingAliases?: unknown): string[] {
+	const aliases: string[] = [];
+	const seen = new Set<string>();
+
+	const cleanTitle = cleanFieldValue(title ?? "");
+	if (cleanTitle) {
+		aliases.push(cleanTitle);
+		seen.add(cleanTitle.toLowerCase());
+
+		const trunc = truncateTitle(cleanTitle, 5).trim();
+		if (trunc && !seen.has(trunc.toLowerCase())) {
+			aliases.push(trunc);
+			seen.add(trunc.toLowerCase());
+		}
+	}
+
+	if (existingAliases) {
+		let rawList: unknown[] = [];
+		if (Array.isArray(existingAliases)) {
+			rawList = existingAliases;
+		} else if (typeof existingAliases === "string") {
+			rawList = [existingAliases];
+		}
+		for (const item of rawList) {
+			const str = cleanFieldValue(String(item));
+			if (str && !seen.has(str.toLowerCase())) {
+				aliases.push(str);
+				seen.add(str.toLowerCase());
+			}
+		}
+	}
+
+	return aliases;
 }
 
 /**
@@ -130,22 +204,8 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload): string {
 }
 
 /**
- * Return the display name for a single Zotero creator dict.
- * Matches the Python `creator_display_name()` helper.
- */
-function creatorDisplayName(creator: ZoteroCreator): string {
-	if (creator.name) return creator.name;
-	const last = (creator.lastName ?? "").trim();
-	const first = (creator.firstName ?? "").trim();
-	if (last && first) return `${last}, ${first}`;
-	return last || first;
-}
-
-/**
- * Build the optional block of quoted lines that precede standard metadata
- * inside the `[!info]-` callout body.
- * Emits an Abstract block (if present) then a grouped-creator block (if any creators).
- * Ported from `build_info_callout_prefix()`.
+ * Build the optional block of quoted lines inside the `[!info]-` callout body.
+ * Emits an Abstract block (if present).
  *
  * The function returns a string that already ends with "\n" when non-empty,
  * so it can be directly concatenated with the next callout line.
@@ -156,26 +216,7 @@ export function buildInfoCalloutPrefix(item: ZoteroItemPayload): string {
 	const abstract = (item.abstractNote ?? "").trim();
 	if (abstract) {
 		const oneLine = abstract.replace(/\\n/g, " ").replace(/\n/g, " ");
-		lines.push(">", "> **Abstract**", `> ${oneLine}`, ">");
-	}
-
-	const creators = item.creators ?? [];
-	const grouped: Record<string, string[]> = {};
-	for (const c of creators) {
-		const type = (c.creatorType ?? "creator").trim();
-		const name = creatorDisplayName(c);
-		if (name) {
-			(grouped[type] ??= []).push(name);
-		}
-	}
-
-	if (Object.keys(grouped).length > 0) {
-		lines.push(">");
-		for (const [type, names] of Object.entries(grouped)) {
-			const label = type.charAt(0).toUpperCase() + type.slice(1);
-			lines.push(`> **${label}**:: ${names.join(", ")}`);
-		}
-		lines.push(">");
+		lines.push(">", "> **Abstract**", `> ${oneLine}`);
 	}
 
 	return lines.length > 0 ? lines.join("\n") + "\n" : "";
@@ -255,8 +296,6 @@ export function zoteroHtmlToMd(
  * Assemble the markdown body of the literature note (everything after the
  * frontmatter fence). This string is passed to `app.vault.create()` and
  * frontmatter is then added separately via `processFrontMatter`.
- *
- * Structure mirrors the Jinja2 template in zotero_to_obsidian_note_receiver.py.
  */
 export function buildLitNoteBody(
 	app: App,
@@ -272,43 +311,11 @@ export function buildLitNoteBody(
 		`> [!info]- &nbsp;${calloutLinks}`,
 	];
 
-	// The prefix (abstract + creators) may be empty — if so, skip it.
-	// Each line in the prefix already starts with "> " from the builder.
 	if (calloutPrefix) {
-		// calloutPrefix ends with "\n"; split and push each line individually
-		// to keep consistent array-based assembly.
 		for (const l of calloutPrefix.trimEnd().split("\n")) {
 			lines.push(l);
 		}
 	}
-
-	// Standard metadata fields inside the callout body
-	lines.push(
-		`> **Title**:: "${item.title}"`,
-		`> **Date**:: ${item.date ?? ""}`,
-		`> **Citekey**:: ${item.citekey}`,
-		`> **ZoteroItemKey**:: ${item.itemkey ?? ""}`,
-		`> **itemType**:: ${item.itemType ?? ""}`,
-		`> **DOI**:: ${item.DOI ?? ""}`,
-		`> **URL**:: ${item.url ?? ""}`,
-		`> **Journal**:: ${item.publicationTitle ?? ""}`,
-		`> **Volume**:: ${item.volume ?? ""}`,
-		`> **Issue**:: ${item.issue ?? ""}`,
-		`> **Book**:: ${item.publicationTitle ?? ""}`,
-		`> **Publisher**:: ${item.publisher ?? ""}`,
-		`> **Location**:: ${item.place ?? ""}`,
-		`> **Pages**:: ${item.pages ?? ""}`,
-		`> **ISBN**:: ${item.ISBN ?? ""}`,
-		`> **ZoteroTags**:: ${JSON.stringify(item.allTags ?? [])}`,
-		`> **ZoteroCollections**:: ${JSON.stringify(item.collections ?? [])}`,
-	);
-
-	// Relations line — only linked items that have a citekey
-	const relatedLinks = (item.relations ?? [])
-		.filter((r) => r.citekey)
-		.map((r) => `[[@${r.citekey}]]`)
-		.join(", ");
-	lines.push(`> **Related**::${relatedLinks ? " " + relatedLinks : ""}`);
 
 	// Bibliography block (conditional)
 	const bib = cleanupBibliography(item.bibliography ?? "");
@@ -326,7 +333,7 @@ export function buildLitNoteBody(
 				lines.push(">", "> ---", ">"); // Visual separator between distinct Zotero notes
 			}
 			const md = zoteroHtmlToMd(app, settings, notes[i]);
-			// Indent each line with "> " and promote h1/h2 to h3 (matches Python behaviour)
+			// Indent each line with "> " and promote h1/h2 to h3
 			const indented = md
 				.replace(/^# /gm, "### ")
 				.replace(/^## /gm, "### ")
@@ -344,27 +351,91 @@ export function buildLitNoteBody(
 // Frontmatter builder
 // ---------------------------------------------------------------------------
 
+import type { NameStyle } from "./bibtexName";
+
 /**
- * Build the frontmatter object for a literature note.
- * Passed to `processFrontMatter` so Obsidian formats the YAML itself.
- * Mirrors the YAML block at the top of the Jinja2 template.
+ * Build the frontmatter object for a literature note in the new Obsidian file property format.
  */
 export function buildLitNoteFrontmatter(
-	item: ZoteroItemPayload
+	item: ZoteroItemPayload,
+	settings?: { authorFormatStyle?: NameStyle; authorDropVon?: boolean }
 ): Record<string, unknown> {
 	const normalizeTag = (t: any) => (typeof t === "string" ? t.toLowerCase().replace(/ /g, "_") : "");
 
-	return {
+	const creators = extractAuthorsFromZoteroCreators(
+		item.creators,
+		settings?.authorFormatStyle ?? "last-first",
+		{ dropVon: settings?.authorDropVon }
+	);
+
+	const fm: Record<string, unknown> = {
 		category: ["literaturenote"],
-		tags: [],
 		read: false,
-		"in-progress": false,
+		in_progress: false,
 		linked: false,
-		aliases: [item.title, truncateTitle(item.title, 5)],
-		citekey: item.citekey,
-		ZoteroTags: (item.tags ?? []).map(normalizeTag),
-		ZoteroCollections: (item.collections ?? []).map(normalizeTag),
-		"created date": item.exportDate ?? new Date().toISOString(),
-		"modified date": "",
 	};
+
+	const aliases = buildAliases(item.title);
+	if (aliases.length > 0) {
+		fm.aliases = aliases;
+	}
+
+	if (item.citekey) {
+		fm.citekey = item.citekey.trim();
+	}
+
+	if (item.tags && item.tags.length > 0) {
+		const normTags = item.tags.map(normalizeTag).filter(Boolean);
+		if (normTags.length > 0) {
+			fm.zotero_tags = normTags;
+		}
+	}
+
+	if (item.collections && item.collections.length > 0) {
+		const normColls = item.collections.map(normalizeTag).filter(Boolean);
+		if (normColls.length > 0) {
+			fm.zotero_collections = normColls;
+		}
+	}
+
+	if (creators.length > 0) {
+		fm.authors = creators;
+	}
+	if (item.title) {
+		fm.title = cleanTextValue(item.title);
+	}
+	if (item.date) {
+		const formattedDate = formatObsidianDate(item.date);
+		if (formattedDate) {
+			fm.publication_date = formattedDate;
+		}
+	}
+	if (item.itemkey) {
+		fm.zotero_item_key = item.itemkey.trim();
+	}
+	if (item.itemType) {
+		fm.zotero_item_type = item.itemType.trim();
+	}
+	if (item.DOI) {
+		const bareDoi = canonicalizeDoi(item.DOI);
+		if (bareDoi) {
+			fm.doi = bareDoi;
+		}
+	}
+	if (item.url) {
+		fm.url = item.url.trim();
+	}
+	if (item.publicationTitle) {
+		fm.publication = cleanTextValue(item.publicationTitle);
+	}
+	if (item.publisher) {
+		fm.publisher = cleanTextValue(item.publisher);
+	}
+	if (item.ISBN) {
+		fm.isbn = item.ISBN.trim();
+	}
+
+	fm.created_date = formatTimestampWithOffset(item.exportDate ?? new Date());
+
+	return orderFrontmatter(fm);
 }

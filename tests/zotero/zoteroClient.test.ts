@@ -123,4 +123,35 @@ describe("zoteroClient - findItemByUrl and findItemByTitle", () => {
 			global.fetch = globalFetch;
 		}
 	});
+
+	it("returns isAvailable correctly based on server responsiveness", async () => {
+		const client = new ZoteroClient();
+		const spy = vi.spyOn(client as any, "fetchJsonWithHeaders");
+
+		spy.mockResolvedValueOnce({ data: [], headers: { "last-modified-version": "1" } });
+		expect(await client.isAvailable()).toBe(true);
+
+		spy.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+		expect(await client.isAvailable()).toBe(false);
+	});
+
+	it("finds item by citekey from cached items or API", async () => {
+		const client = new ZoteroClient();
+		(client as any).cachedItems = [
+			{
+				zotkey: "ZOT999",
+				citekey: "chen2024",
+				title: "Concept Drift Paper",
+			},
+		];
+		const getItemByKeySpy = vi.spyOn(client, "getItemByKey").mockResolvedValue({
+			key: "ZOT999",
+			title: "Concept Drift Paper",
+		});
+
+		const item = await client.getItemByCitekey("chen2024");
+		expect(item?.key).toBe("ZOT999");
+		expect(getItemByKeySpy).toHaveBeenCalledWith("ZOT999");
+	});
 });
+

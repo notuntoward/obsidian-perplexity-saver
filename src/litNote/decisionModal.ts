@@ -17,6 +17,7 @@ export interface DecisionButton {
 	label: string;
 	value: NoteDecision;
 	cta?: boolean;
+	warning?: boolean;
 }
 
 // Serialize prompts so two overlapping Zotero requests cannot stack modals.
@@ -73,6 +74,7 @@ export function askNoteDecision(
 						for (const button of buttons) {
 							const el = row.createEl("button", { text: button.label });
 							if (button.cta) el.addClass("mod-cta");
+							if (button.warning) el.addClass("mod-warning");
 							el.addEventListener("click", () => {
 								settle(button.value);
 								this.close();

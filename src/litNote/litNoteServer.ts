@@ -21,7 +21,6 @@ import http from "http";
 import { exec } from "child_process";
 import { App, Notice, normalizePath, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
-import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { askNoteDecision, type NoteDecision } from "./decisionModal";
 import type {
 	LitNoteItemResult,
@@ -32,8 +31,13 @@ import type {
 	ZoteroItemPayload,
 } from "./types";
 
+import type { NameStyle } from "./bibtexName";
+
 export interface LitNoteServerSettings {
 	litNotesFolder: string; // vault-relative path, e.g. "lit/lit_notes"
+	validateAuthorNameFormat?: boolean;
+	authorFormatStyle?: NameStyle;
+	authorDropVon?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -57,93 +61,78 @@ function citekeyOf(item: ZoteroItemPayload): string {
 	return (item.citekey ?? "").trim();
 }
 
-function notePathFor(settings: LitNoteServerSettings, citekey: string): string {
-	const folderPath = normalizePath(settings.litNotesFolder);
-	return normalizePath(`${folderPath}/${citekey}.md`);
-}
+import {
+	ensureFolder,
+	ensureWorkspaceReady,
+	existingFile,
+	notePathFor,
+	writeLitNote,
+	writeNote,
+} from "./writeLitNote";
+import {
+	validateItemAuthorFormats,
+	openZoteroItem,
+	type AuthorFormatIssue,
+} from "./authorFormatValidator";
+import {
+	askAuthorFormatDecision,
+	type AuthorFormatDecision,
+} from "./authorFormatModal";
 
-function existingFile(
-	app: App,
-	settings: LitNoteServerSettings,
-	citekey: string
-): TFile | null {
-	const file = app.vault.getAbstractFileByPath(notePathFor(settings, citekey));
-	return file instanceof TFile ? file : null;
-}
 
-async function ensureFolder(app: App, settings: LitNoteServerSettings): Promise<void> {
-	const folderPath = normalizePath(settings.litNotesFolder);
-	if (!app.vault.getAbstractFileByPath(folderPath)) {
-		try {
-			await app.vault.createFolder(folderPath);
-		} catch {
-			// Ignore if it was created by a concurrent request
-		}
-	}
-}
+// ---------------------------------------------------------------------------
+// Auto-correction helper
+// ---------------------------------------------------------------------------
 
 /**
- * Obsidian's vault index is not reliable until the workspace is ready. Wait for
- * it before checking whether notes exist or writing files, so a cold-start
- * request cannot treat an existing note as new (or the reverse).
+ * Apply parser-suggested corrections to creator name fields in-place.
+ *
+ * Each issue's `suggestion` is in BibTeX "von Last, Jr, First" form, which is
+ * stored directly in the single-field `name` property.  For two-field creators
+ * we split on the first comma to restore firstName / lastName fields.
  */
-async function ensureWorkspaceReady(app: App): Promise<void> {
-	if (app.workspace?.layoutReady) return;
-	if (typeof app.workspace?.onLayoutReady !== "function") return;
-	await new Promise<void>((resolve) => {
-		const timeout = window.setTimeout(() => resolve(), 5000);
-		app.workspace.onLayoutReady(() => {
-			window.clearTimeout(timeout);
-			resolve();
-		});
-	});
-}
-
-/** Create or overwrite the note body/frontmatter and return the file. */
-async function writeNote(
-	app: App,
-	settings: LitNoteServerSettings,
-	item: ZoteroItemPayload,
-	existing: TFile | null
-): Promise<TFile> {
-	const citekey = citekeyOf(item);
-	const notePath = notePathFor(settings, citekey);
-	const body = buildLitNoteBody(app, settings, item);
-	const frontmatter = buildLitNoteFrontmatter(item);
-
-	let file: TFile | null;
-	if (existing) {
-		await app.vault.modify(existing, body);
-		file = existing;
-	} else {
-		file = await app.vault.create(notePath, body);
+function applyAuthorCorrections(
+	items: ZoteroItemPayload[],
+	issues: AuthorFormatIssue[]
+): void {
+	// Build a per-item map: itemCitekey → { creatorIndex → suggestion }
+	const correctionMap = new Map<string, Map<number, string>>();
+	for (const issue of issues) {
+		if (!issue.suggestion) continue;
+		if (!correctionMap.has(issue.citekey)) {
+			correctionMap.set(issue.citekey, new Map());
+		}
+		correctionMap.get(issue.citekey)!.set(issue.creatorIndex, issue.suggestion);
 	}
 
-	// create()/modify() can resolve before the vault index catches up (notably
-	// during a cold start), leaving `file` null. Re-resolve by path so we never
-	// hand a null file to processFrontMatter() or openFile().
-	if (!file) {
-		const resolved = app.vault.getAbstractFileByPath(notePath);
-		file = resolved instanceof TFile ? resolved : null;
-	}
-	if (!file) {
-		throw new Error(
-			`Note was written but could not be resolved in the vault: ${notePath}`
-		);
-	}
+	for (const item of items) {
+		const citekey = (item.citekey?.trim() || item.itemkey?.trim() || "untitled");
+		const byIndex = correctionMap.get(citekey);
+		if (!byIndex || !item.creators) continue;
 
-	try {
-		await app.fileManager.processFrontMatter(file, (fm) => {
-			for (const [k, v] of Object.entries(frontmatter)) {
-				if (v !== undefined) fm[k] = v;
+		for (const [idx, suggestion] of byIndex) {
+			const creator = item.creators[idx];
+			if (!creator) continue;
+
+			if (creator.name !== undefined) {
+				// Single-field mode: store the bibtex form directly
+				creator.name = suggestion;
+			} else {
+				// Two-field mode: split "von Last, Jr, First" → lastName + firstName
+				const parts = suggestion.split(",").map((s) => s.trim());
+				if (parts.length === 3) {
+					creator.lastName = parts[0];
+					creator.firstName = `${parts[2]} ${parts[1]}`;
+				} else if (parts.length === 2) {
+					creator.lastName = parts[0];
+					creator.firstName = parts[1];
+				} else if (parts.length === 1) {
+					creator.lastName = parts[0];
+					creator.firstName = "";
+				}
 			}
-		});
-	} catch (err: unknown) {
-		// Frontmatter failure is non-fatal — the body is already written.
-		console.warn("[LitNoteServer] processFrontMatter failed:", err);
+		}
 	}
-
-	return file;
 }
 
 function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
@@ -244,7 +233,7 @@ async function handleCreateBatch(
 				: `${existingEntries.length} lit notes already exist`,
 			`Already in the Obsidian vault:\n\n${citekeys}\n\nOverwrite with the Zotero data, open the existing note, or skip it?`,
 			[
-				{ label: "Overwrite", value: "overwrite", cta: true },
+				{ label: "Overwrite", value: "overwrite", warning: true },
 				{ label: "Open existing", value: "open-existing" },
 				{ label: "Skip", value: "skip" },
 				{ label: "Cancel", value: "cancel" },
@@ -258,6 +247,53 @@ async function handleCreateBatch(
 			citekey: e.citekey,
 			status: "skipped" as const,
 		}));
+	}
+
+	const toWriteEntries = entries.filter((entry) => {
+		if (!entry.citekey) return false;
+		const existing = existingFile(app, settings, entry.citekey);
+		if (existing) {
+			return decision === "overwrite";
+		}
+		return true;
+	});
+
+	if (settings.validateAuthorNameFormat && toWriteEntries.length > 0) {
+		const allIssues: AuthorFormatIssue[] = [];
+		for (const e of toWriteEntries) {
+			allIssues.push(...validateItemAuthorFormats(e.item));
+		}
+
+		if (allIssues.length > 0) {
+			focusObsidianWindow(app);
+			prompted = true;
+			const formatDecision = await askAuthorFormatDecision(app, allIssues);
+
+			if (formatDecision === "edit") {
+				for (const e of toWriteEntries) {
+					openZoteroItem(e.item);
+				}
+				const skippedResults = entries.map((e) => ({
+					citekey: e.citekey,
+					status: "skipped" as const,
+				}));
+				if (prompted) noticeSummary(skippedResults, true);
+				return skippedResults;
+			} else if (formatDecision === "cancel") {
+				const skippedResults = entries.map((e) => ({
+					citekey: e.citekey,
+					status: "skipped" as const,
+				}));
+				if (prompted) noticeSummary(skippedResults, true);
+				return skippedResults;
+			} else if (formatDecision === "auto-correct") {
+				applyAuthorCorrections(
+					toWriteEntries.map((e) => e.item),
+					allIssues
+				);
+			}
+			// If "create-anyway", continue to writing notes!
+		}
 	}
 
 	for (const entry of entries) {
@@ -688,6 +724,72 @@ async function handleOpenBatch(
 			}
 
 			if (decision === "create") {
+				if (settings.validateAuthorNameFormat) {
+					const allIssues: AuthorFormatIssue[] = [];
+					for (const e of creatable) {
+						if (e.item) {
+							allIssues.push(...validateItemAuthorFormats(e.item));
+						}
+					}
+
+					if (allIssues.length > 0) {
+						focusObsidianWindow(app);
+						let formatDecision: AuthorFormatDecision = "cancel";
+						try {
+							formatDecision = await askAuthorFormatDecision(app, allIssues);
+						} catch (err) {
+							if (blankLeaf && typeof blankLeaf.detach === "function") {
+								try {
+									blankLeaf.detach();
+								} catch {
+									// Ignore
+								}
+								await restorePreviousLeaf(app, previousLeaf);
+							}
+							throw err;
+						}
+
+						if (formatDecision === "edit") {
+							for (const e of creatable) {
+								if (e.item) openZoteroItem(e.item);
+							}
+							if (blankLeaf && typeof blankLeaf.detach === "function") {
+								try {
+									blankLeaf.detach();
+								} catch {
+									// Ignore
+								}
+								await restorePreviousLeaf(app, previousLeaf);
+							}
+							for (const e of missing) {
+								results.push({ citekey: e.citekey, status: "skipped" });
+							}
+							if (prompted) noticeSummary(results, true);
+							return results;
+						} else if (formatDecision === "cancel") {
+							if (blankLeaf && typeof blankLeaf.detach === "function") {
+								try {
+									blankLeaf.detach();
+								} catch {
+									// Ignore
+								}
+								await restorePreviousLeaf(app, previousLeaf);
+							}
+							for (const e of missing) {
+								results.push({ citekey: e.citekey, status: "skipped" });
+							}
+							if (prompted) noticeSummary(results, true);
+							return results;
+						} else if (formatDecision === "auto-correct") {
+							applyAuthorCorrections(
+								creatable.map((e) => e.item!).filter(Boolean),
+								allIssues
+							);
+						}
+						// If "create-anyway", proceed with note creation!
+					}
+				}
+
 				await ensureFolder(app, settings);
 				for (let i = 0; i < creatable.length; i++) {
 					const entry = creatable[i];

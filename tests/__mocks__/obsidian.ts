@@ -166,6 +166,9 @@ export class SuggestModal<T> {
 	close(): void {}
 	onOpen(): void {}
 	onClose(): void {}
+	setPlaceholder(_placeholder: string): this {
+		return this;
+	}
 	getSuggestions(_query: string): T[] {
 		return [];
 	}
@@ -216,23 +219,44 @@ export function requestUrl(options: any): Promise<any> {
 // fence helper; not a full YAML implementation.
 export function parseYaml(input: string): unknown {
 	const result: Record<string, unknown> = {};
+	let currentKey: string | null = null;
+
 	for (const line of input.split(/\r?\n/)) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("#")) continue;
-		const m = trimmed.match(/^([A-Za-z0-9_\-]+):\s*(.*)$/);
-		if (!m) continue;
-		const key = m[1];
-		let value: unknown = m[2].trim();
-		// Drop surrounding quotes if present.
-		if (typeof value === "string" && /^["'].*["']$/.test(value as string)) {
-			value = (value as string).slice(1, -1);
+
+		if (trimmed.startsWith("- ") && currentKey) {
+			let itemVal: unknown = trimmed.slice(2).trim();
+			if (typeof itemVal === "string" && /^["'].*["']$/.test(itemVal)) {
+				itemVal = itemVal.slice(1, -1).replace(/\\"/g, '"');
+			}
+			if (!Array.isArray(result[currentKey])) {
+				result[currentKey] = [];
+			}
+			(result[currentKey] as unknown[]).push(itemVal);
+			continue;
 		}
-		// Simple list form: [a, b, c]
-		if (typeof value === "string" && (value as string).startsWith("[") && (value as string).endsWith("]")) {
-			const inner = (value as string).slice(1, -1).trim();
+
+		const m = trimmed.match(/^([A-Za-z0-9_\-\"'\s]+):\s*(.*)$/);
+		if (!m) continue;
+		const rawKey = m[1].trim();
+		const key = rawKey.replace(/^["']|["']$/g, "").trim();
+		currentKey = key;
+		let value: unknown = m[2].trim();
+
+		if (typeof value === "string" && /^["'].*["']$/.test(value)) {
+			value = value.slice(1, -1).replace(/\\"/g, '"');
+		}
+		if (typeof value === "string" && value.startsWith("[") && value.endsWith("]")) {
+			const inner = value.slice(1, -1).trim();
 			value = inner.length === 0 ? [] : inner.split(",").map((s) => s.trim());
 		}
-		result[key] = value;
+
+		if (value !== "" && value !== null) {
+			result[key] = value;
+		} else {
+			result[key] = result[key] ?? [];
+		}
 	}
 	return result;
 }

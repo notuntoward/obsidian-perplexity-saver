@@ -28,7 +28,7 @@ async function settleMicrotasks(): Promise<void> {
 describe("askNoteDecision", () => {
 	it("shows the title/message and resolves with the clicked button value", async () => {
 		const promise = askNoteDecision({} as any, "Lit note already exists", "Overwrite?", [
-			{ label: "Overwrite", value: "overwrite", cta: true },
+			{ label: "Overwrite", value: "overwrite", warning: true },
 			{ label: "Skip", value: "skip" },
 			{ label: "Cancel", value: "cancel" },
 		]);
@@ -37,7 +37,7 @@ describe("askNoteDecision", () => {
 
 		const modal = latestModal();
 		expect(modal.titleEl.text).toBe("Lit note already exists");
-		expect(findButton(modal, "Overwrite").cls).toContain("mod-cta");
+		expect(findButton(modal, "Overwrite").cls).toContain("mod-warning");
 
 		findButton(modal, "Skip").listeners.click[0]();
 		await expect(promise).resolves.toBe("skip");

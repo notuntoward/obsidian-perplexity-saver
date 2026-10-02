@@ -18,10 +18,14 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			litNotesFolder: "lit/lit_notes",
 			minTitleMatchScore: 95,
 			autoRelinkSources: false,
+			validateAuthorNameFormat: false,
+			authorFormatStyle: "last-first",
+			authorDropVon: false,
 		},
 		zoteroClient: {
 			clearCache: vi.fn(),
 		},
+		litNoteServerSettings: null as any,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
 	});
 
@@ -42,6 +46,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(names).toContain("Prompt heading");
 		expect(names).toContain("Source link title fetching");
 		expect(names).toContain("Zotero & Literature Note Relinking");
+		expect(names).toContain("Zotero companion listener");
 	});
 
 	it("headlineLeadBias disabled predicate evaluates based on headlineMethod", () => {
@@ -97,15 +102,43 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("setControlValue updates zoteroClient when zoteroPort changes", async () => {
+	it("authorDropVon disabled predicate evaluates based on authorFormatStyle", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
-		await tab.setControlValue("zoteroPort", 24000);
+		const definitions = tab.getSettingDefinitions();
+		const listenerGroup: any = definitions.find((d: any) => d.heading === "Zotero companion listener");
+		expect(listenerGroup).toBeDefined();
 
-		expect(plugin.settings.zoteroPort).toBe(24000);
-		expect(plugin.zoteroClient).toBeDefined();
-		expect((plugin.zoteroClient as any).port).toBe(24000);
-		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
+		const dropVonSetting = listenerGroup.items.find((item: any) => item.name === "Drop 'von' particle");
+		expect(dropVonSetting).toBeDefined();
+		expect(typeof dropVonSetting.control.disabled).toBe("function");
+
+		// When authorFormatStyle is "last-first", dropVon is enabled (disabled() is false)
+		plugin.settings.authorFormatStyle = "last-first";
+		expect(dropVonSetting.control.disabled()).toBe(false);
+
+		// When authorFormatStyle is "bibtex", dropVon is disabled (disabled() is true)
+		plugin.settings.authorFormatStyle = "bibtex";
+		expect(dropVonSetting.control.disabled()).toBe(true);
+	});
+
+	it("setControlValue updates authorFormatStyle and authorDropVon", async () => {
+		const plugin = createMockPlugin();
+		(plugin as any).litNoteServerSettings = {
+			litNotesFolder: "lit/lit_notes",
+			validateAuthorNameFormat: false,
+			authorFormatStyle: "last-first",
+			authorDropVon: false,
+		};
+		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
+
+		await tab.setControlValue("authorFormatStyle", "bibtex");
+		expect(plugin.settings.authorFormatStyle).toBe("bibtex");
+		expect(plugin.litNoteServerSettings.authorFormatStyle).toBe("bibtex");
+
+		await tab.setControlValue("authorDropVon", true);
+		expect(plugin.settings.authorDropVon).toBe(true);
+		expect(plugin.litNoteServerSettings.authorDropVon).toBe(true);
 	});
 });

@@ -100,6 +100,25 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 
 *(Note: The local HTTP port `27124` that listens for literature notes from Zotero is completely zero-configuration and runs automatically in the background).*
 
+### Zotero Companion Listener
+
+- **Validate author name format** (default: off): When enabled, warns before creating a literature note if any author or creator name with **multiple words** is not in `Last, First` format.
+
+  **Why this matters**: Obsidian Bases sorts and filters the `authors` property by the first element of each list entry. For last-name search to work (e.g. finding "Einstein" without knowing "Albert"), names must be stored as `Einstein, Albert` rather than `Albert Einstein`.
+
+  **Mononym exemption**: Single-word names — such as *Aristotle*, *Prince*, or *Voltaire* — are always accepted without a comma. The check only flags multi-word names without commas, which is the ambiguous case where it is unclear which part is the last name.
+
+  **BibTeX Name Parser & Auto-Correction**: When an ambiguous name is detected, the built-in dependency-free BibTeX name parser attempts to recognize the name structure (handling First/Last, Jr/Sr suffixes like `Smith, John Jr`, and Dutch/German `von` particles like `van Beethoven, Ludwig`). When a reliable correction can be identified, the warning dialog presents an **"Auto-correct & create"** option alongside **"Create anyway"**, **"Edit in Zotero"**, and **"Cancel"**.
+
+- **Author name format style** (default: `Last, First`): Configures the author property output style when creating literature notes:
+  - `Last, First` (default): Standard catalog order (`Einstein, Albert`).
+  - `BibTeX`: Full canonical BibTeX syntax (`von Last, Jr, First`).
+  - `First Last`: Natural reading order (`Albert Einstein`).
+  - `Last only`: Surname/particle only (`van Beethoven`).
+  - `Initials`: First initials with surname (`J.-P. Sartre`, `L. van Beethoven`).
+
+- **Drop 'von' particle** (default: off): When using `Last, First` style, optionally omits lowercase surname particles such as `von`, `van`, or `de la` (producing `Beethoven, Ludwig` instead of `van Beethoven, Ludwig`).
+
 ---
 
 # Data Formats
