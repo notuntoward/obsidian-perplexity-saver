@@ -1,4 +1,4 @@
-import { App, Editor, FuzzySuggestModal, MarkdownView, Notice, TFile, parseYaml } from "obsidian";
+import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, TFile, parseYaml, renderResults } from "obsidian";
 import { getLitNoteFiles } from "../litNote/litNoteFinder";
 import type { ZoteroClient } from "../zotero/zoteroClient";
 import { sortByEngagement } from "../litNote/engagementSort";
@@ -35,8 +35,30 @@ export class LitNoteSelectModal extends FuzzySuggestModal<LitNoteInfo> {
 		return this.items;
 	}
 
+	private keyOf(item: LitNoteInfo): string {
+		return item.citekey || item.file.basename;
+	}
+
 	getItemText(item: LitNoteInfo): string {
-		return item.title ? `${item.title} (${item.citekey || item.file.basename})` : item.file.basename;
+		return item.title ? `${item.title} (${this.keyOf(item)})` : item.file.basename;
+	}
+
+	renderSuggestion(match: FuzzyMatch<LitNoteInfo>, el: HTMLElement): void {
+		el.addClass("litnote-suggestion");
+		const item = match.item;
+		if (!item.title) {
+			renderResults(el.createDiv({ cls: "litnote-title" }), item.file.basename, match.match);
+			return;
+		}
+
+		renderResults(el.createDiv({ cls: "litnote-title" }), item.title, match.match);
+		// The + 2 accounts for the " (" between title and key in getItemText.
+		renderResults(
+			el.createDiv({ cls: "litnote-citekey" }),
+			this.keyOf(item),
+			match.match,
+			-(item.title.length + 2)
+		);
 	}
 
 	onChooseItem(item: LitNoteInfo, _evt: MouseEvent | KeyboardEvent): void {
