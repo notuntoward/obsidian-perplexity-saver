@@ -300,7 +300,8 @@ export function zoteroHtmlToMd(
 export function buildLitNoteBody(
 	app: App,
 	settings: { litNotesFolder?: string },
-	item: ZoteroItemPayload
+	item: ZoteroItemPayload,
+	transcript?: string
 ): string {
 	const calloutLinks = buildInfoCalloutLinks(item);
 	const calloutPrefix = buildInfoCalloutPrefix(item);
@@ -342,6 +343,12 @@ export function buildLitNoteBody(
 				.join("\n");
 			lines.push(indented);
 		}
+	}
+
+	if (transcript && transcript.trim()) {
+		lines.push("", "");
+		lines.push("# Transcript", "");
+		lines.push(transcript.trim());
 	}
 
 	return lines.join("\n") + "\n\n";

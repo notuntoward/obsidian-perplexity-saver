@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
 	startLitNoteServer,
 	focusObsidianWindow,
+	positionCursorTwoLinesPastEnd,
 } from "../../src/litNote/litNoteServer";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import { askAuthorFormatDecision } from "../../src/litNote/authorFormatModal";
@@ -994,6 +995,66 @@ describe("Lit Note Server", () => {
 				const fm = writtenFrontmatter.get("lit/lit_notes/unformatted.md");
 				expect(fm?.authors).toEqual(["John Doe"]);
 			});
+		});
+	});
+
+	describe("positionCursorTwoLinesPastEnd", () => {
+		it("positions cursor on the blank line directly above # Transcript", () => {
+			const noteText = [
+				"> [!info]- &nbsp;[**Zotero**](zotero://select/items/123)",
+				">",
+				"> Smith (2024). YouTube Video.",
+				"",
+				"",
+				"# Transcript",
+				"",
+				"[00:00](https://youtube.com/watch?v=123&t=0) Hello world",
+			].join("\n");
+
+			const lines = noteText.split("\n");
+			const mockEditor = {
+				getValue: () => noteText,
+				lineCount: () => lines.length,
+				getLine: (i: number) => lines[i] ?? "",
+				setCursor: vi.fn(),
+				scrollIntoView: vi.fn(),
+				replaceRange: vi.fn(),
+			};
+
+			const targetLine = positionCursorTwoLinesPastEnd(mockEditor);
+
+			// Line 5 is "# Transcript", so line 4 is the blank line directly above it
+			expect(targetLine).toBe(4);
+			expect(lines[4]).toBe("");
+			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: 4, ch: 0 });
+			expect(mockEditor.scrollIntoView).toHaveBeenCalledWith(
+				{ from: { line: 4, ch: 0 }, to: { line: 4, ch: 0 } },
+				true
+			);
+		});
+
+		it("positions cursor at end of note when # Transcript is not present", () => {
+			const noteText = [
+				"> [!info]- &nbsp;[**Zotero**](zotero://select/items/123)",
+				">",
+				"> Smith (2024). Some Paper.",
+				"",
+				"",
+			].join("\n");
+
+			const lines = noteText.split("\n");
+			const mockEditor = {
+				getValue: () => noteText,
+				lineCount: () => lines.length,
+				getLine: (i: number) => lines[i] ?? "",
+				setCursor: vi.fn(),
+				scrollIntoView: vi.fn(),
+				replaceRange: vi.fn(),
+			};
+
+			const targetLine = positionCursorTwoLinesPastEnd(mockEditor);
+			expect(targetLine).toBe(lines.length - 1);
+			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: lines.length - 1, ch: 0 });
 		});
 	});
 });

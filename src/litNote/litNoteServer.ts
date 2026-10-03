@@ -38,6 +38,7 @@ export interface LitNoteServerSettings {
 	validateAuthorNameFormat?: boolean;
 	authorFormatStyle?: NameStyle;
 	authorDropVon?: boolean;
+	downloadYoutubeTranscripts?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -343,14 +344,41 @@ async function handleCreateBatch(
 // Handler: open / focus lit notes
 // ---------------------------------------------------------------------------
 
-function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): void {
-	if (!editor) return;
+export function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): number {
+	if (!editor) return 0;
 	if (typeof editor.getValue !== "function") {
 		if (typeof editor.setCursor === "function") {
 			editor.setCursor({ line: 99999, ch: 0 });
 		}
-		return;
+		return 99999;
 	}
+
+	// If the note has a # Transcript heading (e.g. from YouTube transcript download),
+	// place the cursor on the blank line directly above # Transcript.
+	const totalLines = typeof editor.lineCount === "function" ? editor.lineCount() : 0;
+	let transcriptLineIdx = -1;
+	for (let i = 0; i < totalLines; i++) {
+		const line = typeof editor.getLine === "function" ? editor.getLine(i) : "";
+		if (line.trim() === "# Transcript" || line.startsWith("# Transcript")) {
+			transcriptLineIdx = i;
+			break;
+		}
+	}
+
+	if (transcriptLineIdx > 0) {
+		const targetLine = transcriptLineIdx - 1;
+		if (typeof editor.setCursor === "function") {
+			editor.setCursor({ line: targetLine, ch: 0 });
+		}
+		if (typeof editor.scrollIntoView === "function") {
+			editor.scrollIntoView(
+				{ from: { line: targetLine, ch: 0 }, to: { line: targetLine, ch: 0 } },
+				true
+			);
+		}
+		return targetLine;
+	}
+
 	const text = editor.getValue();
 	if (modifyText && !text.endsWith("\n\n")) {
 		const needed = text.endsWith("\n") ? "\n" : "\n\n";
@@ -364,6 +392,7 @@ function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): void {
 	if (typeof editor.setCursor === "function") {
 		editor.setCursor({ line: targetLine, ch: 0 });
 	}
+	return targetLine;
 }
 
 /**
@@ -580,7 +609,16 @@ async function openFile(
 	}
 	if (editor) {
 		editor.focus?.();
-		positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
+		const targetLine = positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
+		if (typeof targetLeaf.setEphemeralState === "function") {
+			targetLeaf.setEphemeralState({
+				cursor: {
+					from: { line: targetLine, ch: 0 },
+					to: { line: targetLine, ch: 0 },
+				},
+				line: targetLine,
+			});
+		}
 	}
 
 	focusObsidianWindow(app);

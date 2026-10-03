@@ -21,6 +21,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			validateAuthorNameFormat: false,
 			authorFormatStyle: "last-first",
 			authorDropVon: false,
+			downloadYoutubeTranscripts: true,
 		},
 		zoteroClient: {
 			clearCache: vi.fn(),
@@ -46,7 +47,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(names).toContain("Prompt heading");
 		expect(names).toContain("Source link title fetching");
 		expect(names).toContain("Zotero & Literature Note Relinking");
-		expect(names).toContain("Zotero companion listener");
+		expect(names).toContain("Literature note formatting");
 	});
 
 	it("headlineLeadBias disabled predicate evaluates based on headlineMethod", () => {
@@ -107,7 +108,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
 		const definitions = tab.getSettingDefinitions();
-		const listenerGroup: any = definitions.find((d: any) => d.heading === "Zotero companion listener");
+		const listenerGroup: any = definitions.find((d: any) => d.heading === "Literature note formatting");
 		expect(listenerGroup).toBeDefined();
 
 		const dropVonSetting = listenerGroup.items.find((item: any) => item.name === "Drop 'von' particle");
@@ -140,5 +141,18 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		await tab.setControlValue("authorDropVon", true);
 		expect(plugin.settings.authorDropVon).toBe(true);
 		expect(plugin.litNoteServerSettings.authorDropVon).toBe(true);
+	});
+
+	it("setControlValue updates downloadYoutubeTranscripts", async () => {
+		const plugin = createMockPlugin();
+		(plugin as any).litNoteServerSettings = {
+			litNotesFolder: "lit/lit_notes",
+			downloadYoutubeTranscripts: true,
+		};
+		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
+
+		await tab.setControlValue("downloadYoutubeTranscripts", false);
+		expect(plugin.settings.downloadYoutubeTranscripts).toBe(false);
+		expect(plugin.litNoteServerSettings.downloadYoutubeTranscripts).toBe(false);
 	});
 });

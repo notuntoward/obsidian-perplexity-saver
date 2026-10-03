@@ -261,4 +261,142 @@ describe("writeLitNote", () => {
 			createdNotices.some((n) => n.message.includes("Unable to create authors file property"))
 		).toBe(false);
 	});
+
+	it("downloads and inserts YouTube transcript when enabled", async () => {
+		const ytItem: ZoteroItemPayload = {
+			title: "YouTube Lecture",
+			citekey: "ytLecture2024",
+			url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			creators: [{ firstName: "Richard", lastName: "Feynman", creatorType: "author" }],
+		};
+
+		let createdContent = "";
+		let createdPath = "";
+		const mockFile = makeMockFile("lit/notes/ytLecture2024.md");
+
+		const { requestUrlMock } = await import("../__mocks__/obsidian");
+		requestUrlMock.mockImplementation((opts: any) => {
+			if (opts.url.includes("youtubei/v1/player")) {
+				return Promise.resolve({
+					status: 200,
+					json: {
+						playabilityStatus: { status: "OK" },
+						captions: {
+							playerCaptionsTracklistRenderer: {
+								captionTracks: [
+									{ languageCode: "en", baseUrl: "https://www.youtube.com/api/timedtext?v=test" },
+								],
+							},
+						},
+					},
+					text: "",
+				});
+			}
+			if (opts.url.includes("api/timedtext")) {
+				return Promise.resolve({
+					status: 200,
+					text: `<transcript><text start="0" dur="2">Intro to Physics</text></transcript>`,
+				});
+			}
+			return Promise.reject(new Error("Unknown URL"));
+		});
+
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytLecture2024.md" && createdPath ? mockFile : null)),
+				createFolder: vi.fn(),
+				create: vi.fn(async (targetPath: string, content: string) => {
+					createdPath = targetPath;
+					createdContent = content;
+					return mockFile;
+				}),
+			},
+			fileManager: {
+				processFrontMatter: vi.fn(),
+			},
+		} as unknown as App;
+
+		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true }, ytItem, null);
+
+		expect(createdContent).toContain("# Transcript");
+		expect(createdContent).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Intro to Physics");
+	});
+
+	it("does not download YouTube transcript when downloadYoutubeTranscripts is false", async () => {
+		const ytItem: ZoteroItemPayload = {
+			title: "YouTube Lecture Disabled",
+			citekey: "ytDisabled2024",
+			url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			creators: [{ firstName: "Richard", lastName: "Feynman", creatorType: "author" }],
+		};
+
+		let createdContent = "";
+		let createdPath = "";
+		const mockFile = makeMockFile("lit/notes/ytDisabled2024.md");
+
+		const { requestUrlMock } = await import("../__mocks__/obsidian");
+		requestUrlMock.mockClear();
+
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytDisabled2024.md" && createdPath ? mockFile : null)),
+				createFolder: vi.fn(),
+				create: vi.fn(async (targetPath: string, content: string) => {
+					createdPath = targetPath;
+					createdContent = content;
+					return mockFile;
+				}),
+			},
+			fileManager: {
+				processFrontMatter: vi.fn(),
+			},
+		} as unknown as App;
+
+		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: false }, ytItem, null);
+
+		expect(requestUrlMock).not.toHaveBeenCalled();
+		expect(createdContent).not.toContain("# Transcript");
+	});
+
+	it("shows warning Notice and still creates note if YouTube transcript download fails", async () => {
+		createdNotices.length = 0;
+		const ytItem: ZoteroItemPayload = {
+			title: "YouTube Lecture Error",
+			citekey: "ytError2024",
+			url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+			creators: [{ firstName: "Richard", lastName: "Feynman", creatorType: "author" }],
+		};
+
+		let createdContent = "";
+		let createdPath = "";
+		const mockFile = makeMockFile("lit/notes/ytError2024.md");
+
+		const { requestUrlMock } = await import("../__mocks__/obsidian");
+		requestUrlMock.mockRejectedValueOnce(new Error("Network timeout"));
+
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytError2024.md" && createdPath ? mockFile : null)),
+				createFolder: vi.fn(),
+				create: vi.fn(async (targetPath: string, content: string) => {
+					createdPath = targetPath;
+					createdContent = content;
+					return mockFile;
+				}),
+			},
+			fileManager: {
+				processFrontMatter: vi.fn(),
+			},
+		} as unknown as App;
+
+		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true }, ytItem, null);
+
+		expect(createdContent).not.toContain("# Transcript");
+		expect(
+			createdNotices.some((n) => n.message.includes("Could not download YouTube transcript"))
+		).toBe(true);
+	});
 });

@@ -2,6 +2,7 @@ import { App, normalizePath, Notice, TFile } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { findLitNoteFile } from "./litNoteFinder";
+import { downloadYouTubeTranscript, getYouTubeUrlFromItem } from "./youtubeTranscript";
 
 import type { NameStyle } from "./bibtexName";
 
@@ -9,6 +10,7 @@ export interface LitNoteWriterSettings {
 	litNotesFolder: string;
 	authorFormatStyle?: NameStyle;
 	authorDropVon?: boolean;
+	downloadYoutubeTranscripts?: boolean;
 }
 
 /**
@@ -155,7 +157,27 @@ export async function writeNote(
 ): Promise<TFile> {
 	const citekey = citekeyOf(item);
 	const notePath = notePathFor(settings, citekey);
-	const body = buildLitNoteBody(app, settings, item);
+
+	let transcript: string | undefined;
+	const shouldDownload = settings.downloadYoutubeTranscripts ?? true;
+	if (shouldDownload) {
+		const ytUrl = getYouTubeUrlFromItem(item);
+		if (ytUrl) {
+			try {
+				const fetched = await downloadYouTubeTranscript(ytUrl);
+				if (fetched) {
+					transcript = fetched;
+				} else {
+					new Notice(`Warning: No transcript found for YouTube video in '${citekey}'.`);
+				}
+			} catch (err: unknown) {
+				console.warn("[LitNote] Failed to download YouTube transcript:", err);
+				new Notice(`Warning: Could not download YouTube transcript for '${citekey}'.`);
+			}
+		}
+	}
+
+	const body = buildLitNoteBody(app, settings, item, transcript);
 	const frontmatter = buildLitNoteFrontmatter(item, settings);
 
 	if (!frontmatter.authors || (Array.isArray(frontmatter.authors) && frontmatter.authors.length === 0)) {

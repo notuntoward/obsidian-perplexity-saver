@@ -243,5 +243,48 @@ describe("Lit Note Builder", () => {
 			// The generated body string MUST start with a newline to prevent this.
 			expect(body.startsWith("\n> [!info]-")).toBe(true);
 		});
+
+		it("inserts transcript two blank lines below callout and bibliography under # Transcript heading", () => {
+			const item: ZoteroItemPayload = {
+				title: "YouTube Video Note",
+				citekey: "astley1987",
+				url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+				bibliography: "Astley, R. (1987). Never Gonna Give You Up.",
+			};
+			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
+			const mockSettings = { litNotesFolder: "" } as any;
+			const sampleTranscript = "[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) We're no strangers to love\n[00:18](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=18) You know the rules";
+
+			const body = buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
+
+			// Must contain bibliography
+			expect(body).toContain("> Astley, R. (1987). Never Gonna Give You Up.");
+			// Must contain # Transcript heading
+			expect(body).toContain("# Transcript");
+			// Must contain transcript lines
+			expect(body).toContain(sampleTranscript);
+
+			// Check exact spacing: two blank lines between bibliography and # Transcript
+			const expectedPattern = "> Astley, R. (1987). Never Gonna Give You Up.\n\n\n# Transcript\n\n";
+			expect(body).toContain(expectedPattern);
+
+			// Body ends with \n\n
+			expect(body.endsWith("\n\n")).toBe(true);
+		});
+
+		it("inserts transcript two blank lines below callout when bibliography is absent", () => {
+			const item: ZoteroItemPayload = {
+				title: "YouTube Video Without Bib",
+				citekey: "video2024",
+				url: "https://youtu.be/dQw4w9WgXcQ",
+			};
+			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
+			const mockSettings = { litNotesFolder: "" } as any;
+			const sampleTranscript = "[00:00](https://youtu.be/dQw4w9WgXcQ&t=0) Hello world";
+
+			const body = buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
+
+			expect(body).toContain("\n\n\n# Transcript\n\n" + sampleTranscript);
+		});
 	});
 });

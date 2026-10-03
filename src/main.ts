@@ -103,6 +103,11 @@ export interface PerplexitySaverSettings {
 	 * When enabled with 'last-first' style, drops 'von' particles (e.g. "Beethoven, Ludwig" instead of "van Beethoven, Ludwig").
 	 */
 	authorDropVon: boolean;
+	/**
+	 * When enabled, automatically downloads the timestamped transcript and inserts it
+	 * under a '# Transcript' heading when creating literature notes from YouTube video references.
+	 */
+	downloadYoutubeTranscripts: boolean;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -123,6 +128,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	validateAuthorNameFormat: false,
 	authorFormatStyle: "last-first" as NameStyle,
 	authorDropVon: false,
+	downloadYoutubeTranscripts: true,
 };
 
 interface InlineInputData {
@@ -181,6 +187,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			validateAuthorNameFormat: this.settings.validateAuthorNameFormat,
 			authorFormatStyle: this.settings.authorFormatStyle,
 			authorDropVon: this.settings.authorDropVon,
+			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
 
@@ -597,6 +604,11 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				this.plugin.litNoteServerSettings.authorDropVon = Boolean(value);
 			}
 		}
+		if (key === "downloadYoutubeTranscripts") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.downloadYoutubeTranscripts = Boolean(value);
+			}
+		}
 		await this.plugin.saveSettings();
 		this.refreshDomState();
 	}
@@ -760,7 +772,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			},
 			{
 				type: "group",
-				heading: "Zotero companion listener",
+				heading: "Literature note formatting",
 				items: [
 					{
 						name: "Validate author name format",
@@ -792,6 +804,14 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							type: "toggle",
 							key: "authorDropVon",
 							disabled: () => this.plugin.settings.authorFormatStyle !== "last-first",
+						},
+					},
+					{
+						name: "Download YouTube transcripts",
+						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under a '# transcript' heading when creating literature notes from YouTube video references.",
+						control: {
+							type: "toggle",
+							key: "downloadYoutubeTranscripts",
 						},
 					},
 				],
@@ -1054,8 +1074,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				});
 			});
 
-		// Zotero companion listener settings
-		new Setting(containerEl).setName("Zotero companion listener").setHeading();
+		// Literature note formatting settings
+		new Setting(containerEl).setName("Literature note formatting").setHeading();
 
 		new Setting(containerEl)
 			.setName("Validate author name format")
@@ -1113,6 +1133,23 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						this.plugin.settings.authorDropVon = value;
 						if (this.plugin.litNoteServerSettings) {
 							this.plugin.litNoteServerSettings.authorDropVon = value;
+						}
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Download YouTube transcripts")
+			.setDesc(
+				"When enabled, automatically downloads the timestamped transcript and inserts it under a '# transcript' heading when creating literature notes from YouTube video references."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.downloadYoutubeTranscripts)
+					.onChange(async (value) => {
+						this.plugin.settings.downloadYoutubeTranscripts = value;
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.downloadYoutubeTranscripts = value;
 						}
 						await this.plugin.saveSettings();
 					});

@@ -68,10 +68,12 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 - **"Sync AI dialog from clipboard"** - appends new turns to the active note.
 - **"Sync linked AI dialog from clipboard"** - identical to the sync command, but runs on the dialog note linked at your current cursor position (e.g. inside `[[My Dialog]]`), allowing you to sync new turns without leaving your referencing note.
 - **"Replace linked AI dialog from clipboard"** - completely replaces (overwrites) the AI dialog note linked at your current cursor position with the parsed dialog from your clipboard. Resets turn watermarks and regenerates all dialog turns, citations, and metadata without leaving your referencing note.
+- **"Delete AI dialog turn"** - opens a fuzzy-searchable picker of dialog turns in the current note to select a turn to delete, then removes the turn heading, prompt callout, and AI response, automatically cleaning up any orphaned sources in `# Sources` that were only cited by that turn.
+- **"Remove sources with no cite"** - scans the active note and removes any sources from the `# Sources` section that are not cited in the AI response of any dialog turn in the note.
+- **"Remove sources with no dialog"** - scans the active note and removes any sources from `# Sources` whose referencing dialog turns have been deleted, or updates the ownership list if only some citing turns remain.
 - **"Jump to turn response"** - opens a fuzzy-searchable popup of the current dialog's headings, instantly jumping your cursor to the start of the AI's response for the selected turn. The turn you are currently reading is marked with a subtle box.
 - **"Relink sources with Zotero"** - manually relinks the current note's `# Sources` section. Shows a live progress notice and reports how many sources were matched (split into Zotero items vs. literature notes). If nothing new matches, the note is left untouched.
 - **"Get literature note link"** - inserts a literature note link at your cursor in any note. Opens a fuzzy-searchable picker of your literature notes (scoped to the *Literature notes folder* setting, ranked with recently opened notes first), then a second picker for the link description built from the note's aliases or title. The inserted wikilink looks like `[[Smith 2020 - Topic|smith2020: Topic]] `, with the citekey's year-disambiguation suffix stripped and a bare citekey description used when the note has no aliases.
-- **"Auto-relink sources" setting** - when enabled, relinking runs automatically at the end of **"Import AI dialog from clipboard"**, **"Sync AI dialog from clipboard"**, and **"Replace linked AI dialog from clipboard"** (the commands that generate or modify turns).
 
 ---
 
@@ -80,28 +82,28 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 ### AI Import Settings
 - **AI save folder** (default: `ai-searches`): Folder name where notes are created (relative to your currently active note).
 - **AI generated tag** (default: `ai-generated`): Tag inserted into the frontmatter.
-- **Collapse blank lines** (default: on): Collapses consecutive blank lines into a single blank line to make the note structure clean and dense.
-- **Collapse prompt callouts** (default: on): When on, user prompts start collapsed (`> [!Prompt]+`). When off, they start expanded (`> [!Prompt]-`).
+- **Collapse blank lines** (default: on): Collapses consecutive blank lines into a single blank line to make the note structure clean and dense while keeping one blank line between paragraphs and headings.
+- **Collapse prompt callouts** (default: on): When on, user prompts start collapsed (`> [!Prompt]-`). When off, they start expanded (`> [!Prompt]+`).
 
 ### Prompt Heading Formatting
-- **Heading max characters** (default: `100`): Maximum length for the summary heading.
-- **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` and `TF-IDF ranked sentence`.
-- **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt.
+- **Heading max characters** (default: `100`): Maximum length for the summary heading, including a possible ellipsis.
+- **Prompt heading method** (default: `Lead sentence`): Choice between `Lead sentence` (first sentence that fits, fast) and `TF-IDF ranked sentence` (ranks sentences by term salience with a lead-position prior).
+- **Heading lead bias** (default: `0.20`): TF-IDF only. Determines how much to favor sentences closer to the start of the prompt (0 disables it, reasonable range 0.05-0.35).
 
 ### Source Link Title Fetching
 - **Auto-fetch source titles** (default: on): Fetches webpage titles for sources that don't already have one, producing clean markdown links instead of bare URLs.
 - **Source title max characters** (default: `100`): Maximum length of a fetched source link title, including a possible ellipsis.
 
 ### Zotero & Literature Note Relinking
-- **Auto-relink sources** (default: off): Automatically run Zotero relinking when importing or syncing new turns.
-- **Zotero HTTP Port** (default: `23119`): Local HTTP port for the Zotero 7/8/9 Local API.
+- **Auto-relink sources** (default: off): Automatically runs Zotero relinking at the end of commands that generate or modify turns (**Import AI dialog from clipboard**, **Sync AI dialog from clipboard**, and **Replace linked AI dialog from clipboard**).
+- **Better BibTeX HTTP port** (default: `23119`): Local HTTP port used to fetch citation metadata from the Zotero Better BibTeX plugin.
 - **Literature notes folder** (default: `lit/lit_notes`): Vault folder where literature notes reside (and where new notes sent from the Zotero companion plugin are saved). Leave blank to search anywhere in the vault.
-- **Minimum title match score** (default: `95`): Minimum similarity score (0-100) required to match an AI source to a Zotero item.
+- **Minimum title match score** (default: `95`): Minimum fuzzy similarity score (0-100) required to match an AI source to a Zotero item.
 - **Zotero library cache**: Button to clear the in-memory cached Zotero library so the next relink fetches fresh from Zotero.
 
 *(Note: The local HTTP port `27124` that listens for literature notes from Zotero is completely zero-configuration and runs automatically in the background).*
 
-### Zotero Companion Listener
+### Literature Note Formatting
 
 - **Validate author name format** (default: off): When enabled, warns before creating a literature note if any author or creator name with **multiple words** is not in `Last, First` format.
 
@@ -116,9 +118,11 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
   - `BibTeX`: Full canonical BibTeX syntax (`von Last, Jr, First`).
   - `First Last`: Natural reading order (`Albert Einstein`).
   - `Last only`: Surname/particle only (`van Beethoven`).
-  - `Initials`: First initials with surname (`J.-P. Sartre`, `L. van Beethoven`).
+  - `Initials`: First initials with surname (`J. Smith`, `J.-P. Sartre`).
 
 - **Drop 'von' particle** (default: off): When using `Last, First` style, optionally omits lowercase surname particles such as `von`, `van`, or `de la` (producing `Beethoven, Ludwig` instead of `van Beethoven, Ludwig`).
+
+- **Download YouTube transcripts** (default: on): When enabled, automatically downloads the timestamped transcript and inserts it two blank lines below the note body under a `# Transcript` heading when creating literature notes from YouTube video references (e.g. `youtube.com` or `youtu.be` URLs). The editor cursor is automatically positioned on the blank line directly above `# Transcript`.
 
 ---
 
@@ -211,6 +215,7 @@ In the event of a catastrophic scraper failure (where both React state and DOM e
 
 - Thanks to [Tampermonkey](https://www.tampermonkey.net/) chrome extension
 - Zotero connections inspired by [Zotero Bridge](https://github.com/vanakat/zotero-bridge) by vanakat
+- YouTube transcript downloading based on and inspired by [obsidian-yt-transcript](https://github.com/lstrzepek/obsidian-yt-transcript) (YTranscript) by Łukasz Strzępek
 
 # Deprecated Workflows & Legacy Interfaces
 
