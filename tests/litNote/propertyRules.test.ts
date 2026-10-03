@@ -308,6 +308,13 @@ citekey: Doe24
 	});
 
 	describe("3. Canonical Property Ordering & Timestamp Handling", () => {
+		it("positions tags immediately after category in FRONTMATTER_ORDER", () => {
+			const categoryIdx = FRONTMATTER_ORDER.indexOf("category");
+			const tagsIdx = FRONTMATTER_ORDER.indexOf("tags");
+			expect(categoryIdx).toBe(0);
+			expect(tagsIdx).toBe(1);
+		});
+
 		it("positions zotero_tags directly above created_date in FRONTMATTER_ORDER", () => {
 			const zoteroTagsIdx = FRONTMATTER_ORDER.indexOf("zotero_tags");
 			const createdDateIdx = FRONTMATTER_ORDER.indexOf("created_date");

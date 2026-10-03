@@ -201,6 +201,7 @@ describe("writeLitNote", () => {
 		expect(createdContent.startsWith("\n> [!info]-")).toBe(true);
 		expect(fmApplied.citekey).toBe("Sample2024");
 		expect(fmApplied.title).toBe("Sample Article");
+		expect(fmApplied.tags).toEqual([]);
 	});
 
 	it("pops up a warning Notice when unable to create authors file property", async () => {

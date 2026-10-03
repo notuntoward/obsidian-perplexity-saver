@@ -377,6 +377,7 @@ export function buildLitNoteFrontmatter(
 
 	const fm: Record<string, unknown> = {
 		category: ["literaturenote"],
+		tags: [],
 		read: false,
 		in_progress: false,
 		linked: false,

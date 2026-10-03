@@ -122,6 +122,7 @@ describe("Lit Note Builder", () => {
 			expect(fm.zotero_tags).toEqual(["machine_learning", "ai"]);
 			expect(fm.zotero_collections).toEqual(["my_collection"]);
 			expect(fm.in_progress).toBe(false);
+			expect(fm.tags).toEqual([]);
 
 			// created_date is set with obsidian-compliant timestamp of the time the note was created in offset format
 			expect(fm.created_date).toBeDefined();
@@ -130,8 +131,11 @@ describe("Lit Note Builder", () => {
 			// modified_date is NOT created on note creation
 			expect(fm.modified_date).toBeUndefined();
 
-			// Frontmatter keys must be in canonical FRONTMATTER_ORDER with zotero_tags directly above created_date
+			// Frontmatter keys must be in canonical FRONTMATTER_ORDER with tags immediately after category,
+			// and zotero_tags directly above created_date
 			const keys = Object.keys(fm);
+			expect(keys[0]).toBe("category");
+			expect(keys[1]).toBe("tags");
 			const zoteroTagsIdx = keys.indexOf("zotero_tags");
 			const createdDateIdx = keys.indexOf("created_date");
 			expect(zoteroTagsIdx).toBeGreaterThan(-1);
