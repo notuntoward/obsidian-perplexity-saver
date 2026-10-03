@@ -21,7 +21,6 @@ import { registerDeleteTurnCommand } from "./commands/delete";
 import { registerRemoveSourcesWithNoCiteCommand } from "./commands/removeNoCite";
 import { registerRelinkSourcesCommand } from "./commands/relink";
 import { registerJumpCommand } from "./commands/jump";
-import { registerDataviewConverterCommands } from "./commands/dataviewConverter";
 import { registerGetLitNoteLinkCommand } from "./commands/getLitNoteLink";
 import { suggestFilenameFromClipboard } from "./commands/import";
 import { sanitizeFilename, suggestFilenameFromSelection, determineWikilinkAlias } from "./utils";
@@ -203,7 +202,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerRemoveSourcesWithNoDialogCommand(this);
 		registerJumpCommand(this);
 		registerRelinkSourcesCommand(this);
-		registerDataviewConverterCommands(this);
 		registerGetLitNoteLinkCommand(this);
 
 		this.addSettingTab(new PerplexitySaverSettingTab(this.app, this));

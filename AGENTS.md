@@ -205,4 +205,29 @@ Therefore, the Windows focus logic in `src/litNote/litNoteServer.ts` MUST adhere
   mock rather than re-implementing DOM stubs.
 - Run `npm run test:run` before declaring a change done.
 
+## Literature Note Format History (Read Before Touching Note I/O)
+
+**Current format**: All vault literature notes use YAML frontmatter for all
+metadata (`citekey`, `title`, `authors`, `publication_date`, etc.). There are
+no Dataview callout-body fields (`> **Author**:: ...`) in any live note.
+
+**Old format (dead)**: Notes previously stored metadata as Dataview inline
+fields inside an `> [!info]` callout block. This format is obsolete. Do not
+write code that produces it, and do not assume vault notes contain it.
+
+**`src/litNote/calloutFieldParser.ts`**: Parses the old Dataview `Key:: value`
+callout-body syntax. Kept only because `src/litNote/dataviewConverter.ts` (the
+one-time migration tool) still imports it, which is in turn used by
+`tests/litNote/propertyRules.test.ts` to test property-name normalization rules
+(unrelated to migration). Do not use `calloutFieldParser.ts` for any new feature
+that reads or writes notes.
+
+**`src/litNote/dataviewConverter.ts`**: The one-time migration tool that
+converted old Dataview-format notes to frontmatter. Kept because
+`tests/litNote/propertyRules.test.ts` uses `convertDataviewPropsToFrontmatter`
+and `stringifyOrderedFrontmatter` to test property normalization logic.
+Do not use it as a template for new format conversions.
+
+**Test fixtures in `tests/fixtures/litNote/`**: Deleted. They were old-format
+input samples for the migration tool and do not reflect current vault notes.
 

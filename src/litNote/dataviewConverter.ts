@@ -29,7 +29,7 @@ import {
 	extractAuthorsFromZoteroCreators,
 	type ExtractedDataviewFields,
 	type UnconvertedDataviewField,
-} from "./oldFormatReader";
+} from "./calloutFieldParser";
 
 export interface ConversionResult {
 	success: boolean;

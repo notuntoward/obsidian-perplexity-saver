@@ -6,7 +6,7 @@ import {
 	parseLitNoteInfo,
 	registerGetLitNoteLinkCommand,
 } from "../../src/commands/getLitNoteLink";
-import { getLitNoteFiles } from "../../src/commands/dataviewConverter";
+import { getLitNoteFiles } from "../../src/litNote/litNoteFinder";
 import { TFile } from "obsidian";
 
 describe("Get Literature Note Link Command", () => {
