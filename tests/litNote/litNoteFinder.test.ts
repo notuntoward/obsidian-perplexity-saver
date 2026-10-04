@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TFile } from "obsidian";
 import {
 	hasLiteratureNoteCategory,
@@ -163,6 +163,43 @@ describe("litNoteFinder - unified literature note discovery", () => {
 			const result = getLitNoteFiles(mockApp, "lit/lit_notes");
 			expect(result).toHaveLength(1);
 			expect(result[0].path).toBe("lit/lit_notes/Chen24.md");
+		});
+
+		it("queries folder children directly when getFolderByPath is available", () => {
+			const valid = Object.assign(Object.create(TFile.prototype), {
+				path: "lit/lit_notes/Chen24.md",
+				extension: "md",
+				parent: { path: "lit/lit_notes" },
+				stat: { mtime: 2000 },
+			});
+			const nonMd = Object.assign(Object.create(TFile.prototype), {
+				path: "lit/lit_notes/paper.pdf",
+				extension: "pdf",
+				parent: { path: "lit/lit_notes" },
+			});
+
+			const getMarkdownFilesSpy = vi.fn();
+			const mockApp: any = {
+				vault: {
+					getFolderByPath: (p: string) => {
+						if (p === "lit/lit_notes") {
+							return { children: [valid, nonMd] };
+						}
+						return null;
+					},
+					getMarkdownFiles: getMarkdownFilesSpy,
+				},
+				metadataCache: {
+					getFileCache: () => ({
+						frontmatter: { category: ["literaturenote"] },
+					}),
+				},
+			};
+
+			const result = getLitNoteFiles(mockApp, "lit/lit_notes");
+			expect(result).toHaveLength(1);
+			expect(result[0].path).toBe("lit/lit_notes/Chen24.md");
+			expect(getMarkdownFilesSpy).not.toHaveBeenCalled();
 		});
 	});
 

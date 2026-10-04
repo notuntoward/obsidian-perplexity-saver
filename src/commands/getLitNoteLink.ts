@@ -1,9 +1,9 @@
-import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, SearchResult, TFile, parseYaml, renderResults } from "obsidian";
+import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, SearchResult, TFile, renderResults } from "obsidian";
 import { getLitNoteFiles } from "../litNote/litNoteFinder";
 import type { ZoteroClient } from "../zotero/zoteroClient";
 import { sortByEngagement } from "../litNote/engagementSort";
 import type { ViewTracker } from "../litNote/viewTracker";
-import { readLitNote } from "../litNote/litNoteReader";
+import { extractLitNoteMetadata, readLitNote } from "../litNote/litNoteReader";
 
 export interface LitNoteInfo {
 	file: TFile;
@@ -11,6 +11,7 @@ export interface LitNoteInfo {
 	aliases: string[];
 	citekey: string;
 	publication_date?: string;
+	displayText?: string;
 }
 
 export interface LinkOption {
@@ -48,7 +49,7 @@ export class LitNoteSelectModal extends FuzzySuggestModal<LitNoteInfo> {
 	}
 
 	getItemText(item: LitNoteInfo): string {
-		return item.title ? `${item.title} (${this.keyOf(item)})` : item.file.basename;
+		return item.displayText ?? (item.title ? `${item.title} (${this.keyOf(item)})` : item.file.basename);
 	}
 
 	renderSuggestion(match: FuzzyMatch<LitNoteInfo>, el: HTMLElement): void {
@@ -101,16 +102,55 @@ export class LinkOptionSelectModal extends FuzzySuggestModal<LinkOption> {
 	}
 }
 
-export async function parseLitNoteInfo(app: App, file: TFile): Promise<LitNoteInfo> {
-	const content = await app.vault.read(file);
-	const meta = readLitNote(content, file.basename);
+/**
+ * Synchronously extract LitNoteInfo from Obsidian's in-memory metadataCache.
+ * Avoids slow disk I/O when opening the picker.
+ */
+export function getLitNoteInfo(app: App, file: TFile): LitNoteInfo {
+	const cache = app.metadataCache?.getFileCache(file);
+	const fm = (cache?.frontmatter || (file as any).frontmatter) as
+		| Record<string, unknown>
+		| undefined;
+	const meta = extractLitNoteMetadata(fm, file.basename);
+	const title = meta.title;
+	const citekey = meta.citekey || file.basename;
+	const key = citekey || file.basename;
+	const displayText = title ? `${title} (${key})` : file.basename;
+
 	return {
 		file,
-		title: meta.title,
+		title,
 		aliases: meta.aliases,
-		citekey: meta.citekey,
+		citekey,
 		publication_date: meta.publication_date,
+		displayText,
 	};
+}
+
+export async function parseLitNoteInfo(app: App, file: TFile): Promise<LitNoteInfo> {
+	const cache = app.metadataCache?.getFileCache(file);
+	const fm = (cache?.frontmatter || (file as any).frontmatter) as
+		| Record<string, unknown>
+		| undefined;
+	if (fm) {
+		return getLitNoteInfo(app, file);
+	}
+	if (app.vault?.read) {
+		const content = await app.vault.read(file);
+		const meta = readLitNote(content, file.basename);
+		const title = meta.title;
+		const citekey = meta.citekey || file.basename;
+		const key = citekey || file.basename;
+		return {
+			file,
+			title,
+			aliases: meta.aliases,
+			citekey,
+			publication_date: meta.publication_date,
+			displayText: title ? `${title} (${key})` : file.basename,
+		};
+	}
+	return getLitNoteInfo(app, file);
 }
 
 export function buildLinkOptionsForNote(note: LitNoteInfo): LinkOption[] {
@@ -170,23 +210,22 @@ export function registerGetLitNoteLinkCommand(plugin: {
 		litNotesFolder: string;
 	};
 	zoteroClient?: ZoteroClient;
-	viewTracker: ViewTracker;
+	viewTracker?: ViewTracker;
 }): void {
 	plugin.addCommand({
 		id: "get-literature-note-link",
 		name: "Get literature note link",
-		editorCallback: async (editor: Editor, _view: MarkdownView) => {
+		editorCallback: (editor: Editor, _view: MarkdownView) => {
 			const files = getLitNoteFiles(plugin.app, plugin.settings.litNotesFolder);
 			if (files.length === 0) {
 				new Notice(`No literature notes found in '${plugin.settings.litNotesFolder}'.`);
 				return;
 			}
 
-			// Sort BEFORE the async parse. Promise.all keeps input order.
-			const sortedFiles = sortByEngagement(files, plugin.viewTracker.map);
-			const notesInfo = await Promise.all(
-				sortedFiles.map((f) => parseLitNoteInfo(plugin.app, f))
-			);
+			// Sort BEFORE building items (so engagement order is preserved).
+			const sortedFiles = sortByEngagement(files, plugin.viewTracker?.map ?? new Map());
+			// Extract note info synchronously from in-memory metadataCache (no disk I/O).
+			const notesInfo = sortedFiles.map((f) => getLitNoteInfo(plugin.app, f));
 
 			// Level 1: Select a Literature Note
 			const level1Modal = new LitNoteSelectModal(

@@ -3,6 +3,7 @@ import {
 	LitNoteSelectModal,
 	LinkOptionSelectModal,
 	buildLinkOptionsForNote,
+	getLitNoteInfo,
 	parseLitNoteInfo,
 	registerGetLitNoteLinkCommand,
 } from "../../src/commands/getLitNoteLink";
@@ -174,5 +175,117 @@ aliases:
 
 		const modal = new LinkOptionSelectModal({} as any, [option], () => {});
 		expect(modal.getItemText(option)).toBe("Multi-type concept drift");
+	});
+
+	it("getLitNoteInfo extracts note metadata synchronously from metadataCache", () => {
+		const mockFile = Object.assign(Object.create(TFile.prototype), {
+			path: "lit/lit_notes/Chen24.md",
+			basename: "Chen24",
+		});
+
+		const mockApp: any = {
+			metadataCache: {
+				getFileCache: (file: any) => {
+					if (file.path === "lit/lit_notes/Chen24.md") {
+						return {
+							frontmatter: {
+								title: "Multi-type concept drift detection",
+								citekey: "Chen24",
+								publication_date: "2024-02-12",
+								aliases: ["Multi-type concept drift"],
+							},
+						};
+					}
+					return null;
+				},
+			},
+		};
+
+		const info = getLitNoteInfo(mockApp, mockFile);
+		expect(info.title).toBe("Multi-type concept drift detection");
+		expect(info.citekey).toBe("Chen24");
+		expect(info.publication_date).toBe("2024-02-12");
+		expect(info.aliases).toContain("Multi-type concept drift detection");
+		expect(info.aliases).toContain("Multi-type concept drift");
+		expect(info.displayText).toBe("Multi-type concept drift detection (Chen24)");
+	});
+
+	it("parseLitNoteInfo uses metadataCache without reading file from vault", async () => {
+		const mockFile = Object.assign(Object.create(TFile.prototype), {
+			path: "lit/lit_notes/Chen24.md",
+			basename: "Chen24",
+		});
+
+		const readSpy = vi.fn();
+		const mockApp: any = {
+			vault: {
+				read: readSpy,
+			},
+			metadataCache: {
+				getFileCache: () => ({
+					frontmatter: {
+						title: "Cached Title",
+						citekey: "Chen24",
+					},
+				}),
+			},
+		};
+
+		const info = await parseLitNoteInfo(mockApp, mockFile);
+		expect(info.title).toBe("Cached Title");
+		expect(readSpy).not.toHaveBeenCalled();
+	});
+
+	it("editorCallback runs synchronously and opens modal immediately without disk reads", () => {
+		const mockFile = Object.assign(Object.create(TFile.prototype), {
+			path: "lit/lit_notes/Chen24.md",
+			basename: "Chen24",
+			extension: "md",
+			parent: { path: "lit/lit_notes" },
+			stat: { mtime: 1000 },
+		});
+
+		const readSpy = vi.fn();
+		let openedModal: any = null;
+		const openSpy = vi.spyOn(LitNoteSelectModal.prototype, "open").mockImplementation(function (this: any) {
+			openedModal = this;
+		});
+
+		const commands: any[] = [];
+		const mockApp: any = {
+			vault: {
+				read: readSpy,
+				getMarkdownFiles: () => [mockFile],
+			},
+			metadataCache: {
+				getFileCache: () => ({
+					frontmatter: {
+						category: ["literaturenote"],
+						title: "Fast Title",
+						citekey: "Chen24",
+					},
+				}),
+			},
+		};
+
+		const mockPlugin: any = {
+			app: mockApp,
+			addCommand: (cmd: any) => commands.push(cmd),
+			settings: { litNotesFolder: "lit/lit_notes" },
+		};
+
+		registerGetLitNoteLinkCommand(mockPlugin);
+		const command = commands[0];
+
+		// Execute editorCallback synchronously
+		command.editorCallback({ replaceSelection: vi.fn() }, {});
+
+		expect(openSpy).toHaveBeenCalled();
+		expect(openedModal).toBeInstanceOf(LitNoteSelectModal);
+		expect(openedModal.getItems()).toHaveLength(1);
+		expect(openedModal.getItems()[0].title).toBe("Fast Title");
+		expect(readSpy).not.toHaveBeenCalled();
+
+		openSpy.mockRestore();
 	});
 });

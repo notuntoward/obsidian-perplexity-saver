@@ -199,6 +199,16 @@ export class TFile {
 	}
 }
 
+export class TFolder {
+	path: string;
+	children: (TFile | TFolder)[];
+
+	constructor(path: string, children: (TFile | TFolder)[] = []) {
+		this.path = path;
+		this.children = children;
+	}
+}
+
 export function normalizePath(path: string): string {
 	return path.replace(/\\/g, "/").replace(/\/+/g, "/");
 }

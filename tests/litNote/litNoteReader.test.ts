@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readLitNote } from "../../src/litNote/litNoteReader";
+import { extractLitNoteMetadata, readLitNote } from "../../src/litNote/litNoteReader";
 
 describe("Canonical LitNote Reader (new frontmatter format)", () => {
 	it("reads new-format frontmatter notes with full fidelity", () => {
@@ -55,5 +55,33 @@ authors:
 `;
 		const meta = readLitNote(noteWithAuthors, "Jones24test");
 		expect(meta.authors).toEqual(["Jones, Alice", "Brown, Bob"]);
+	});
+
+	describe("extractLitNoteMetadata (in-memory frontmatter extraction)", () => {
+		it("extracts metadata directly from frontmatter object", () => {
+			const fm = {
+				title: "Machine Learning Concepts",
+				citekey: "ML2024",
+				date: "2024-01-15",
+				aliases: ["ML Concepts"],
+				authors: ["Alan Turing"],
+			};
+			const meta = extractLitNoteMetadata(fm, "ML2024");
+			expect(meta.title).toBe("Machine Learning Concepts");
+			expect(meta.citekey).toBe("ML2024");
+			expect(meta.publication_date).toBe("2024-01-15");
+			expect(meta.aliases).toContain("Machine Learning Concepts");
+			expect(meta.aliases).toContain("ML Concepts");
+			expect(meta.authors).toEqual(["Alan Turing"]);
+		});
+
+		it("handles null or undefined frontmatter gracefully using fallbackStem", () => {
+			const meta = extractLitNoteMetadata(null, "Fallback2025");
+			expect(meta.title).toBe("Fallback2025");
+			expect(meta.citekey).toBe("Fallback2025");
+			expect(meta.aliases).toEqual(["Fallback2025"]);
+			expect(meta.publication_date).toBeUndefined();
+			expect(meta.authors).toBeUndefined();
+		});
 	});
 });

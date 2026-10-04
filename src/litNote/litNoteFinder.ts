@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile } from "obsidian";
+import { App, normalizePath, TFile, TFolder } from "obsidian";
 import { notePathFor } from "./writeLitNote";
 
 /**
@@ -89,11 +89,35 @@ export function isLiteratureNote(
  * Retrieve all valid literature notes directly in `litNotesFolder`, sorted by recency.
  */
 export function getLitNoteFiles(app: App, litNotesFolder: string): TFile[] {
-	if (!app?.vault?.getMarkdownFiles || typeof app.vault.getMarkdownFiles !== "function") {
+	if (!app?.vault) {
 		return [];
 	}
-	const files = app.vault.getMarkdownFiles();
-	const filtered = files.filter((f) => isLiteratureNote(app, f, litNotesFolder));
+
+	let candidateFiles: TFile[] | null = null;
+	if (litNotesFolder && litNotesFolder.trim()) {
+		const normFolder = normalizePath(litNotesFolder.trim());
+		const folder = (
+			typeof (app.vault as any).getFolderByPath === "function"
+				? (app.vault as any).getFolderByPath(normFolder)
+				: typeof app.vault.getAbstractFileByPath === "function"
+				? app.vault.getAbstractFileByPath(normFolder)
+				: null
+		) as any;
+		if (folder && Array.isArray(folder.children)) {
+			candidateFiles = folder.children.filter(
+				(c: any) => c instanceof TFile || (c && !c.children && isMarkdownFile(c))
+			);
+		}
+	}
+
+	if (!candidateFiles) {
+		if (typeof app.vault.getMarkdownFiles !== "function") {
+			return [];
+		}
+		candidateFiles = app.vault.getMarkdownFiles();
+	}
+
+	const filtered = candidateFiles.filter((f) => isLiteratureNote(app, f, litNotesFolder));
 	return filtered.sort((a, b) => (b.stat?.mtime ?? 0) - (a.stat?.mtime ?? 0));
 }
 

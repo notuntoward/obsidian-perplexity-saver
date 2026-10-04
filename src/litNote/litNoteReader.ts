@@ -11,6 +11,39 @@ export interface LitNoteMetadata {
 }
 
 /**
+ * Extract literature note metadata from parsed frontmatter.
+ */
+export function extractLitNoteMetadata(
+	frontmatter: Record<string, unknown> | null | undefined,
+	fallbackStem = ""
+): LitNoteMetadata {
+	const fm = frontmatter || {};
+	const fmTitle = fm.title || fm.Title;
+	const cleanTitle = fmTitle ? cleanFieldValue(String(fmTitle)) : "";
+	const rawDate = fm.publication_date || fm.date;
+	const pubDate = rawDate ? formatObsidianDate(rawDate) : undefined;
+	const citekey = String(
+		fm.citekey ||
+		fm["citation key"] ||
+		fm["citation_key"] ||
+		fallbackStem
+	).trim();
+
+	const authors = Array.isArray(fm.authors)
+		? fm.authors.map((a) => cleanFieldValue(String(a)))
+		: undefined;
+
+	return {
+		title: cleanTitle || fallbackStem,
+		aliases: buildAliases(cleanTitle || fallbackStem, fm.aliases),
+		citekey: citekey || fallbackStem,
+		publication_date: pubDate || undefined,
+		authors,
+		frontmatter: fm,
+	};
+}
+
+/**
  * Canonical reader for literature notes.
  *
  * All vault notes use YAML frontmatter for metadata. The old Dataview
@@ -35,27 +68,5 @@ export function readLitNote(
 		}
 	}
 
-	const fmTitle = frontmatter.title || frontmatter.Title;
-	const cleanTitle = fmTitle ? cleanFieldValue(String(fmTitle)) : "";
-	const rawDate = frontmatter.publication_date || frontmatter.date;
-	const pubDate = rawDate ? formatObsidianDate(rawDate) : undefined;
-	const citekey = String(
-		frontmatter.citekey ||
-		frontmatter["citation key"] ||
-		frontmatter["citation_key"] ||
-		fallbackStem
-	).trim();
-
-	const authors = Array.isArray(frontmatter.authors)
-		? frontmatter.authors.map((a) => cleanFieldValue(String(a)))
-		: undefined;
-
-	return {
-		title: cleanTitle || fallbackStem,
-		aliases: buildAliases(cleanTitle || fallbackStem, frontmatter.aliases),
-		citekey: citekey || fallbackStem,
-		publication_date: pubDate || undefined,
-		authors,
-		frontmatter,
-	};
+	return extractLitNoteMetadata(frontmatter, fallbackStem);
 }
