@@ -1,4 +1,4 @@
-// Vitest runs in the "node" environment (see vitest.config.ts) rather than a
+// Vitest runs in the "node" environment (see vitest.config.mts) rather than a
 // browser/DOM environment, since most of this codebase doesn't need real DOM
 // APIs. Obsidian's own runtime, however, is a browser/Electron renderer
 // where `window` IS the global object, so plugin source code is required (by

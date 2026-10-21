@@ -1,3 +1,4 @@
+import { setTimeoutIn } from "commons/windows";
 import { App, Editor, Notice, TFile } from "obsidian";
 import { relinkSourcesInNote } from "../zotero/relinker";
 import { ZoteroClient } from "../zotero/zoteroClient";
@@ -19,6 +20,7 @@ export function registerRelinkSourcesCommand(
 		id: "relink-sources-with-zotero",
 		name: "Relink sources with Zotero",
 		editorCallback: async (editor: Editor, view: { file?: TFile }) => {
+			const win = (view as any).containerEl?.ownerDocument?.defaultView ?? (typeof activeWindow !== "undefined" ? activeWindow : null) ?? window;
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
@@ -47,7 +49,7 @@ export function registerRelinkSourcesCommand(
 
 				if (result.relinkedCount === 0) {
 					notice.setMessage("No new Zotero or Literature Note matches found.");
-					window.setTimeout(() => notice.hide(), 4000);
+					setTimeoutIn(win, () => notice.hide(), 4000);
 					return;
 				}
 
@@ -58,11 +60,11 @@ export function registerRelinkSourcesCommand(
 				notice.setMessage(
 					`Relinking complete! Matched ${result.relinkedCount} source(s) (${result.litNoteCount} Lit Note(s), ${result.zoteroCount} Zotero Item(s)).`
 				);
-				window.setTimeout(() => notice.hide(), 5000);
+				setTimeoutIn(win, () => notice.hide(), 5000);
 			} catch (err: any) {
 				console.error("Zotero relinking error:", err);
 				notice.setMessage(err.message || "Failed to relink sources with Zotero.");
-				window.setTimeout(() => notice.hide(), 7000);
+				setTimeoutIn(win, () => notice.hide(), 7000);
 			}
 		},
 	});

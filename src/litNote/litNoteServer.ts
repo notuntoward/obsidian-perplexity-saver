@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Local HTTP server that receives requests from the Zotero companion plugin.
  *
  * Binds to 127.0.0.1 (loopback only) — no external exposure, no auth token
@@ -18,9 +18,16 @@
  */
 
 import http from "http";
-import { exec } from "child_process";
 import { App, Notice, normalizePath, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
+import {
+	focusLeafAndWindow,
+	getWindowForLeaf,
+	isLeafAttached,
+	openFileInLeaf,
+} from "commons/workspace";
+import { setTimeoutIn } from "commons/windows";
+import { raiseWindow } from "commons/os";
 import { askNoteDecision, type NoteDecision } from "./decisionModal";
 import type {
 	LitNoteItemResult,
@@ -205,6 +212,12 @@ async function handleCreateBatch(
 	settings: LitNoteServerSettings,
 	items: ZoteroItemPayload[]
 ): Promise<LitNoteItemResult[]> {
+	const initialWin =
+		(typeof activeWindow !== "undefined" ? activeWindow : null) ??
+		(typeof window !== "undefined" ? window : null);
+	if (initialWin) {
+		raiseWindow(initialWin, app);
+	}
 	await ensureWorkspaceReady(app);
 	await ensureFolder(app, settings);
 
@@ -224,7 +237,11 @@ async function handleCreateBatch(
 		}
 
 		const citekeys = existingEntries.map((e) => e.citekey).join("\n");
-		focusObsidianWindow(app);
+		const promptWin =
+			getWindowForLeaf(app.workspace.getMostRecentLeaf()) ??
+			(typeof activeWindow !== "undefined" ? activeWindow : null) ??
+			window;
+		raiseWindow(promptWin, app);
 		prompted = true;
 		decision = await askNoteDecision(
 			app,
@@ -265,7 +282,11 @@ async function handleCreateBatch(
 		}
 
 		if (allIssues.length > 0) {
-			focusObsidianWindow(app);
+			const promptWin =
+				getWindowForLeaf(app.workspace.getMostRecentLeaf()) ??
+				(typeof activeWindow !== "undefined" ? activeWindow : null) ??
+				window;
+			raiseWindow(promptWin, app);
 			prompted = true;
 			const formatDecision = await askAuthorFormatDecision(app, allIssues);
 
@@ -395,305 +416,21 @@ export function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): n
 }
 
 /**
- * Resolve the native window hosting a leaf via the workspace tree
- * (leaf -> container -> window), tolerant of Obsidian version differences.
- * Mirrors the canonical model in the next-tab-group plugin.
+ * Activates a leaf and raises its owning window to the foreground.
+ * Uses commons focusLeafAndWindow with raiseWindow from commons/os so that
+ * the Windows foreground lock is bypassed (same as next-tab-group).
  */
-export function getWindowForLeaf(leaf: WorkspaceLeaf | null | undefined): Window | undefined {
-	const leafAny = leaf as any;
-	if (!leafAny || leafAny.detached) return undefined;
-	try {
-		const container = leafAny.getContainer?.();
-		const win: Window | undefined =
-			container?.win ??
-			container?.doc?.defaultView ??
-			container?.containerEl?.win ??
-			container?.containerEl?.ownerDocument?.defaultView ??
-			leafAny.containerEl?.win ??
-			leafAny.containerEl?.ownerDocument?.defaultView ??
-			leafAny.view?.containerEl?.win ??
-			leafAny.view?.containerEl?.ownerDocument?.defaultView;
-		if (win && !win.closed) return win;
-	} catch {
-		// Window or container is detached or closing
-	}
-	return undefined;
-}
-
-/**
- * Activates a leaf in Obsidian's workspace and switches DOM window focus
- * when the leaf resides in a popout window.
- * Mirrors the canonical navigation behavior from next-tab-group.
- */
-export function focusLeafAndWindow(app: App, leaf: WorkspaceLeaf): void {
-	if (!leaf || (leaf as any).detached) return;
-	const targetWin = getWindowForLeaf(leaf);
-	if (typeof app.workspace.setActiveLeaf === "function") {
-		app.workspace.setActiveLeaf(leaf, { focus: true });
-	}
-
-	if (
-		targetWin &&
-		!targetWin.closed &&
-		typeof activeWindow !== "undefined" &&
-		targetWin !== activeWindow &&
-		typeof targetWin.focus === "function"
-	) {
-		try {
-			targetWin.focus();
-		} catch {
-			// Focus failed on closed or destroyed window
-		}
+export function raiseAndFocus(app: App, leaf: WorkspaceLeaf | null | undefined): void {
+	if (!leaf) return;
+	focusLeafAndWindow(app, leaf, {
+		raiseWindow: (win) => raiseWindow(win, app),
+	});
+	const win = getWindowForLeaf(leaf) ?? (typeof activeWindow !== "undefined" ? activeWindow : null);
+	if (win) {
+		raiseWindow(win, app);
 	}
 }
 
-/**
- * Bring the Obsidian window to the foreground, un-minimizing it if minimized.
- * Combines DOM/Electron APIs with OS-level commands (Python ctypes / Win32 API,
- * shell protocol URLs, osascript on macOS) so that Windows/macOS/Linux restores
- * minimized windows and brings Obsidian above any obscuring windows. When a
- * leaf is given (or the most recent leaf), the window hosting it is raised.
- */
-export function focusObsidianWindow(app?: App, targetLeaf?: WorkspaceLeaf | null): void {
-	let nativeHwnd = "";
-	let titleMarker = "";
-	let isTargetPopout = false;
-	try {
-		const targetWin = getWindowForLeaf(targetLeaf ?? app?.workspace?.getMostRecentLeaf?.());
-		const mainWin = typeof window !== "undefined" ? window : null;
-		const win =
-			targetWin ??
-			(typeof activeWindow !== "undefined"
-				? (activeWindow as any)
-				: mainWin);
-		if (win) {
-			isTargetPopout = Boolean(targetWin && targetWin !== mainWin);
-			if (typeof activeWindow !== "undefined" && win !== activeWindow && typeof win.focus === "function") {
-				try {
-					win.focus();
-				} catch {
-					// Ignore
-				}
-			}
-
-			let electron: any = win.electron;
-			if (!electron && typeof win.require === "function") {
-				try {
-					electron = win.require("electron");
-				} catch {
-					// Ignore
-				}
-			}
-			if (!electron && typeof window !== "undefined" && typeof (window as any).require === "function") {
-				try {
-					electron = (window as any).require("electron");
-				} catch {
-					// Ignore
-				}
-			}
-
-			let remote: any = win.__electronRemote ?? electron?.remote;
-			if (!remote && typeof win.require === "function") {
-				try {
-					remote = win.require("@electron/remote");
-				} catch {
-					// Ignore
-				}
-			}
-			if (!remote && typeof window !== "undefined" && typeof (window as any).require === "function") {
-				try {
-					remote = (window as any).require("@electron/remote");
-				} catch {
-					// Ignore
-				}
-			}
-
-			let targetBrowserWin: any = null;
-			if (remote?.BrowserWindow?.getAllWindows) {
-				try {
-					const all = remote.BrowserWindow.getAllWindows();
-					if (win.document) {
-						titleMarker = `__ntg_foc_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-						const origTitle = win.document.title;
-						win.document.title = titleMarker;
-						for (const bw of all) {
-							if (!bw || bw.isDestroyed?.()) continue;
-							if (bw.getTitle?.() === titleMarker) {
-								targetBrowserWin = bw;
-								break;
-							}
-						}
-						if (!targetBrowserWin) {
-							const tx = win.screenX;
-							const ty = win.screenY;
-							const tw = win.outerWidth;
-							const th = win.outerHeight;
-							if (typeof tx === "number" && typeof ty === "number" && tx > -10000 && ty > -10000) {
-								for (const bw of all) {
-									if (!bw || bw.isDestroyed?.()) continue;
-									const b = bw.getBounds?.();
-									if (
-										b &&
-										Math.abs(b.x - tx) <= 30 &&
-										Math.abs(b.y - ty) <= 30 &&
-										Math.abs(b.width - tw) <= 30 &&
-										Math.abs(b.height - th) <= 30
-									) {
-										targetBrowserWin = bw;
-										break;
-									}
-								}
-							}
-						}
-						win.document.title = origTitle;
-					}
-					if (!targetBrowserWin && all.length === 1) {
-						targetBrowserWin = all[0];
-					}
-				} catch {
-					// Ignore
-				}
-			}
-
-			if (!targetBrowserWin && !isTargetPopout && remote?.getCurrentWindow) {
-				targetBrowserWin = remote.getCurrentWindow();
-			}
-
-			if (targetBrowserWin) {
-				if (typeof targetBrowserWin.isMinimized === "function" && targetBrowserWin.isMinimized()) {
-					targetBrowserWin.restore();
-				}
-				targetBrowserWin.show?.();
-				targetBrowserWin.focus?.();
-				try {
-					const buf = targetBrowserWin.getNativeWindowHandle?.();
-					if (buf && buf.length >= 8) nativeHwnd = buf.readBigUInt64LE(0).toString();
-					else if (buf && buf.length >= 4) nativeHwnd = buf.readUInt32LE(0).toString();
-				} catch {
-					// Ignore: script falls back to enumerating Obsidian windows
-				}
-			} else if (typeof win.focus === "function") {
-				win.focus();
-			}
-		}
-	} catch (err) {
-		console.warn("[LitNoteServer] focusObsidianWindow error:", err);
-	}
-
-	try {
-		if (typeof process !== "undefined" && process.platform) {
-			const platform = process.platform;
-			if (platform === "win32") {
-				// Windows OS foreground lock prevents background processes from un-minimizing
-				// or focusing via window.focus(). We execute a targeted Python ctypes Win32
-				// script that switches to the interactive desktop, un-minimizes the window
-				// via ShowWindow(SW_RESTORE = 9), and brings it above obscuring windows
-				// via SetWindowPos(HWND_TOPMOST -> HWND_NOTOPMOST) and SetForegroundWindow.
-				const pyScript = [
-					"import ctypes, sys",
-					"u = ctypes.windll.user32",
-					"k = ctypes.windll.kernel32",
-					"d = u.OpenDesktopW('Default', 0, False, 0x01FF)",
-					"if d: u.SetThreadDesktop(d)",
-					"obs_hwnd = None",
-					"if len(sys.argv) > 1 and sys.argv[1].isdigit() and int(sys.argv[1]) != 0:",
-					" h = int(sys.argv[1])",
-					" if u.IsWindow(h): obs_hwnd = h",
-					"marker = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != '0' else None",
-					"if not obs_hwnd and marker:",
-					" def cb_marker(h, l):",
-					"  global obs_hwnd",
-					"  buf = ctypes.create_unicode_buffer(512)",
-					"  u.GetWindowTextW(h, buf, 512)",
-					"  if marker in buf.value:",
-					"   obs_hwnd = h",
-					"   return False",
-					"  return True",
-					" u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb_marker), 0)",
-					"is_popout = len(sys.argv) > 3 and sys.argv[3] == '1'",
-					"if not obs_hwnd and not is_popout:",
-					" def cb(h, l):",
-					"  global obs_hwnd",
-					"  if not u.IsWindowVisible(h): return True",
-					"  pid = ctypes.c_ulong()",
-					"  u.GetWindowThreadProcessId(h, ctypes.byref(pid))",
-					"  hp = k.OpenProcess(0x1000, False, pid.value)",
-					"  if hp:",
-					"   n = ctypes.create_unicode_buffer(512)",
-					"   k.QueryFullProcessImageNameW(hp, 0, n, ctypes.byref(ctypes.c_ulong(512)))",
-					"   k.CloseHandle(hp)",
-					"   if n.value.lower().endswith('obsidian.exe'):",
-					"    c = ctypes.create_unicode_buffer(256)",
-					"    u.GetClassNameW(h, c, 256)",
-					"    if c.value == 'Chrome_WidgetWin_1':",
-					"     obs_hwnd = h",
-					"     return False",
-					"  return True",
-					" u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), 0)",
-					"if not obs_hwnd: sys.exit(1)",
-					"if u.IsIconic(obs_hwnd):",
-					" u.ShowWindow(obs_hwnd, 9)",
-					"else:",
-					" u.ShowWindow(obs_hwnd, 5)",
-					"u.SetWindowPos(obs_hwnd, -1, 0, 0, 0, 0, 3)",
-					"u.SetWindowPos(obs_hwnd, -2, 0, 0, 0, 0, 3)",
-					"u.keybd_event(0x12, 0, 0, 0)",
-					"u.keybd_event(0x12, 0, 2, 0)",
-					"ret = u.SetForegroundWindow(obs_hwnd)",
-					"u.BringWindowToTop(obs_hwnd)",
-					"if not ret: u.SwitchToThisWindow(obs_hwnd, True)",
-					"sys.exit(0 if u.GetForegroundWindow() == obs_hwnd else 1)",
-				].join("\n");
-				const b64 = Buffer.from(pyScript).toString("base64");
-				const hwndArg = /^\d+$/.test(nativeHwnd) && nativeHwnd !== "0" ? nativeHwnd : "0";
-				const markerArg = titleMarker ? titleMarker : "0";
-				const popoutArg = isTargetPopout ? "1" : "0";
-				const pyArgs = ` ${hwndArg} ${markerArg} ${popoutArg}`;
-				exec(
-					`python -c "import base64; exec(base64.b64decode('${b64}').decode('utf-8'))"${pyArgs}`,
-					(err) => {
-						if (err && !isTargetPopout) {
-							// Only fall back to shell URI if target is not a popout window
-							const resolvedApp =
-								app ?? (typeof window !== "undefined" ? (window as any).app : null);
-							const vaultName = resolvedApp?.vault?.getName?.();
-							const uri = vaultName
-								? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
-								: "obsidian://";
-							exec(`start "" "${uri}"`, () => {});
-						}
-					}
-				);
-			} else if (platform === "darwin") {
-				exec('osascript -e \'tell application "Obsidian" to activate\'', (err) => {
-					if (err && !isTargetPopout) {
-						const resolvedApp =
-							app ?? (typeof window !== "undefined" ? (window as any).app : null);
-						const vaultName = resolvedApp?.vault?.getName?.();
-						const uri = vaultName
-							? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
-							: "obsidian://";
-						exec(`open "${uri}"`, () => {});
-					}
-				});
-			} else if (platform === "linux") {
-				exec('wmctrl -x -a "obsidian" || xdotool search --class "obsidian" windowactivate', (err) => {
-					if (err && !isTargetPopout) {
-						const resolvedApp =
-							app ?? (typeof window !== "undefined" ? (window as any).app : null);
-						const vaultName = resolvedApp?.vault?.getName?.();
-						const uri = vaultName
-							? `obsidian://open?vault=${encodeURIComponent(vaultName)}`
-							: "obsidian://";
-						exec(`xdg-open "${uri}"`, () => {});
-					}
-				});
-			}
-		}
-	} catch (err) {
-		console.warn("[LitNoteServer] OS focus error:", err);
-	}
-}
 
 async function openFile(
 	app: App,
@@ -701,79 +438,29 @@ async function openFile(
 	preferredLeaf?: WorkspaceLeaf | null,
 	options?: { modifyText?: boolean }
 ): Promise<void> {
-	if (!file) {
-		// Defensive: callers ensure the workspace is ready and writeNote()
-		// returns a resolved TFile, so this should be unreachable.
-		throw new Error("Cannot open lit note: no file was provided");
-	}
-
-	// Check for an existing leaf matching this file (including deferred leaves)
-	let targetLeaf: WorkspaceLeaf | null = preferredLeaf ?? null;
-	if (!targetLeaf && typeof app.workspace.iterateAllLeaves === "function") {
-		app.workspace.iterateAllLeaves((leaf) => {
-			const view = leaf.view as any;
-			const viewFile =
-				view?.file?.path ||
-				(typeof leaf.getViewState === "function"
-					? (leaf.getViewState()?.state as any)?.file
-					: undefined);
-			if (viewFile === file.path && !targetLeaf) {
-				targetLeaf = leaf;
-			}
-		});
-	}
-
-	const cursorState = {
-		cursor: {
-			from: { line: 99999, ch: 0 },
-			to: { line: 99999, ch: 0 },
+	await openFileInLeaf(app, file, {
+		preferredLeaf,
+		raiseWindow: (win) => raiseWindow(win, app),
+		eState: {
+			cursor: { from: { line: 99999, ch: 0 }, to: { line: 99999, ch: 0 } },
+			line: 99999,
 		},
-		line: 99999,
-	};
-
-	if (!targetLeaf) {
-		targetLeaf = app.workspace.getLeaf("tab");
-	}
-
-	await targetLeaf.openFile(file, {
-		active: true,
-		eState: cursorState,
+		onReady: (leaf, editor) => {
+			if (editor) {
+				editor.focus?.();
+				const targetLine = positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
+				if (typeof leaf.setEphemeralState === "function") {
+					leaf.setEphemeralState({
+						cursor: {
+							from: { line: targetLine, ch: 0 },
+							to: { line: targetLine, ch: 0 },
+						},
+						line: targetLine,
+					});
+				}
+			}
+		},
 	});
-
-	if (
-		(targetLeaf as any).isDeferred &&
-		typeof (targetLeaf as any).loadIfDeferred === "function"
-	) {
-		await (targetLeaf as any).loadIfDeferred();
-	}
-	if (typeof app.workspace.revealLeaf === "function") {
-		await app.workspace.revealLeaf(targetLeaf);
-	}
-	focusLeafAndWindow(app, targetLeaf);
-	if (typeof targetLeaf.setEphemeralState === "function") {
-		targetLeaf.setEphemeralState(cursorState);
-	}
-
-	let editor = (targetLeaf.view as any)?.editor;
-	if (!editor) {
-		await new Promise((resolve) => window.setTimeout(resolve, 50));
-		editor = (targetLeaf.view as any)?.editor;
-	}
-	if (editor) {
-		editor.focus?.();
-		const targetLine = positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
-		if (typeof targetLeaf.setEphemeralState === "function") {
-			targetLeaf.setEphemeralState({
-				cursor: {
-					from: { line: targetLine, ch: 0 },
-					to: { line: targetLine, ch: 0 },
-				},
-				line: targetLine,
-			});
-		}
-	}
-
-	focusObsidianWindow(app, targetLeaf);
 }
 
 async function restorePreviousLeaf(
@@ -782,18 +469,11 @@ async function restorePreviousLeaf(
 ): Promise<void> {
 	if (!leaf) return;
 	try {
-		await new Promise((resolve) => window.setTimeout(resolve, 10));
+		const leafWin = getWindowForLeaf(leaf) ?? window;
+		await new Promise<void>((resolve) => setTimeoutIn(leafWin, resolve, 10));
 
-		let isAttached = false;
-		if (typeof app.workspace.iterateAllLeaves === "function") {
-			app.workspace.iterateAllLeaves((l) => {
-				if (l === leaf) isAttached = true;
-			});
-		} else {
-			isAttached = (leaf as any).parent !== null;
-		}
-
-		let target: WorkspaceLeaf | null = isAttached ? leaf : null;
+		const attached = isLeafAttached(leaf);
+		let target: WorkspaceLeaf | null = attached ? leaf : null;
 		if (!target && typeof app.workspace.getMostRecentLeaf === "function") {
 			target = app.workspace.getMostRecentLeaf();
 		}
@@ -801,9 +481,7 @@ async function restorePreviousLeaf(
 			if (typeof app.workspace.revealLeaf === "function") {
 				await app.workspace.revealLeaf(target);
 			}
-			if (typeof app.workspace.setActiveLeaf === "function") {
-				app.workspace.setActiveLeaf(target, { focus: true });
-			}
+			raiseAndFocus(app, target);
 			const editor = (target.view as any)?.editor;
 			editor?.focus?.();
 		}
@@ -822,6 +500,12 @@ async function handleOpenBatch(
 	settings: LitNoteServerSettings,
 	entries: OpenEntry[]
 ): Promise<LitNoteItemResult[]> {
+	const initialWin =
+		(typeof activeWindow !== "undefined" ? activeWindow : null) ??
+		(typeof window !== "undefined" ? window : null);
+	if (initialWin) {
+		raiseWindow(initialWin, app);
+	}
 	await ensureWorkspaceReady(app);
 	const results: LitNoteItemResult[] = [];
 	const found: OpenEntry[] = [];
@@ -879,11 +563,11 @@ async function handleOpenBatch(
 				if (typeof app.workspace.revealLeaf === "function") {
 					await app.workspace.revealLeaf(blankLeaf);
 				}
-				focusLeafAndWindow(app, blankLeaf);
+				raiseAndFocus(app, blankLeaf);
 			}
 
 			const citekeys = missing.map((e) => e.citekey).join("\n");
-			focusObsidianWindow(app, blankLeaf);
+			raiseAndFocus(app, blankLeaf);
 			prompted = true;
 			try {
 				decision = await askNoteDecision(
@@ -920,7 +604,11 @@ async function handleOpenBatch(
 					}
 
 					if (allIssues.length > 0) {
-						focusObsidianWindow(app);
+						const promptWin =
+							getWindowForLeaf(app.workspace.getMostRecentLeaf()) ??
+							(typeof activeWindow !== "undefined" ? activeWindow : null) ??
+							window;
+						raiseWindow(promptWin, app);
 						let formatDecision: AuthorFormatDecision = "cancel";
 						try {
 							formatDecision = await askAuthorFormatDecision(app, allIssues);

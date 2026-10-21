@@ -1,3 +1,5 @@
+import { getMainWindow } from "commons/workspace";
+import { setTimeoutIn } from "commons/windows";
 import { App, normalizePath, Notice, TFile } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
@@ -57,10 +59,11 @@ function citekeyOf(item: ZoteroItemPayload): string {
 export async function ensureWorkspaceReady(app: App): Promise<void> {
 	if (app.workspace?.layoutReady) return;
 	if (typeof app.workspace?.onLayoutReady !== "function") return;
+	const mainWin = getMainWindow(app) ?? window;
 	await new Promise<void>((resolve) => {
-		const timeout = window.setTimeout(() => resolve(), 5000);
+		const cancel = setTimeoutIn(mainWin, () => resolve(), 5000);
 		app.workspace.onLayoutReady(() => {
-			window.clearTimeout(timeout);
+			cancel();
 			resolve();
 		});
 	});

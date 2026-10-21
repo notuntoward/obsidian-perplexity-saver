@@ -3,6 +3,7 @@ import { detectAndParse } from "./parsers/detect";
 import { buildNoteBody } from "./normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, createDialogNote } from "./normalize/frontmatter";
 import { HeadlineOptions } from "./normalize/headlines";
+import { writeClipboardIn } from "commons/windows";
 import { sanitizeFilename } from "./utils";
 import { groupLogicalTurns, deduplicateDialogCitations } from "./normalize/turns";
 import { DialogFile } from "./parsers/types";
@@ -140,7 +141,7 @@ export async function createPerplexityNote(
 		...(existingFrontmatter ?? {}),
 	});
 
-	await navigator.clipboard.writeText("");
+	await writeClipboardIn((typeof activeWindow !== "undefined" ? activeWindow : null) ?? window, "");
 
 	const linkText = app.fileManager.generateMarkdownLink(newFile, activeFile.path, "", params.alias);
 

@@ -1,3 +1,4 @@
+import { setTimeoutIn } from "commons/windows";
 import { App, Notice } from "obsidian";
 import { parseSourceLine, renderSourceLine, SourceLinkState } from "./sourceLinkState";
 import { ZoteroClient, ZoteroItemData } from "./zoteroClient";
@@ -38,15 +39,16 @@ const AUTO_RELINK_TIMEOUT_MS = 10000;
 const AUTO_RELINK_TIMEOUT_SENTINEL = "__perplexity_saver_auto_relink_timeout__";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+	const win = (typeof activeWindow !== "undefined" ? activeWindow : null) ?? window;
 	return new Promise<T>((resolve, reject) => {
-		const timer = window.setTimeout(() => reject(new Error(AUTO_RELINK_TIMEOUT_SENTINEL)), ms);
+		const cancel = setTimeoutIn(win, () => reject(new Error(AUTO_RELINK_TIMEOUT_SENTINEL)), ms);
 		promise.then(
 			(value) => {
-				window.clearTimeout(timer);
+				cancel();
 				resolve(value);
 			},
 			(err) => {
-				window.clearTimeout(timer);
+				cancel();
 				reject(err);
 			}
 		);

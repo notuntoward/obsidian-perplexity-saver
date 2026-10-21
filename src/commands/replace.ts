@@ -3,6 +3,7 @@ import { detectAndParse } from "../parsers/detect";
 import { buildNoteBody } from "../normalize/buildNote";
 import { overwriteDialogNote, stripLeadingFrontmatterIfPresent } from "../normalize/frontmatter";
 import { deduplicateDialogCitations, groupLogicalTurns } from "../normalize/turns";
+import { readClipboardIn } from "commons/windows";
 import { HeadlineOptions } from "../normalize/headlines";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
@@ -39,7 +40,7 @@ export async function replaceDialogFromClipboard(
 	sourceTitleMaxChars: number = 100,
 	options?: ReplaceDialogOptions
 ): Promise<ReplaceDialogResult> {
-	const clipboard = await navigator.clipboard.readText();
+	const clipboard = await readClipboardIn((typeof activeWindow !== "undefined" ? activeWindow : null) ?? window);
 	if (!clipboard) {
 		return { success: false, error: "Clipboard is empty. Copy an AI dialog first." };
 	}

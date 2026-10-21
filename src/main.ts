@@ -34,6 +34,8 @@ import { deduplicateDialogCitations } from "./normalize/turns";
 import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
 import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
+import { getMainWindow } from "commons/workspace";
+import { setTimeoutIn, readClipboardIn } from "commons/windows";
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -215,7 +217,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		// Pre-warm Zotero library cache in background so auto-relink is instant on first import
 		if (this.settings.autoRelinkSources) {
-			window.setTimeout(() => {
+			const mainWin = getMainWindow(this.app) ?? window;
+			setTimeoutIn(mainWin, () => {
 				this.zoteroClient.getItems().catch((err) => {
 					console.debug("Background Zotero cache warming skipped:", err);
 				});
@@ -248,7 +251,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			return;
 		}
 
-		const noteContent = await navigator.clipboard.readText();
+		const noteContent = await readClipboardIn((typeof activeWindow !== "undefined" ? activeWindow : null) ?? window);
 		if (!noteContent) {
 			new Notice("Clipboard is empty. Copy an AI dialog first.");
 			return;
@@ -350,6 +353,7 @@ class InlineInputWidget extends WidgetType {
 	private wrapEl?: HTMLElement;
 	private inputEl?: HTMLInputElement;
 	private submitting = false;
+	private widgetWin: Window = window; // updated in toDOM to the editor's window
 
 	constructor(
 		private plugin: PerplexitySaverPlugin,
@@ -363,7 +367,9 @@ class InlineInputWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const doc = activeDocument;
+		const doc = this.data.editorView.dom.ownerDocument;
+		const win = doc.defaultView ?? window;
+		this.widgetWin = win;
 		const wrap = doc.createElement("span");
 		wrap.className = "perplexity-inline-wrap";
 		this.wrapEl = wrap;
@@ -379,7 +385,7 @@ class InlineInputWidget extends WidgetType {
 		spinner.className = "perplexity-inline-spinner";
 		spinner.setAttribute("aria-hidden", "true");
 
-		window.setTimeout(() => {
+		setTimeoutIn(win, () => {
 			input.focus();
 			input.select();
 		}, 10);
@@ -445,7 +451,7 @@ class InlineInputWidget extends WidgetType {
 		if (this.inputEl) {
 			this.inputEl.disabled = true;
 		}
-		const busyTimer = window.setTimeout(() => this.setBusy(true), BUSY_INDICATOR_DELAY_MS);
+		const busyTimer = setTimeoutIn(this.widgetWin, () => this.setBusy(true), BUSY_INDICATOR_DELAY_MS);
 
 		// Live status (e.g. Zotero relink progress) surfaced via a single
 		// persistent Notice, updated in place rather than stacking multiple
@@ -532,7 +538,7 @@ class InlineInputWidget extends WidgetType {
 			console.error("Error saving AI dialog note:", err);
 			new Notice("Failed to save the note — see console for details.");
 		} finally {
-			window.clearTimeout(busyTimer);
+			busyTimer();
 			this.setBusy(false);
 			progressNotice?.hide();
 			if (this.inputEl) {

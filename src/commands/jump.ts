@@ -1,5 +1,7 @@
 import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice } from "obsidian";
 import { isAiDialogNote } from "../utils";
+import { getChooser, setSelectedItemSafely } from "commons/modal";
+import { setTimeoutIn } from "commons/windows";
 
 export interface TurnItem {
 	headingText: string;
@@ -80,15 +82,12 @@ class TurnJumpModal extends FuzzySuggestModal<TurnItem> {
 		super.onOpen();
 		// SuggestModal's UI renders synchronously initially or right after open.
 		// Wait a tick for the DOM and chooser items to populate before setting selection.
-		window.setTimeout(() => {
+		const win = this.containerEl.ownerDocument?.defaultView ?? window;
+		setTimeoutIn(win, () => {
 			if (this.initialSelectionIdx >= 0 && this.initialSelectionIdx < this.items.length) {
-				const chooser = (
-					this as unknown as {
-						chooser: { setSelectedItem(idx: number, scroll: boolean): void };
-					}
-				).chooser;
-				if (chooser && typeof chooser.setSelectedItem === "function") {
-					chooser.setSelectedItem(this.initialSelectionIdx, true);
+				const chooser = getChooser(this);
+				if (chooser) {
+					setSelectedItemSafely(chooser, this.initialSelectionIdx);
 				}
 			}
 		}, 10);

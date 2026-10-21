@@ -2,6 +2,7 @@ import { App, Editor, MarkdownView, Notice, TFile } from "obsidian";
 import { detectAndParse } from "../parsers/detect";
 import { buildNoteBody, extractSourcesSection } from "../normalize/buildNote";
 import { stripLeadingFrontmatterIfPresent, updateFrontMatter } from "../normalize/frontmatter";
+import { readClipboardIn } from "commons/windows";
 import {
 	getNextTurnIndex,
 	groupLogicalTurns,
@@ -46,7 +47,7 @@ export async function syncDialogFromClipboard(
 	sourceTitleMaxChars: number = 100,
 	options?: SyncDialogOptions
 ): Promise<SyncDialogResult> {
-	const clipboard = await navigator.clipboard.readText();
+	const clipboard = await readClipboardIn((typeof activeWindow !== "undefined" ? activeWindow : null) ?? window);
 	if (!clipboard) {
 		return { success: false, error: "Clipboard is empty. Copy an AI dialog first." };
 	}

@@ -56,6 +56,21 @@ You are an expert Obsidian Plugin Development Assistant. When writing or refacto
 
 ---
 
+## Shared library: commons
+
+This plugin uses `commons` (repo `obsidian-commons`, normally `C:\Users\scott\repos\obsidian-commons`).
+Window, tab group, tab, pop-out, window-focus and modal-chooser logic (and later color
+logic) comes from `commons/*`. Never reimplement it here and never read Obsidian's
+undocumented fields (`leaf.detached`, `container.win`, `rootSplit`, `tabHeaderEl`,
+`chooser.setSelectedItem`, ...) in this plugin. If commons lacks something or is wrong,
+change commons and tell the user: see the global rule "Obsidian shared library" and
+`obsidian-commons/AGENTS.md`. Rules that moved to commons are enforced by its guardrail
+tests; the rules below are the plugin-specific ones that remain.
+
+Window resolution (`getWindowForLeaf`), focus (`focusLeafAndWindow`), OS-level foreground lock bypass (`raiseWindow`), owner-window timers and clipboard (`setTimeoutIn`, `readClipboardIn`, `writeClipboardIn`), and safe chooser item selection (`setSelectedItemSafely`) are now owned and tested by `commons`. Migration status: `obsidian-commons/docs/CHECKLIST.md` Phase 2.
+
+---
+
 ## 1. Architectural Constraints & Native APIs
 
 Always map tasks to the correct native sub-system on the global `app` instance. Do not use generic Node.js or browser equivalents if an Obsidian API exists.
@@ -155,7 +170,7 @@ overwrite dialog.
 ## Invariants
 
 - The decision prompt MUST stay in Obsidian (`src/litNote/decisionModal.ts`),
-  raised via `focusObsidianWindow()` first, so it is never hidden behind
+  raised via `raiseWindow(...)` / `raiseAndFocus(...)` first, so it is never hidden behind
   Obsidian or another window and looks the same in every case.
 - Never return a non-200 for an application-level outcome (`exists`, `missing`,
   `skipped`). Only malformed requests (400) and bad routes (404) use other
@@ -174,21 +189,10 @@ overwrite dialog.
 
 ## Window Focus and Tab State Invariants (CRITICAL: Do Not Regress)
 
-### 1. Window Focusing Across OS Boundaries (`focusObsidianWindow()`)
+### 1. Window Focusing Across OS Boundaries (moved to `commons/os` `raiseWindow`)
 When requests arrive from Zotero via HTTP, Obsidian is in the background and might be minimized or obscured behind maximized windows (such as IDEs or browsers). Native DOM `window.focus()` is blocked by Chromium's anti-focus-stealing policy.
 
-On Windows (`win32`), background processes are subject to the **Windows Foreground Lock**:
-- Simply calling `SetForegroundWindow()` fails silently (returns `0`), causing only a taskbar flash.
-- Calling `ShowWindow(h, SW_RESTORE=9)` on a window that is already open (not minimized) can un-maximize a maximized window.
-- Searching windows by title (`"Obsidian"`) or class (`"Chrome_WidgetWin_1"`) alone is dangerous because IDEs (Antigravity/VS Code) or browser tabs researching Obsidian can match before `Obsidian.exe`.
-
-Therefore, the Windows focus logic in `src/litNote/litNoteServer.ts` MUST adhere to the following sequence:
-1. Attach to the interactive desktop (`winsta0\default` via `OpenDesktopW('Default', ...)` and `SetThreadDesktop`).
-2. Verify process identity: query the process image name via `QueryFullProcessImageNameW` to confirm the window belongs to `obsidian.exe` with class `Chrome_WidgetWin_1`.
-3. Check `IsIconic(h)`: if minimized, restore with `ShowWindow(h, SW_RESTORE=9)`. If already open, preserve maximized/restored geometry using `ShowWindow(h, SW_SHOW=5)`.
-4. Float to the top of the Z-order: toggle `SetWindowPos` with `HWND_TOPMOST` then `HWND_NOTOPMOST` (`SWP_NOMOVE | SWP_NOSIZE`).
-5. **Bypass Foreground Lock**: simulate an Alt-key event (`keybd_event(0x12, 0, 0, 0)` then `keybd_event(0x12, 0, KEYEVENTF_KEYUP=2, 0)`) immediately before calling `SetForegroundWindow()`. This resets the Windows foreground lock timeout.
-6. Verify foreground state (`GetForegroundWindow() == h`). If it does not match, exit with code 1 so the shell protocol URI fallback (`start "" "obsidian://open?vault=..."`) executes.
+The OS-level window raising and Windows Foreground Lock bypass logic is now owned and tested by `commons/os` (`raiseWindow`) and `commons/workspace` (`focusLeafAndWindow({ raiseWindow })`). It uses Electron's `@electron/remote` main-process `BrowserWindow.focus()` to restore minimized windows, raise the window hosting the target leaf, and bypass the Windows foreground lock across all operating systems without python shell-outs or external script dependencies.
 
 ### 2. Note Overwrite and Missing Note Tab Lifecycle
 - **Create collisions (`handleCreateBatch`)**: If a note already exists in the vault, before showing the overwrite decision modal, focus the existing note's tab (or open a tab for it if not open) via `openFile(..., { modifyText: false })`. The modal must open directly over the existing note so the user can see what already exists before deciding.

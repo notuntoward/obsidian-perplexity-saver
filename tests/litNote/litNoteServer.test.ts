@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
 	startLitNoteServer,
-	focusObsidianWindow,
+	raiseAndFocus,
 	positionCursorTwoLinesPastEnd,
 } from "../../src/litNote/litNoteServer";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
@@ -15,12 +15,7 @@ const createdNotices = (
 	}
 ).createdNotices;
 
-const mockExec = vi.fn((_cmd: string, cb?: any) => {
-	if (cb) cb(null, "", "");
-});
-vi.mock("child_process", () => ({
-	exec: (cmd: string, cb: any) => mockExec(cmd, cb),
-}));
+
 
 vi.mock("../../src/litNote/decisionModal", () => ({
 	askNoteDecision: vi.fn(),
@@ -496,106 +491,30 @@ describe("Lit Note Server", () => {
 			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: 3, ch: 0 });
 		});
 
-		it("focusObsidianWindow restores, shows, and focuses window when Electron remote is present", () => {
-			const mockWin = {
-				isMinimized: vi.fn(() => true),
-				restore: vi.fn(),
-				show: vi.fn(),
-				focus: vi.fn(),
-			};
-			(globalThis as any).__electronRemote = { getCurrentWindow: () => mockWin };
+		it("raiseAndFocus activates leaf and delegates to commons focusLeafAndWindow with raiseWindow", () => {
+			const mockLeaf = {
+				view: { containerEl: { ownerDocument: { defaultView: window } } },
+			} as any;
+			const mockApp = {
+				workspace: {
+					setActiveLeaf: vi.fn(),
+				},
+			} as any;
 
-			focusObsidianWindow();
-
-			expect(mockWin.isMinimized).toHaveBeenCalled();
-			expect(mockWin.restore).toHaveBeenCalled();
-			expect(mockWin.show).toHaveBeenCalled();
-			expect(mockWin.focus).toHaveBeenCalled();
-
-			delete (globalThis as any).__electronRemote;
+			raiseAndFocus(mockApp, mockLeaf);
+			expect(mockApp.workspace.setActiveLeaf).toHaveBeenCalledWith(mockLeaf, { focus: true });
 		});
 
-		it("focusObsidianWindow falls back to window.focus when Electron remote is not present", () => {
-			const mockWindowFocus = vi.fn();
-			(window as any).focus = mockWindowFocus;
+		it("raiseAndFocus does nothing when leaf is null or undefined", () => {
+			const mockApp = {
+				workspace: {
+					setActiveLeaf: vi.fn(),
+				},
+			} as any;
 
-			expect(() => focusObsidianWindow()).not.toThrow();
-			expect(mockWindowFocus).toHaveBeenCalled();
-		});
-
-		it("focusObsidianWindow on Windows executes targeted python script with Alt-key bypass and obsidian.exe validation", () => {
-			mockExec.mockClear();
-			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-			try {
-				focusObsidianWindow();
-				expect(mockExec).toHaveBeenCalled();
-				const cmd = mockExec.mock.calls[0][0];
-				expect(cmd).toContain("python -c");
-				const match = cmd.match(/b64decode\('([A-Za-z0-9+/=]+)'\)/);
-				expect(match).not.toBeNull();
-				const decodedScript = Buffer.from(match![1], "base64").toString("utf-8");
-				expect(decodedScript).toContain("obsidian.exe");
-				expect(decodedScript).toContain("keybd_event(0x12");
-				expect(decodedScript).toContain("BringWindowToTop");
-				expect(decodedScript).toContain("IsIconic");
-				expect(decodedScript).toContain("ShowWindow(obs_hwnd, 5)");
-			} finally {
-				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-			}
-		});
-
-		it("focusObsidianWindow on Windows falls back to obsidian protocol URI when python execution fails", () => {
-			mockExec.mockClear();
-			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
-				if (cb) cb(new Error("python failed"));
-			});
-			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-			try {
-				const mockApp = { vault: { getName: () => "TestVault" } } as any;
-				focusObsidianWindow(mockApp);
-				expect(mockExec).toHaveBeenCalledTimes(2);
-				expect(mockExec.mock.calls[1][0]).toContain('start "" "obsidian://open?vault=TestVault"');
-			} finally {
-				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-			}
-		});
-
-		it("focusObsidianWindow on macOS calls osascript and falls back to open URI", () => {
-			mockExec.mockClear();
-			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
-				if (cb) cb(new Error("osascript failed"));
-			});
-			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-			try {
-				const mockApp = { vault: { getName: () => "MacVault" } } as any;
-				focusObsidianWindow(mockApp);
-				expect(mockExec).toHaveBeenCalledTimes(2);
-				expect(mockExec.mock.calls[0][0]).toContain('tell application "Obsidian" to activate');
-				expect(mockExec.mock.calls[1][0]).toBe('open "obsidian://open?vault=MacVault"');
-			} finally {
-				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-			}
-		});
-
-		it("focusObsidianWindow on Linux calls wmctrl/xdotool and falls back to xdg-open URI", () => {
-			mockExec.mockClear();
-			mockExec.mockImplementationOnce((_cmd: string, cb?: any) => {
-				if (cb) cb(new Error("wmctrl failed"));
-			});
-			const originalPlatform = process.platform;
-			Object.defineProperty(process, "platform", { value: "linux", configurable: true });
-			try {
-				const mockApp = { vault: { getName: () => "LinuxVault" } } as any;
-				focusObsidianWindow(mockApp);
-				expect(mockExec).toHaveBeenCalledTimes(2);
-				expect(mockExec.mock.calls[0][0]).toContain('wmctrl -x -a "obsidian"');
-				expect(mockExec.mock.calls[1][0]).toBe('xdg-open "obsidian://open?vault=LinuxVault"');
-			} finally {
-				Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-			}
+			expect(() => raiseAndFocus(mockApp, null)).not.toThrow();
+			expect(() => raiseAndFocus(mockApp, undefined)).not.toThrow();
+			expect(mockApp.workspace.setActiveLeaf).not.toHaveBeenCalled();
 		});
 
 		it("waits for onLayoutReady when layoutReady is false before opening file", async () => {
@@ -752,26 +671,6 @@ describe("Lit Note Server", () => {
 				).toBe(true);
 			});
 
-			it("focusObsidianWindow restores minimized Electron window", () => {
-				const restore = vi.fn();
-				const focus = vi.fn();
-				const show = vi.fn();
-				(global as any).window = {
-					__electronRemote: {
-						getCurrentWindow: () => ({
-							isMinimized: () => true,
-							restore,
-							focus,
-							show,
-						}),
-					},
-				};
-
-				focusObsidianWindow();
-				expect(restore).toHaveBeenCalled();
-				expect(focus).toHaveBeenCalled();
-			});
-
 			it("does not show toast notice when user is prompted with an overwrite decision modal", async () => {
 				const { app } = makeApp([`${FOLDER}/existing.md`]);
 				await post(app, {
@@ -795,32 +694,6 @@ describe("Lit Note Server", () => {
 				expect(createdNotices).toHaveLength(0);
 			});
 
-			it("focusObsidianWindow triggers Win32 restore command, falling back to vault open URI", () => {
-				mockExec.mockClear();
-				const originalPlatform = process.platform;
-				Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-				try {
-					const { app } = makeApp();
-					focusObsidianWindow(app);
-
-					expect(mockExec).toHaveBeenCalledWith(
-						expect.stringContaining("python -c"),
-						expect.any(Function)
-					);
-
-					// Test fallback when python execution fails
-					const pyCallCb = mockExec.mock.calls[0][1];
-					if (pyCallCb) {
-						pyCallCb(new Error("python not found"));
-						expect(mockExec).toHaveBeenCalledWith(
-							expect.stringContaining("obsidian://open?vault=TestVault"),
-							expect.any(Function)
-						);
-					}
-				} finally {
-					Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
-				}
-			});
 		});
 
 		describe("validateAuthorNameFormat setting", () => {

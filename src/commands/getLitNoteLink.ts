@@ -1,3 +1,4 @@
+import { setTimeoutIn } from "commons/windows";
 import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, SearchResult, TFile, renderResults } from "obsidian";
 import { getLitNoteFiles } from "../litNote/litNoteFinder";
 import type { ZoteroClient } from "../zotero/zoteroClient";
@@ -215,7 +216,7 @@ export function registerGetLitNoteLinkCommand(plugin: {
 	plugin.addCommand({
 		id: "get-literature-note-link",
 		name: "Get literature note link",
-		editorCallback: (editor: Editor, _view: MarkdownView) => {
+		editorCallback: (editor: Editor, view: MarkdownView) => {
 			const files = getLitNoteFiles(plugin.app, plugin.settings.litNotesFolder);
 			if (files.length === 0) {
 				new Notice(`No literature notes found in '${plugin.settings.litNotesFolder}'.`);
@@ -243,7 +244,8 @@ export function registerGetLitNoteLinkCommand(plugin: {
 						}
 					);
 
-					window.setTimeout(() => level2Modal.open(), 50);
+					const win = view.containerEl.ownerDocument?.defaultView ?? window;
+					setTimeoutIn(win, () => level2Modal.open(), 50);
 				}
 			);
 
