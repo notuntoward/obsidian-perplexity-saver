@@ -40,13 +40,6 @@ Before declaring a task done, verify code health:
 - Unit tests: `npm run test:run` (Vitest). `obsidian` resolves to a mock in `tests/__mocks__/obsidian.ts`.
 - Browser tests: `npm run test:browser` (Playwright, requires `npx playwright install chromium`).
 
-## When building an Obsidian plugin inside a git worktree
-
-If the vault loads this plugin via a junction to the main checkout, a build
-inside a worktree is not automatically visible to Obsidian. Re-point the vault
-junction with the shared relink script, or finish tests in the worktree and
-build in the main checkout. See the global rule in `~/.config/kilo/AGENTS.md`.
-
 # Obsidian Plugin Development Rules
 
 ## System Prompt & Core Directive
@@ -234,4 +227,3 @@ Do not use it as a template for new format conversions.
 
 **Test fixtures in `tests/fixtures/litNote/`**: Deleted. They were old-format
 input samples for the migration tool and do not reflect current vault notes.
-
