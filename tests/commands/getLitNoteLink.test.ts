@@ -150,7 +150,7 @@ aliases:
 		expect(options[3].linkText).toBe("[[Chen24]]");
 	});
 
-	it("Level 1 modal displays note title and citekey", () => {
+	it("Level 1 modal searches titles and citekeys while preserving engagement order", () => {
 		const mockFile = Object.assign(Object.create(TFile.prototype), {
 			path: "lit/lit_notes/Chen24.md",
 			basename: "Chen24",
@@ -159,12 +159,24 @@ aliases:
 		const noteInfo = {
 			file: mockFile,
 			title: "Multi-type concept drift detection",
-			aliases: [],
+			aliases: ["Searchable alias"],
 			citekey: "Chen24",
 		};
+		const secondNote = {
+			...noteInfo,
+			file: Object.assign(Object.create(TFile.prototype), {
+				path: "lit/lit_notes/Other24.md",
+				basename: "Other24",
+			}),
+			title: "Other title",
+			citekey: "Other24",
+		};
 
-		const modal = new LitNoteSelectModal({} as any, [noteInfo], () => {});
-		expect(modal.getItemText(noteInfo)).toBe("Multi-type concept drift detection (Chen24)");
+		const modal = new LitNoteSelectModal({} as any, [noteInfo, secondNote], () => {});
+		expect(modal.getSuggestions("drift")[0].item).toBe(noteInfo);
+		expect(modal.getSuggestions("Chen")[0].item).toBe(noteInfo);
+		expect(modal.getSuggestions("Searchable")).toHaveLength(0);
+		expect(modal.getSuggestions("").map((result) => result.item)).toEqual([noteInfo, secondNote]);
 	});
 
 	it("Level 2 modal displays option displayText", () => {

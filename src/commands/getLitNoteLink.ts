@@ -1,5 +1,6 @@
 import { setTimeoutIn } from "commons/windows";
-import { App, Editor, FuzzyMatch, FuzzySuggestModal, MarkdownView, Notice, SearchResult, TFile, renderResults } from "obsidian";
+import { ItemSuggestModal } from "commons/modal";
+import { App, Editor, FuzzySuggestModal, MarkdownView, Notice, TFile } from "obsidian";
 import { getLitNoteFiles } from "../litNote/litNoteFinder";
 import type { ZoteroClient } from "../zotero/zoteroClient";
 import { sortByEngagement } from "../litNote/engagementSort";
@@ -22,58 +23,32 @@ export interface LinkOption {
 
 const MIN_HIGHLIGHT_RUN = 2;
 
-/** Drop single-character match ranges so scattered fuzzy hits don't speckle the row. */
-function pruneShortRuns(result: SearchResult): SearchResult {
-	const matches = result.matches.filter(([start, end]) => end - start >= MIN_HIGHLIGHT_RUN);
-	return matches.length > 0 ? { score: result.score, matches } : result;
-}
-
 /**
  * Level 1 Modal: Select a Literature Note from the vault folder.
  */
-export class LitNoteSelectModal extends FuzzySuggestModal<LitNoteInfo> {
+export class LitNoteSelectModal extends ItemSuggestModal<LitNoteInfo> {
 	constructor(
 		app: App,
-		private items: LitNoteInfo[],
-		private onSelectNote: (note: LitNoteInfo) => void
+		items: LitNoteInfo[],
+		onSelectNote: (note: LitNoteInfo) => void
 	) {
-		super(app);
-		this.setPlaceholder("Select a literature note...");
+		const rank = new Map(items.map((item, index) => [item, index]));
+		super(app, items, onSelectNote, {
+			placeholder: "Select a literature note...",
+			minHighlightRun: MIN_HIGHLIGHT_RUN,
+			getTitle: (item) => item.title || item.displayText || item.file.basename,
+			getSubtitle: (item) => item.title ? item.citekey || item.file.basename : undefined,
+			getAliases: () => [],
+			sort: (a, b) => (rank.get(a.item) ?? 0) - (rank.get(b.item) ?? 0),
+		});
 	}
 
-	getItems(): LitNoteInfo[] {
-		return this.items;
-	}
-
-	private keyOf(item: LitNoteInfo): string {
-		return item.citekey || item.file.basename;
-	}
-
-	getItemText(item: LitNoteInfo): string {
-		return item.displayText ?? (item.title ? `${item.title} (${this.keyOf(item)})` : item.file.basename);
-	}
-
-	renderSuggestion(match: FuzzyMatch<LitNoteInfo>, el: HTMLElement): void {
+	renderSuggestion(
+		match: Parameters<ItemSuggestModal<LitNoteInfo>["renderSuggestion"]>[0],
+		el: HTMLElement
+	): void {
 		el.addClass("litnote-suggestion");
-		const item = match.item;
-		const result = pruneShortRuns(match.match);
-		if (!item.title) {
-			renderResults(el.createDiv({ cls: "litnote-title" }), item.file.basename, result);
-			return;
-		}
-
-		renderResults(el.createDiv({ cls: "litnote-title" }), item.title, result);
-		// The + 2 accounts for the " (" between title and key in getItemText.
-		renderResults(
-			el.createDiv({ cls: "litnote-citekey" }),
-			this.keyOf(item),
-			result,
-			-(item.title.length + 2)
-		);
-	}
-
-	onChooseItem(item: LitNoteInfo, _evt: MouseEvent | KeyboardEvent): void {
-		this.onSelectNote(item);
+		super.renderSuggestion(match, el);
 	}
 }
 

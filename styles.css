@@ -117,7 +117,13 @@
 	gap: 2px;
 }
 
-.litnote-suggestion .litnote-title {
+.litnote-suggestion .suggestion-content {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.litnote-suggestion .suggestion-title {
 	color: var(--text-normal);
 	display: -webkit-box;
 	-webkit-line-clamp: 2;
@@ -125,7 +131,7 @@
 	overflow: hidden;
 }
 
-.litnote-suggestion .litnote-citekey {
+.litnote-suggestion .suggestion-note {
 	font-family: var(--font-monospace);
 	font-size: var(--font-ui-smaller);
 	color: var(--text-muted);
