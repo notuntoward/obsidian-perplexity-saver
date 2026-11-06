@@ -29,6 +29,7 @@ import {
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { askNoteDecision, type NoteDecision } from "./decisionModal";
+import { normalizeTranscriptHeading } from "./transcriptSection";
 import type {
 	LitNoteItemResult,
 	LitNoteItemStatus,
@@ -39,6 +40,7 @@ import type {
 } from "./types";
 
 import type { NameStyle } from "./bibtexName";
+import type { TranscriptFormat } from "./youtubeTranscript";
 
 export interface LitNoteServerSettings {
 	litNotesFolder: string; // vault-relative path, e.g. "lit/lit_notes"
@@ -46,6 +48,10 @@ export interface LitNoteServerSettings {
 	authorFormatStyle?: NameStyle;
 	authorDropVon?: boolean;
 	downloadYoutubeTranscripts?: boolean;
+	/** Text of the heading the YouTube transcript is stored under. */
+	transcriptHeading?: string;
+	/** Per-cue (lossless) or 5-cue block transcript lines. */
+	transcriptFormat?: TranscriptFormat;
 }
 
 // ---------------------------------------------------------------------------
@@ -232,7 +238,7 @@ async function handleCreateBatch(
 		for (const e of existingEntries) {
 			const file = existingFile(app, settings, e.citekey);
 			if (file) {
-				await openFile(app, file, null, { modifyText: false });
+				await openFile(app, file, null, { modifyText: false, transcriptHeading: settings.transcriptHeading });
 			}
 		}
 
@@ -335,16 +341,16 @@ async function handleCreateBatch(
 					continue;
 				}
 				if (decision === "open-existing") {
-					await openFile(app, existing);
+					await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading });
 					results.push({ citekey: entry.citekey, status: "opened" });
 					continue;
 				}
 				await writeNote(app, settings, entry.item, existing);
-				await openFile(app, existing);
+				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading });
 				results.push({ citekey: entry.citekey, status: "overwritten" });
 			} else {
 				const created = await writeNote(app, settings, entry.item, null);
-				await openFile(app, created);
+				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading });
 				results.push({ citekey: entry.citekey, status: "created" });
 			}
 		} catch (err: unknown) {
@@ -364,7 +370,11 @@ async function handleCreateBatch(
 // Handler: open / focus lit notes
 // ---------------------------------------------------------------------------
 
-export function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): number {
+export function positionCursorTwoLinesPastEnd(
+	editor: any,
+	modifyText = true,
+	transcriptHeading?: string
+): number {
 	if (!editor) return 0;
 	if (typeof editor.getValue !== "function") {
 		if (typeof editor.setCursor === "function") {
@@ -373,13 +383,14 @@ export function positionCursorTwoLinesPastEnd(editor: any, modifyText = true): n
 		return 99999;
 	}
 
-	// If the note has a # Transcript heading (e.g. from YouTube transcript download),
-	// place the cursor on the blank line directly above # Transcript.
+	// If the note has a transcript heading (e.g. from YouTube transcript download),
+	// place the cursor on the blank line directly above it.
+	const headingLine = `# ${normalizeTranscriptHeading(transcriptHeading)}`;
 	const totalLines = typeof editor.lineCount === "function" ? editor.lineCount() : 0;
 	let transcriptLineIdx = -1;
 	for (let i = 0; i < totalLines; i++) {
 		const line = typeof editor.getLine === "function" ? editor.getLine(i) : "";
-		if (line.trim() === "# Transcript" || line.startsWith("# Transcript")) {
+		if (line.startsWith(headingLine)) {
 			transcriptLineIdx = i;
 			break;
 		}
@@ -436,7 +447,7 @@ async function openFile(
 	app: App,
 	file: TFile,
 	preferredLeaf?: WorkspaceLeaf | null,
-	options?: { modifyText?: boolean }
+	options?: { modifyText?: boolean; transcriptHeading?: string }
 ): Promise<void> {
 	await openFileInLeaf(app, file, {
 		preferredLeaf,
@@ -448,7 +459,11 @@ async function openFile(
 		onReady: (leaf, editor) => {
 			if (editor) {
 				editor.focus?.();
-				const targetLine = positionCursorTwoLinesPastEnd(editor, options?.modifyText ?? true);
+				const targetLine = positionCursorTwoLinesPastEnd(
+					editor,
+					options?.modifyText ?? true,
+					options?.transcriptHeading
+				);
 				if (typeof leaf.setEphemeralState === "function") {
 					leaf.setEphemeralState({
 						cursor: {
@@ -535,7 +550,7 @@ async function handleOpenBatch(
 			continue;
 		}
 		try {
-			await openFile(app, file);
+			await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading });
 			results.push({ citekey: entry.citekey, status: "opened" });
 		} catch (err: unknown) {
 			results.push({
@@ -672,9 +687,9 @@ async function handleOpenBatch(
 						const file = await writeNote(app, settings, entry.item!, null);
 						if (i === 0 && blankLeaf) {
 							blankLeafConsumed = true;
-							await openFile(app, file, blankLeaf);
+							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading });
 						} else {
-							await openFile(app, file);
+							await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading });
 						}
 						results.push({ citekey: entry.citekey, status: "created" });
 					} catch (err: unknown) {

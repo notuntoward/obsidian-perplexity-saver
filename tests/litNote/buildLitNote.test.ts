@@ -290,5 +290,25 @@ describe("Lit Note Builder", () => {
 
 			expect(body).toContain("\n\n\n# Transcript\n\n" + sampleTranscript);
 		});
+
+		it("uses the configured transcript heading", () => {
+			const item: ZoteroItemPayload = {
+				title: "YouTube Video",
+				citekey: "video2025",
+				url: "https://youtu.be/dQw4w9WgXcQ",
+			};
+			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
+			const sampleTranscript = "[00:00](https://youtu.be/dQw4w9WgXcQ?t=0) Hello world";
+
+			const body = buildLitNoteBody(
+				mockApp,
+				{ litNotesFolder: "", transcriptHeading: "## Video captions " },
+				item,
+				sampleTranscript
+			);
+
+			expect(body).toContain("\n\n\n# Video captions\n\n" + sampleTranscript);
+			expect(body).not.toContain("# Transcript");
+		});
 	});
 });

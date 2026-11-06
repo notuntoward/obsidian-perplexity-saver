@@ -189,12 +189,18 @@ describe("youtubeTranscript", () => {
 				return Promise.reject(new Error("Unknown URL"));
 			});
 
-			const result = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+			const result = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+			expect(result).toBe(
+				"[00:00.000 → 00:02.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello\n" +
+					"[00:02.000 → 00:04.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World"
+			);
+
+			const blocks = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+				format: "blocks",
 				timestampMod: 1,
 			});
-			expect(result).not.toBeNull();
-			expect(result).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello");
-			expect(result).toContain("[00:02](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World");
+			expect(blocks).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello");
+			expect(blocks).toContain("[00:02](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World");
 		});
 
 		it("returns null when video has no captions", async () => {

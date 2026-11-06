@@ -34,6 +34,9 @@ import { deduplicateDialogCitations } from "./normalize/turns";
 import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
 import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
+import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
+import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
+import { TRANSCRIPT_VIEW_TYPE, TranscriptView, showTranscriptPanel } from "./litNote/transcriptView";
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn } from "commons/windows";
 
@@ -107,9 +110,19 @@ export interface PerplexitySaverSettings {
 	authorDropVon: boolean;
 	/**
 	 * When enabled, automatically downloads the timestamped transcript and inserts it
-	 * under a '# Transcript' heading when creating literature notes from YouTube video references.
+	 * under the transcript heading when creating literature notes from YouTube video references.
 	 */
 	downloadYoutubeTranscripts: boolean;
+	/**
+	 * Text of the level-1 heading that downloaded YouTube transcripts are stored
+	 * under, and that the transcript side panel reads from.
+	 */
+	transcriptHeading: string;
+	/**
+	 * "cues": one line per caption cue with millisecond start and end times (lossless).
+	 * "blocks": one line per 5 cues with a whole-second start time only.
+	 */
+	transcriptFormat: TranscriptFormat;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -131,6 +144,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	authorFormatStyle: "last-first" as NameStyle,
 	authorDropVon: false,
 	downloadYoutubeTranscripts: true,
+	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
+	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
 };
 
 interface InlineInputData {
@@ -190,8 +205,27 @@ export default class PerplexitySaverPlugin extends Plugin {
 			authorFormatStyle: this.settings.authorFormatStyle,
 			authorDropVon: this.settings.authorDropVon,
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
+			transcriptHeading: this.settings.transcriptHeading,
+			transcriptFormat: this.settings.transcriptFormat,
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
+
+		this.registerView(
+			TRANSCRIPT_VIEW_TYPE,
+			(leaf) => new TranscriptView(leaf, () => this.settings.transcriptHeading)
+		);
+		this.addCommand({
+			id: "show-youtube-transcript",
+			name: "Show YouTube transcript in side panel",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) {
+					void showTranscriptPanel(this.app, file, this.settings.transcriptHeading);
+				}
+				return true;
+			},
+		});
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -237,6 +271,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.settings.litNoteLastViewed = this.viewTracker.toRecord();
 		void this.saveSettings();
 	}, 5000, true);
+
+	/** Propagate a changed transcript heading to note creation and open transcript panels. */
+	applyTranscriptHeading(): void {
+		if (this.litNoteServerSettings) {
+			this.litNoteServerSettings.transcriptHeading = this.settings.transcriptHeading;
+		}
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (leaf.view instanceof TranscriptView) void leaf.view.reload();
+		}
+	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
 		const activeFile = view.file;
@@ -615,6 +659,14 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				this.plugin.litNoteServerSettings.downloadYoutubeTranscripts = Boolean(value);
 			}
 		}
+		if (key === "transcriptHeading") {
+			this.plugin.applyTranscriptHeading();
+		}
+		if (key === "transcriptFormat") {
+			if (this.plugin.litNoteServerSettings) {
+				this.plugin.litNoteServerSettings.transcriptFormat = value as TranscriptFormat;
+			}
+		}
 		await this.plugin.saveSettings();
 		this.refreshDomState();
 	}
@@ -814,10 +866,31 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Download YouTube transcripts",
-						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under a '# transcript' heading when creating literature notes from YouTube video references.",
+						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under the transcript heading when creating literature notes from YouTube video references.",
 						control: {
 							type: "toggle",
 							key: "downloadYoutubeTranscripts",
+						},
+					},
+					{
+						name: "Transcript heading",
+						desc: "Text of the heading that YouTube transcripts are stored under in literature notes, and that the transcript side panel reads. Leading '#' characters are ignored. Notes that still use the default 'Transcript' heading are also found.",
+						control: {
+							type: "text",
+							key: "transcriptHeading",
+							placeholder: DEFAULT_TRANSCRIPT_HEADING,
+						},
+					},
+					{
+						name: "Transcript detail",
+						desc: "How downloaded YouTube transcripts are written. Every caption keeps each caption with its exact start and end time (lossless; gives the best paragraph formatting in the transcript panel). 5-caption blocks are shorter but keep only a whole-second start time per block of 5 captions.",
+						control: {
+							type: "dropdown",
+							key: "transcriptFormat",
+							options: {
+								cues: "Every caption, start and end times (default)",
+								blocks: "5-caption blocks, start time only",
+							},
 						},
 					},
 				],
@@ -1147,7 +1220,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Download YouTube transcripts")
 			.setDesc(
-				"When enabled, automatically downloads the timestamped transcript and inserts it under a '# transcript' heading when creating literature notes from YouTube video references."
+				"When enabled, automatically downloads the timestamped transcript and inserts it under the transcript heading when creating literature notes from YouTube video references."
 			)
 			.addToggle((toggle) => {
 				toggle
@@ -1156,6 +1229,41 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						this.plugin.settings.downloadYoutubeTranscripts = value;
 						if (this.plugin.litNoteServerSettings) {
 							this.plugin.litNoteServerSettings.downloadYoutubeTranscripts = value;
+						}
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName("Transcript heading")
+			.setDesc(
+				"Text of the heading that YouTube transcripts are stored under in literature notes, and that the transcript side panel reads. Leading '#' characters are ignored."
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_TRANSCRIPT_HEADING)
+					.setValue(this.plugin.settings.transcriptHeading)
+					.onChange(async (value) => {
+						this.plugin.settings.transcriptHeading = value;
+						this.plugin.applyTranscriptHeading();
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Transcript detail")
+			.setDesc(
+				"How downloaded YouTube transcripts are written. Every caption keeps each caption with its exact start and end time (lossless). 5-caption blocks are shorter but keep only a whole-second start time per block."
+			)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOption("cues", "Every caption, start and end times (default)")
+					.addOption("blocks", "5-caption blocks, start time only")
+					.setValue(this.plugin.settings.transcriptFormat)
+					.onChange(async (value) => {
+						this.plugin.settings.transcriptFormat = value as TranscriptFormat;
+						if (this.plugin.litNoteServerSettings) {
+							this.plugin.litNoteServerSettings.transcriptFormat = value as TranscriptFormat;
 						}
 						await this.plugin.saveSettings();
 					});

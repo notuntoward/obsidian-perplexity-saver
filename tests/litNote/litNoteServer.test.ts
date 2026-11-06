@@ -929,5 +929,20 @@ describe("Lit Note Server", () => {
 			expect(targetLine).toBe(lines.length - 1);
 			expect(mockEditor.setCursor).toHaveBeenCalledWith({ line: lines.length - 1, ch: 0 });
 		});
+
+		it("positions cursor above the configured transcript heading", () => {
+			const lines = ["> [!info]- links", "", "", "# Captions", "", "[00:00](u) Hello", "# Transcript"];
+			const mockEditor = {
+				getValue: () => lines.join("\n"),
+				lineCount: () => lines.length,
+				getLine: (i: number) => lines[i] ?? "",
+				setCursor: vi.fn(),
+				scrollIntoView: vi.fn(),
+				replaceRange: vi.fn(),
+			};
+
+			expect(positionCursorTwoLinesPastEnd(mockEditor, true, "Captions")).toBe(2);
+			expect(mockEditor.replaceRange).not.toHaveBeenCalled();
+		});
 	});
 });

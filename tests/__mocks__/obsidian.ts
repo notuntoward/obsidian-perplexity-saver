@@ -189,6 +189,23 @@ export class Component {
 	onunload(): void {}
 }
 
+export class ItemView extends Component {
+	leaf: any;
+	app: any;
+	contentEl: any;
+
+	constructor(leaf: any) {
+		super();
+		this.leaf = leaf;
+		this.app = leaf?.app;
+	}
+	registerEvent(_event: any): void {}
+	async setState(_state: unknown, _result: unknown): Promise<void> {}
+	getState(): Record<string, unknown> {
+		return {};
+	}
+}
+
 export class TFile {
 	path: string;
 	parent: { path: string } | null;

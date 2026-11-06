@@ -149,3 +149,68 @@
 
 
 
+
+/* YouTube transcript side panel */
+.perplexity-saver-transcript-header {
+	display: flex;
+	flex-direction: column;
+	gap: var(--size-4-2);
+	padding-bottom: var(--size-4-2);
+	margin-bottom: var(--size-4-2);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.perplexity-saver-transcript-title {
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	cursor: pointer;
+}
+
+.perplexity-saver-transcript-controls {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+}
+
+.perplexity-saver-transcript-count,
+.perplexity-saver-transcript-empty {
+	color: var(--text-muted);
+	font-size: var(--font-ui-smaller);
+}
+
+.perplexity-saver-transcript-row {
+	display: flex;
+	gap: var(--size-4-2);
+	padding: var(--size-2-1) 0;
+	user-select: text;
+}
+
+.perplexity-saver-transcript-list.is-paragraphs .perplexity-saver-transcript-row {
+	padding: var(--size-4-1) 0 var(--size-4-2);
+}
+
+.perplexity-saver-transcript-time {
+	flex: none;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	line-height: var(--line-height-normal);
+	padding-top: 0.15em;
+	color: var(--text-muted);
+	text-decoration: none;
+	user-select: none;
+}
+
+.perplexity-saver-transcript-time:hover {
+	color: var(--text-accent);
+}
+
+/* Hide the external-link arrow icon next to timestamps. */
+.perplexity-saver-transcript-time.external-link {
+	background-image: none;
+	padding-right: 0;
+}
+
+.perplexity-saver-transcript-text {
+	line-height: var(--line-height-normal);
+}

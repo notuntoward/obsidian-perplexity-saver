@@ -295,6 +295,54 @@ export function formatTranscript(
 		.join("\n");
 }
 
+/**
+ * How a downloaded transcript is written into the note:
+ * - "cues": one line per caption cue with millisecond start and end times (lossless).
+ * - "blocks": one line per `timestampMod` cues with only a whole-second start time.
+ */
+export type TranscriptFormat = "cues" | "blocks";
+
+export const DEFAULT_TRANSCRIPT_FORMAT: TranscriptFormat = "cues";
+
+/** Separator between the start and end time of a stored cue. */
+export const CUE_TIME_SEPARATOR = " → ";
+
+/** Format milliseconds as `[h:]mm:ss.mmm`. */
+export function formatPreciseTimestamp(offsetMs: number): string {
+	const ms = Math.max(0, Math.round(offsetMs));
+	const millis = `${ms % 1000}`.padStart(3, "0");
+	return `${formatTimestamp(ms - (ms % 1000))}.${millis}`;
+}
+
+// Characters that Obsidian could read as markup inside a line of caption text
+// (links, emphasis, code, tags, comments, highlights, math, block ids, HTML).
+const CUE_TEXT_MARKUP = /[\\`*_[\]<#|$~=%^]/g;
+
+/** Backslash-escape caption text so the stored line renders as plain text. */
+export function escapeCueText(text: string): string {
+	return text.replace(CUE_TEXT_MARKUP, "\\$&");
+}
+
+/** Reverse `escapeCueText`. */
+export function unescapeCueText(text: string): string {
+	return text.replace(/\\([\\`*_[\]<#|$~=%^])/g, "$1");
+}
+
+/**
+ * Format every caption cue as its own line, keeping exact start and end times:
+ *   [mm:ss.mmm → mm:ss.mmm](url&t=SECONDS) caption text
+ */
+export function formatTranscriptCues(lines: TranscriptLine[], url: string): string {
+	return lines
+		.map(({ text, offset, duration }) => {
+			const start = formatPreciseTimestamp(offset);
+			const end = formatPreciseTimestamp(offset + duration);
+			const href = url ? buildTimestampUrl(url, offset) : "#";
+			return `[${start}${CUE_TIME_SEPARATOR}${end}](${href}) ${escapeCueText(text.trim())}`;
+		})
+		.join("\n");
+}
+
 function findCaptionTrack(captionTracks: any[], langCode = "en"): any {
 	let track = captionTracks.find((t: any) => t.languageCode === langCode);
 	if (track) return track;
@@ -318,7 +366,7 @@ function findCaptionTrack(captionTracks: any[], langCode = "en"): any {
  */
 export async function downloadYouTubeTranscript(
 	url: string,
-	options: { lang?: string; country?: string; timestampMod?: number } = {}
+	options: { lang?: string; country?: string; timestampMod?: number; format?: TranscriptFormat } = {}
 ): Promise<string | null> {
 	const videoId = extractYouTubeVideoId(url);
 	if (!videoId) return null;
@@ -390,5 +438,8 @@ export async function downloadYouTubeTranscript(
 		return null;
 	}
 
+	if ((options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues") {
+		return formatTranscriptCues(lines, url);
+	}
 	return formatTranscript(lines, url, options.timestampMod ?? 5);
 }

@@ -321,7 +321,9 @@ describe("writeLitNote", () => {
 		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true }, ytItem, null);
 
 		expect(createdContent).toContain("# Transcript");
-		expect(createdContent).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Intro to Physics");
+		expect(createdContent).toContain(
+			"[00:00.000 → 00:02.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Intro to Physics"
+		);
 	});
 
 	it("does not download YouTube transcript when downloadYoutubeTranscripts is false", async () => {

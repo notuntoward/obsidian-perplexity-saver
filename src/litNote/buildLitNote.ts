@@ -16,6 +16,7 @@
 import { htmlToMarkdown, App } from "obsidian";
 import type { ZoteroAttachment, ZoteroItemPayload } from "./types";
 import { findLitNoteForCitekey } from "../zotero/matcher";
+import { normalizeTranscriptHeading } from "./transcriptSection";
 
 
 // ---------------------------------------------------------------------------
@@ -299,7 +300,7 @@ export function zoteroHtmlToMd(
  */
 export function buildLitNoteBody(
 	app: App,
-	settings: { litNotesFolder?: string },
+	settings: { litNotesFolder?: string; transcriptHeading?: string },
 	item: ZoteroItemPayload,
 	transcript?: string
 ): string {
@@ -347,7 +348,7 @@ export function buildLitNoteBody(
 
 	if (transcript && transcript.trim()) {
 		lines.push("", "");
-		lines.push("# Transcript", "");
+		lines.push(`# ${normalizeTranscriptHeading(settings.transcriptHeading)}`, "");
 		lines.push(transcript.trim());
 	}
 
