@@ -1223,7 +1223,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Search keyboard behavior",
-						desc: "Emacs: Enter accepts; Escape cancels. Obsidian: Enter next; Shift+Enter previous; Escape accepts. Tab accepts and restores all lines without playing. Ctrl/Cmd+G cancels; Ctrl/Cmd+Enter plays.",
+						desc: "Emacs: Incremental Search's Forward Emacs / Reverse Emacs commands navigate using their assigned hotkeys; Enter accepts and Escape cancels. Obsidian: Enter next; Shift+Enter previous; Escape accepts. Tab accepts without playing; Ctrl/Cmd+G cancels; Ctrl/Cmd+Enter plays.",
 						control: {
 							type: "dropdown",
 							key: "transcriptSearchBehavior",

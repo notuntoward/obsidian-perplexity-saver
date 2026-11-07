@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
+import { dispatchSearchNavigation } from "commons/search";
 import { TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
@@ -57,6 +58,10 @@ async function panel(doc = document): Promise<TranscriptView> {
 			getFileCache: () => ({ headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
 		},
 		workspace: { requestSaveLayout: vi.fn() },
+		hotkeyManager: {
+			printHotkeyForCommand: (id: string) => id === "incremental-search:forward" ? "Ctrl + S"
+				: id === "incremental-search:backward" ? "Ctrl + R" : "",
+		},
 	} as unknown as App;
 	const view = new TranscriptView({ app } as unknown as WorkspaceLeaf, {
 		getHeadingName: () => "Transcript",
@@ -86,6 +91,107 @@ function rows(view: TranscriptView): HTMLElement[] {
 }
 
 describe("accepting transcript search", () => {
+	it.each(["emacs", "obsidian"] as const)("advances with the shared commands without exiting or playing (%s)", async (keyboard) => {
+		settings.keyboard = keyboard;
+		const view = await panel();
+		const input = search(view);
+		expect(dispatchSearchNavigation(input, "forward", true)).toBe(true);
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+		expect(dispatchSearchNavigation(input, "forward", false)).toBe(true);
+		expect(rows(view)[3].classList.contains("is-search-current")).toBe(true);
+		expect(dispatchSearchNavigation(input, "backward", false)).toBe(true);
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+		expect(input.value).toBe("target");
+		expect(document.activeElement).toBe(input);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("shows the existing command bindings in Emacs navigation hints", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		const input = search(view);
+		const hints = view.contentEl.querySelector(".is-search")!;
+		expect(hints.textContent).toContain("Ctrl + S next match");
+		expect(hints.textContent).toContain("Ctrl + R previous");
+		expect(hints.textContent).not.toContain("F3");
+		key(input, "s", { ctrlKey: true });
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+	});
+
+	it("uses native shortcut dispatch exactly once and follows rebinding without a second keymap", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		const input = search(view);
+		let forwardKey = "s";
+		const nativeCommandDispatcher = (event: KeyboardEvent): void => {
+			const direction = event.ctrlKey && event.key === forwardKey ? "forward"
+				: event.ctrlKey && event.key === "r" ? "backward" : null;
+			if (direction && dispatchSearchNavigation(event.target as Element, direction, false)) {
+				event.preventDefault();
+				event.stopPropagation();
+			}
+		};
+		input.ownerDocument.addEventListener("keydown", nativeCommandDispatcher, true);
+		try {
+			key(input, "s", { ctrlKey: true });
+			expect(view.contentEl.querySelector(".perplexity-saver-transcript-matches")?.textContent).toBe("2/2");
+			key(input, "r", { ctrlKey: true });
+			expect(view.contentEl.querySelector(".perplexity-saver-transcript-matches")?.textContent).toBe("1/2");
+			forwardKey = "n";
+			key(input, "s", { ctrlKey: true });
+			expect(view.contentEl.querySelector(".perplexity-saver-transcript-matches")?.textContent).toBe("1/2");
+			key(input, "n", { ctrlKey: true });
+			expect(view.contentEl.querySelector(".perplexity-saver-transcript-matches")?.textContent).toBe("2/2");
+			expect(document.activeElement).toBe(input);
+			expect(input.value).toBe("target");
+			expect(play).not.toHaveBeenCalled();
+		} finally {
+			input.ownerDocument.removeEventListener("keydown", nativeCommandDispatcher, true);
+		}
+	});
+
+	it("refreshes rebound and unassigned navigation hints on focus", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		search(view);
+		Object.assign(view.app, { hotkeyManager: { printHotkeyForCommand: () => "Alt + N" } });
+		rows(view)[0].focus();
+		view.focusSearch();
+		expect(view.contentEl.querySelector(".is-search")?.textContent).toContain("Alt + N next match");
+		expect(view.contentEl.querySelector('button[aria-label="Next match (Alt + N)"]')).not.toBeNull();
+		Object.assign(view.app, { hotkeyManager: { printHotkeyForCommand: () => "" } });
+		rows(view)[0].focus();
+		view.focusSearch();
+		expect(view.contentEl.querySelector(".is-search")?.textContent).toContain("Unassigned next match");
+		expect(view.contentEl.querySelector(".is-search .is-disabled")).not.toBeNull();
+	});
+
+	it("removes command receivers on rerender and close", async () => {
+		const view = await panel();
+		const old = search(view);
+		view.refreshSearchSettings();
+		expect(dispatchSearchNavigation(old, "forward", false)).toBe(false);
+		const input = search(view);
+		expect(dispatchSearchNavigation(input, "forward", false)).toBe(true);
+		await view.onClose();
+		expect(dispatchSearchNavigation(input, "forward", false)).toBe(false);
+	});
+
+	it("routes shared navigation in a pop-out and stops claiming after acceptance", async () => {
+		const doc = document.implementation.createHTMLDocument();
+		let active: Element | null = null;
+		Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		for (const el of [view.contentEl.querySelector("input")!, ...rows(view)]) el.focus = () => { active = el; };
+		const input = search(view);
+		expect(dispatchSearchNavigation(active, "forward", false)).toBe(true);
+		expect(rows(view)[3].classList.contains("is-search-current")).toBe(true);
+		key(input, "Tab");
+		expect(dispatchSearchNavigation(active, "forward", false)).toBe(false);
+		expect(active).toBe(rows(view)[3]);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each(["Tab", "Escape"])("%s accepts without playback and restores adjacent nonmatches", async (acceptKey) => {
 		const view = await panel();
 		const input = search(view);

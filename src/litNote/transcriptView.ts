@@ -1,10 +1,11 @@
 import { ItemView, Notice, Scope, SearchComponent, TFile, setIcon } from "obsidian";
 import type { App, ViewStateResult, WorkspaceLeaf } from "obsidian";
-import { renderHighlightedText, renderKeyHints, type KeyHint } from "commons/modal";
+import { getCommandHotkeyLabel, renderHighlightedText, renderKeyHints, type KeyHint } from "commons/modal";
 import { writeClipboardIn } from "commons/windows";
 import {
 	findLiteralRanges,
 	matchAllWords,
+	onSearchNavigation,
 	searchExitAction,
 	shouldShowAllMatches,
 	type AllMatchesDisplayMode,
@@ -133,10 +134,18 @@ export function stepRow(visible: number[], current: number, delta: 1 | -1, onScr
 	return visible[Math.min(visible.length - 1, Math.max(0, pos + delta))];
 }
 
-function searchHints(behavior: SearchExitBehavior): KeyHint[][] {
+function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
+	const navigation = (["forward", "backward"] as const).map((direction): KeyHint => {
+		const key = getCommandHotkeyLabel(app, `incremental-search:${direction}`);
+		return {
+			key: key || "Unassigned",
+			action: direction === "forward" ? "next match" : "previous",
+			disabled: !key,
+		};
+	});
 	return [
 		behavior === "emacs"
-			? [{ key: "Enter", action: "accept match" }, { key: "Esc", action: "cancel" }]
+			? [...navigation, { key: "Enter", action: "accept match" }, { key: "Esc", action: "cancel" }]
 			: [{ key: "Enter", action: "next match" }, { key: "Shift+Enter", action: "previous" }, { key: "Esc", action: "accept match" }],
 		[
 			{ key: "Tab", action: "accept & browse" },
@@ -188,6 +197,10 @@ export class TranscriptView extends ItemView {
 	private highlightBtn: HTMLElement | null = null;
 	private demandHighlights = false;
 	private searchOrigin: { row: number; scrollTop: number } | null = null;
+	private searchNavigationCleanup: (() => void) | null = null;
+	private searchHintsEl: HTMLElement | null = null;
+	private previousMatchBtn: HTMLElement | null = null;
+	private nextMatchBtn: HTMLElement | null = null;
 	/** Show only the rows matching the search. */
 	private filter = false;
 	/** The keydown already handled by the search box or list, so the view scope does not handle it twice. */
@@ -370,6 +383,11 @@ export class TranscriptView extends ItemView {
 		const input = this.search?.inputEl;
 		const searchFocused = !!input && input.ownerDocument.activeElement === input;
 		const rowHadFocus = this.focusedRowIndex() >= 0;
+		this.searchNavigationCleanup?.();
+		this.searchNavigationCleanup = null;
+		this.searchHintsEl = null;
+		this.previousMatchBtn = null;
+		this.nextMatchBtn = null;
 		el.empty();
 		el.addClass("perplexity-saver-transcript-view");
 		this.rendered = [];
@@ -427,7 +445,8 @@ export class TranscriptView extends ItemView {
 		});
 		this.buildSearch(header);
 		const hints = header.createDiv({ cls: "perplexity-saver-transcript-hints" });
-		renderKeyHints(hints.createDiv({ cls: "is-search" }), searchHints(this.host.getSearchSettings().keyboard), "perplexity-saver");
+		this.searchHintsEl = hints.createDiv({ cls: "is-search" });
+		this.updateSearchHints();
 		renderKeyHints(hints.createDiv({ cls: "is-rows" }), ROW_HINTS, "perplexity-saver");
 
 		const list = el.createDiv({
@@ -485,7 +504,17 @@ export class TranscriptView extends ItemView {
 				: "Search the transcript. Enter: next match, Shift+Enter: previous, Escape or Tab: accept and browse, Ctrl+G: cancel, Ctrl+Enter: play."
 		);
 		search.inputEl.setAttribute("aria-keyshortcuts", "Enter Shift+Enter Control+Enter Meta+Enter Tab Escape Control+g Meta+g F3 Shift+F3");
-		search.inputEl.addEventListener("focus", () => this.rememberSearchOrigin());
+		search.inputEl.addEventListener("focus", () => {
+			this.rememberSearchOrigin();
+			this.updateSearchHints();
+		});
+		this.searchNavigationCleanup = onSearchNavigation(search.inputEl, (direction, checking) => {
+			if (!checking) {
+				this.stepMatch(direction === "forward" ? 1 : -1);
+				this.updateSearchHints();
+			}
+			return true;
+		});
 		search.onChange((value) => {
 			this.query = value;
 			this.applySearch(true);
@@ -508,8 +537,9 @@ export class TranscriptView extends ItemView {
 		});
 		this.search = search;
 		this.matchCountEl = bar.createSpan({ cls: "perplexity-saver-transcript-matches" });
-		this.iconButton(bar, "chevron-up", behavior === "obsidian" ? "Previous match (Shift+Enter)" : "Previous match (Shift+F3)", () => this.stepMatch(-1));
-		this.iconButton(bar, "chevron-down", behavior === "obsidian" ? "Next match (Enter)" : "Next match (F3)", () => this.stepMatch(1));
+		this.previousMatchBtn = this.iconButton(bar, "chevron-up", "Previous match", () => this.stepMatch(-1));
+		this.nextMatchBtn = this.iconButton(bar, "chevron-down", "Next match", () => this.stepMatch(1));
+		this.updateSearchHints();
 		this.iconButton(bar, "check", "Accept match and browse transcript (Tab)", () => this.finishSearch(true));
 		this.iconButton(bar, "play", "Play the video from this match (Ctrl+Enter)", () => this.playMatch());
 		if (this.host.getSearchSettings().highlights === "on-demand") {
@@ -530,6 +560,23 @@ export class TranscriptView extends ItemView {
 		setIcon(btn, icon);
 		btn.addEventListener("click", onClick);
 		return btn;
+	}
+
+	private updateSearchHints(): void {
+		const behavior = this.host.getSearchSettings().keyboard;
+		const hints = searchHints(behavior, this.app);
+		if (this.searchHintsEl) {
+			renderKeyHints(this.searchHintsEl, hints, "perplexity-saver");
+		}
+		const next = behavior === "obsidian" ? "Enter" : hints[0][0].key;
+		const previous = behavior === "obsidian" ? "Shift+Enter" : hints[0][1].key;
+		this.nextMatchBtn?.setAttribute("aria-label", `Next match (${next})`);
+		this.previousMatchBtn?.setAttribute("aria-label", `Previous match (${previous})`);
+	}
+
+	async onClose(): Promise<void> {
+		this.searchNavigationCleanup?.();
+		this.searchNavigationCleanup = null;
 	}
 
 	/** Hide the rows that do not match while the filter is on and there is a query. */
