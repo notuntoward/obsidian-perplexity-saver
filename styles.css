@@ -237,12 +237,8 @@
 	color: var(--text-normal);
 }
 
-/* The keyboard-focused transcript line. */
+/* The focused transcript line. */
 .perplexity-saver-transcript-row:focus {
-	outline: none;
-}
-
-.perplexity-saver-transcript-row:focus-visible {
 	outline: 2px solid var(--background-modifier-border-focus);
 	outline-offset: -2px;
 	border-radius: var(--radius-s);

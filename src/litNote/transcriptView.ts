@@ -177,7 +177,7 @@ function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 
 const ROW_HINTS: KeyHint[][] = [
 	[
-		{ key: "↑↓", action: "move" },
+		{ key: "↑↓ / Ctrl+N/P", action: "move" },
 		{ key: "Enter", action: "play from here" },
 		{ key: "Shift+Enter", action: "go here" },
 	],
@@ -256,6 +256,8 @@ export class TranscriptView extends ItemView {
 			this.focusSearch();
 			return false;
 		});
+		this.scope.register(["Ctrl"], "N", (evt) => this.moveFocusedRow(1, evt));
+		this.scope.register(["Ctrl"], "P", (evt) => this.moveFocusedRow(-1, evt));
 	}
 
 	getViewType(): string {
@@ -729,6 +731,18 @@ export class TranscriptView extends ItemView {
 		this.scrollToRow(r.el, true, false);
 	}
 
+	private moveFocusedRow(delta: 1 | -1, evt: KeyboardEvent): boolean {
+		if (evt === this.handledKey) return false;
+		if (!evt.ctrlKey || evt.metaKey || evt.altKey || evt.shiftKey) return true;
+		const index = this.focusedRowIndex();
+		if (index < 0) return true;
+		const { visible, onScreen } = this.visibleRows();
+		this.moveFocus(stepRow(visible, index, delta, onScreen));
+		this.handledKey = evt;
+		this.userScrollAt = Date.now();
+		return false;
+	}
+
 	/** Rows not hidden by the filter, and the subset scrolled into view. */
 	private visibleRows(): { visible: number[]; onScreen: number[] } {
 		const visible: number[] = [];
@@ -755,6 +769,7 @@ export class TranscriptView extends ItemView {
 			const { visible, onScreen } = this.visibleRows();
 			this.moveFocus(stepRow(visible, index, delta, onScreen));
 		};
+		const emacs = evt.ctrlKey && !evt.metaKey && !evt.altKey && !evt.shiftKey;
 		const edge = (last: boolean): void => {
 			const { visible } = this.visibleRows();
 			this.moveFocus(visible[last ? visible.length - 1 : 0] ?? -1);
@@ -762,6 +777,8 @@ export class TranscriptView extends ItemView {
 		let handled = true;
 		if (evt.key === "ArrowDown" && !mod) step(1);
 		else if (evt.key === "ArrowUp" && !mod) step(-1);
+		else if (emacs && evt.key.toLowerCase() === "n") step(1);
+		else if (emacs && evt.key.toLowerCase() === "p") step(-1);
 		else if (evt.key === "Home" && !mod) edge(false);
 		else if (evt.key === "End" && !mod) edge(true);
 		else if (evt.key === "Enter") this.playRow(index, mod || !evt.shiftKey);

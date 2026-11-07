@@ -291,6 +291,23 @@ describe("accepting transcript search", () => {
 		expect(play).not.toHaveBeenCalled();
 	});
 
+	it("moves the focused transcript row with Ctrl+N and Ctrl+P without playback", async () => {
+		const view = await panel();
+		const input = view.contentEl.querySelector("input")!;
+		input.focus();
+		expect(scopeHandlers.get("N")!(new KeyboardEvent("keydown", { key: "n", ctrlKey: true }))).toBe(true);
+		rows(view)[1].focus();
+		const down = new KeyboardEvent("keydown", { key: "n", ctrlKey: true, bubbles: true, cancelable: true });
+		expect(scopeHandlers.get("N")!(down)).toBe(false);
+		rows(view)[1].dispatchEvent(down);
+		expect(document.activeElement).toBe(rows(view)[2]);
+		const up = new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true, cancelable: true });
+		expect(scopeHandlers.get("P")!(up)).toBe(false);
+		rows(view)[2].dispatchEvent(up);
+		expect(document.activeElement).toBe(rows(view)[1]);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it("offers a visible accept button", async () => {
 		const view = await panel();
 		search(view);
