@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { HeadingCache } from "obsidian";
 import {
 	DEFAULT_TRANSCRIPT_HEADING,
+	findTranscriptRange,
 	findTranscriptSection,
 	normalizeTranscriptHeading,
 	parseStoredTranscript,
@@ -179,13 +180,12 @@ describe("per-cue transcript format", () => {
 		expect(formatPreciseTimestamp(3_725_042)).toBe("01:02:05.042");
 	});
 
-	it("writes one escaped, timestamped line per cue", () => {
+	it("writes one short, escaped, timestamped line per cue with exact times in the link title", () => {
 		const lines = formatTranscriptCues(raw, url).split("\n");
 		expect(lines).toHaveLength(raw.length);
-		expect(lines[0]).toBe(
-			"[00:00.000 → 00:02.345](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) \\[Music\\]"
-		);
-		expect(lines[3]).toMatch(/^\[01:02:05\.042 → 01:02:07\.000\]\(.*&t=3725\) over an hour in\.$/);
+		expect(lines[0]).toBe('[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2.345") \\[Music\\]');
+		expect(lines[1]).toBe('[0:02](https://youtu.be/dQw4w9WgXcQ?t=2 "2.001–7") 50\\% of \\*bold\\* claims cost \\$5 \\#tag');
+		expect(lines[3]).toBe('[1:02:05](https://youtu.be/dQw4w9WgXcQ?t=3725 "3725.042–3727") over an hour in.');
 		expect(escapeCueText("plain words, no markup.")).toBe("plain words, no markup.");
 	});
 
@@ -198,6 +198,19 @@ describe("per-cue transcript format", () => {
 				text: l.text,
 			}))
 		).toEqual(raw);
+		expect(parsed[0].url).toBe("https://youtu.be/dQw4w9WgXcQ?t=0");
+	});
+
+	it("still reads the earlier arrow cue format", () => {
+		const old = [
+			"[00:00.000 → 00:02.345](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) \\[Music\\]",
+			"[01:02:05.042 → 01:02:07.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=3725) over an hour in.",
+		].join("\n");
+		const parsed = parseStoredTranscript(old);
+		expect(parsed.map((l) => [l.startSec, l.endSec, l.text])).toEqual([
+			[0, 2.345, "[Music]"],
+			[3725.042, 3727, "over an hour in."],
+		]);
 	});
 
 	it("keeps stored end times (including overlaps) when building cues", () => {
@@ -219,5 +232,19 @@ describe("per-cue transcript format", () => {
 		expect(parsed).toHaveLength(1);
 		expect(parsed[0].endSec).toBeUndefined();
 		expect(parsed[0].text).toBe("[Music] 50% of *bold* claims cost $5 #tag");
+	});
+});
+
+describe("findTranscriptRange", () => {
+	it("spans the transcript body up to the next heading of the same or higher level", () => {
+		const content = "# Note\nmine\n## Transcript\nline one\n### Sub\nline two\n## After\nmore\n";
+		const range = findTranscriptRange(content, headingsOf(content), "Transcript");
+		expect(range).not.toBeNull();
+		expect(content.slice(range!.start, range!.end)).toBe("\nline one\n### Sub\nline two\n");
+	});
+
+	it("returns null without a transcript heading", () => {
+		const content = "# Note\nmine\n";
+		expect(findTranscriptRange(content, headingsOf(content), "Transcript")).toBeNull();
 	});
 });

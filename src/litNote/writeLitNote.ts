@@ -1,6 +1,7 @@
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import { App, normalizePath, Notice, TFile } from "obsidian";
+import type { EventRef } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { findLitNoteFile } from "./litNoteFinder";
@@ -108,31 +109,55 @@ export async function writeLitNote(
 
 	const normPath = normalizePath(targetPath);
 	let file: TFile | null = existing ?? null;
+	let createEventRef: EventRef | null = null;
+	const createWait = { cancel: null as (() => void) | null };
+	const createdFile = !file && typeof app.vault.on === "function"
+		? new Promise<TFile>((resolve) => {
+			createEventRef = app.vault.on("create", (abstractFile) => {
+				if (abstractFile instanceof TFile && abstractFile.path === normPath) {
+					resolve(abstractFile);
+				}
+			});
+		})
+		: null;
 
-	if (!file) {
-		const resolved = app.vault.getAbstractFileByPath(normPath);
-		if (resolved instanceof TFile) {
-			file = resolved;
+	try {
+		if (!file) {
+			const resolved = app.vault.getAbstractFileByPath(normPath);
+			if (resolved instanceof TFile) {
+				file = resolved;
+			}
 		}
+
+		if (file) {
+			await app.vault.modify(file, contentOrBody);
+		} else {
+			file = await app.vault.create(normPath, contentOrBody);
+		}
+
+		// If create() resolves before the vault index catches up, use its create
+		// event rather than reporting a successful write as a failure.
+		if (!file) {
+			const resolved = app.vault.getAbstractFileByPath(normPath);
+			file = resolved instanceof TFile ? resolved : null;
+			if (!file && createdFile) {
+				const timeout = new Promise<TFile | null>((resolve) => {
+					createWait.cancel = setTimeoutIn(
+						getMainWindow(app) ?? window,
+						() => resolve(null),
+						1000
+					);
+				});
+				file = await Promise.race([createdFile, timeout]);
+			}
+		}
+	} finally {
+		createWait.cancel?.();
+		if (createEventRef) app.vault.offref(createEventRef);
 	}
 
-	if (file) {
-		await app.vault.modify(file, contentOrBody);
-	} else {
-		file = await app.vault.create(normPath, contentOrBody);
-	}
-
-	// create()/modify() can resolve before the vault index catches up (notably
-	// during a cold start), leaving `file` null. Re-resolve by path so we never
-	// hand a null file to processFrontMatter() or openFile().
 	if (!file) {
-		const resolved = app.vault.getAbstractFileByPath(normPath);
-		file = resolved instanceof TFile ? resolved : null;
-	}
-	if (!file) {
-		throw new Error(
-			`Note was written but could not be resolved in the vault: ${normPath}`
-		);
+		throw new Error(`Note was written but could not be resolved in the vault: ${normPath}`);
 	}
 
 	if (frontmatter && Object.keys(frontmatter).length > 0 && app.fileManager?.processFrontMatter) {

@@ -3,12 +3,14 @@ import {
 	Editor,
 	MarkdownView,
 	Notice,
+	Platform,
 	Plugin,
 	PluginSettingTab,
 	Setting,
 	SettingDefinitionItem,
 	TFile,
 	debounce,
+	type WorkspaceLeaf,
 } from "obsidian";
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
@@ -36,9 +38,31 @@ import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
-import { TRANSCRIPT_VIEW_TYPE, TranscriptView, showTranscriptPanel } from "./litNote/transcriptView";
-import { getMainWindow } from "commons/workspace";
-import { setTimeoutIn, readClipboardIn } from "commons/windows";
+import {
+	TRANSCRIPT_VIEW_TYPE,
+	TranscriptView,
+	hideTranscriptPanels,
+	showTranscriptPanel,
+	visibleTranscriptLeaves,
+	type TranscriptPanelLocation,
+	type TranscriptPlacement,
+} from "./litNote/transcriptView";
+import {
+	VIDEO_VIEW_TYPE,
+	VideoView,
+	getVideoLeaf,
+	noteVideoId,
+	openVideoViewer,
+	type VideoViewerLocation,
+} from "./video/videoView";
+import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
+import { parseYouTubeUrl } from "./video/youtubeLinks";
+import { nextPart, type NotePart } from "./video/switchParts";
+import { findLeafForFile, focusLeafAndWindow, getMainWindow, getWindowForLeaf } from "commons/workspace";
+import { requestFrameIn, setTimeoutIn, readClipboardIn } from "commons/windows";
+import { raiseWindow } from "commons/os";
+
+const PART_KEYS: NotePart[] = ["note", "video", "transcript"];
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -123,6 +147,14 @@ export interface PerplexitySaverSettings {
 	 * "blocks": one line per 5 cues with a whole-second start time only.
 	 */
 	transcriptFormat: TranscriptFormat;
+	/** What a plain click on a YouTube timestamp link does; Ctrl/Cmd-click does the other. */
+	timestampClickAction: TimestampClickAction;
+	/** Where a new video viewer opens: a split next to the note, or its own window. */
+	videoViewerLocation: VideoViewerLocation;
+	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
+	transcriptPanelLocation: TranscriptPanelLocation;
+	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
+	followTranscript: boolean;
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -146,6 +178,10 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	downloadYoutubeTranscripts: true,
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
+	timestampClickAction: "viewer",
+	videoViewerLocation: "split",
+	transcriptPanelLocation: "sidebar",
+	followTranscript: true,
 };
 
 interface InlineInputData {
@@ -212,20 +248,117 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 		this.registerView(
 			TRANSCRIPT_VIEW_TYPE,
-			(leaf) => new TranscriptView(leaf, () => this.settings.transcriptHeading)
+			(leaf) =>
+				new TranscriptView(leaf, {
+					getHeadingName: () => this.settings.transcriptHeading,
+					playAt: (filePath, url, seconds, play) => void this.playTranscriptAt(filePath, url, seconds, play),
+				})
 		);
 		this.addCommand({
 			id: "show-youtube-transcript",
-			name: "Show YouTube transcript in side panel",
+			name: "Show YouTube transcript panel",
 			checkCallback: (checking: boolean) => {
 				const file = this.app.workspace.getActiveFile();
 				if (!file || file.extension !== "md") return false;
-				if (!checking) {
-					void showTranscriptPanel(this.app, file, this.settings.transcriptHeading);
-				}
+				if (!checking) void this.showTranscript(file);
 				return true;
 			},
 		});
+
+		this.addCommand({
+			id: "search-youtube-transcript",
+			name: "Search YouTube transcript",
+			checkCallback: (checking: boolean) => {
+				const leaf = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)[0];
+				const file = this.app.workspace.getActiveFile();
+				if (!leaf && (!file || file.extension !== "md")) return false;
+				if (!checking) void this.focusTranscriptSearch(leaf ?? null, file);
+				return true;
+			},
+		});
+
+		this.registerView(
+			VIDEO_VIEW_TYPE,
+			(leaf) =>
+				new VideoView(leaf, {
+					getTranscriptHeading: () => this.settings.transcriptHeading,
+					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, this.transcriptScope(viewer)).length > 0,
+					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
+					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
+				})
+		);
+		this.addCommand({
+			id: "open-youtube-video-viewer",
+			name: "Open YouTube video viewer",
+			checkCallback: (checking: boolean) => {
+				const file = this.app.workspace.getActiveFile();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.openViewerForNote(file);
+				return true;
+			},
+		});
+		// Keyboard switching between a literature note, its video and its transcript panel, across windows and sidebars.
+		const switchCommands: [id: string, name: string, target: (current: NotePart | null, open: Set<NotePart>) => NotePart][] = [
+			["go-to-literature-note", "Go to literature note (from its video or transcript)", () => "note"],
+			["go-to-video-viewer", "Go to YouTube video viewer", () => "video"],
+			["go-to-transcript-panel", "Go to YouTube transcript panel", () => "transcript"],
+			["cycle-note-video-transcript", "Cycle literature note, video and transcript", (c, o) => nextPart(c, o, 1)],
+			["cycle-note-video-transcript-back", "Cycle literature note, video and transcript backwards", (c, o) => nextPart(c, o, -1)],
+		];
+		for (const [id, name, target] of switchCommands) {
+			this.addCommand({
+				id,
+				name,
+				checkCallback: (checking: boolean) => {
+					const { part, file } = this.activePart();
+					if (!file) return false;
+					if (!checking) {
+						const leaves = this.partLeaves(file);
+						const open = new Set(PART_KEYS.filter((p) => leaves[p]));
+						void this.goToPart(target(part, open), file, leaves);
+					}
+					return true;
+				},
+			});
+		}
+		// Every viewer control as a command, so each can get a hotkey (Settings → Hotkeys).
+		const viewerCommands: [id: string, name: string, run: (view: VideoView) => unknown][] = [
+			["video-viewer-play-pause", "Video viewer: play or pause", (v) => v.togglePlay()],
+			["video-viewer-back-10", "Video viewer: back 10 seconds", (v) => v.skip(-10)],
+			["video-viewer-forward-10", "Video viewer: forward 10 seconds", (v) => v.skip(10)],
+			["video-viewer-back-5", "Video viewer: back 5 seconds", (v) => v.skip(-5)],
+			["video-viewer-forward-5", "Video viewer: forward 5 seconds", (v) => v.skip(5)],
+			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
+			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
+			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
+			["video-viewer-next-note-timestamp", "Video viewer: next timestamp from the note", (v) => v.jumpToMark(1)],
+			["video-viewer-previous-note-timestamp", "Video viewer: previous timestamp from the note", (v) => v.jumpToMark(-1)],
+			["video-viewer-zoom-in", "Video viewer: zoom in", (v) => v.zoomBy(1.25)],
+			["video-viewer-zoom-out", "Video viewer: zoom out", (v) => v.zoomBy(1 / 1.25)],
+			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
+			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
+			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
+			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
+			["video-viewer-toggle-transcript", "Video viewer: show or hide transcript", (v) => v.toggleTranscript()],
+			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
+		];
+		for (const [id, name, run] of viewerCommands) {
+			this.addCommand({
+				id,
+				name,
+				checkCallback: (checking: boolean) => {
+					const view = getVideoLeaf(this.app)?.view;
+					if (!(view instanceof VideoView)) return false;
+					if (!checking) void run(view);
+					return true;
+				},
+			});
+		}
+		registerTimestampLinks(
+			this,
+			() => this.settings.timestampClickAction,
+			(request) => void this.openTimestamp(request)
+		);
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -280,6 +413,172 @@ export default class PerplexitySaverPlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			if (leaf.view instanceof TranscriptView) void leaf.view.reload();
 		}
+	}
+
+	/** Mark the playing line in transcript panels showing this video (scrolling them if the setting is on). */
+	private showPlayback(videoId: string, filePath: string | null, seconds: number): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TranscriptView && view.showsVideo(filePath, videoId)) {
+				view.showPlayback(seconds, this.settings.followTranscript);
+			}
+		}
+	}
+
+	/** Transcript panel: show the video from a line in the video viewer, starting playback with `play`. */
+	private async playTranscriptAt(filePath: string, url: string, seconds: number, play: boolean): Promise<void> {
+		let videoId = url ? parseYouTubeUrl(url)?.videoId ?? null : null;
+		if (!videoId) {
+			const file = this.app.vault.getFileByPath(filePath);
+			videoId = file ? await noteVideoId(this.app, file) : null;
+		}
+		if (!videoId) {
+			new Notice("No YouTube link for this transcript.");
+			return;
+		}
+		await openVideoViewer(this.app, { videoId, seconds, sourcePath: filePath, autoplay: play }, this.settings.videoViewerLocation);
+	}
+
+	/** Reveal a transcript panel (opening the active note's if none is open) and focus its search box. */
+	private async focusTranscriptSearch(leaf: WorkspaceLeaf | null, file: TFile | null): Promise<void> {
+		if (!leaf) {
+			if (!file) return;
+			await this.showTranscript(file);
+			leaf = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)[0] ?? null;
+			if (!leaf) return;
+		}
+		await this.app.workspace.revealLeaf(leaf);
+		if (leaf.view instanceof TranscriptView) leaf.view.focusSearch();
+	}
+
+	/** The note a clicked element belongs to: its editor/reading view, or the transcript panel's note. */
+	private sourcePathFor(el: Element): string | null {
+		for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+			const view = leaf.view;
+			if (view instanceof MarkdownView && view.containerEl.contains(el)) return view.file?.path ?? null;
+		}
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			const view = leaf.view;
+			if (view instanceof TranscriptView && view.containerEl.contains(el)) return view.getFilePath();
+		}
+		return this.app.workspace.getActiveFile()?.path ?? null;
+	}
+
+	private async openTimestamp(request: TimestampRequest): Promise<void> {
+		await openVideoViewer(
+			this.app,
+			{ videoId: request.videoId, seconds: request.seconds, sourcePath: this.sourcePathFor(request.target) },
+			this.settings.videoViewerLocation
+		);
+	}
+
+	/** Which of note / video / transcript is active, and the literature note it belongs to. */
+	private activePart(): { part: NotePart | null; file: TFile | null } {
+		const ws = this.app.workspace;
+		const byPath = (path: string | null): TFile | null => (path ? this.app.vault.getFileByPath(path) : null);
+		const video = ws.getActiveViewOfType(VideoView);
+		if (video) return { part: "video", file: byPath(video.getFilePath()) };
+		const transcript = ws.getActiveViewOfType(TranscriptView);
+		if (transcript) return { part: "transcript", file: byPath(transcript.getFilePath()) };
+		const note = ws.getActiveViewOfType(MarkdownView);
+		if (note?.file) return { part: "note", file: note.file };
+		return { part: null, file: ws.getActiveFile() };
+	}
+
+	/** The open note, video viewer and transcript panel for `file` (in any window or sidebar). */
+	private partLeaves(file: TFile): Record<NotePart, WorkspaceLeaf | null> {
+		const ws = this.app.workspace;
+		const fileOf = (leaf: WorkspaceLeaf): unknown => {
+			const view = leaf.view;
+			if (view instanceof VideoView || view instanceof TranscriptView) return view.getFilePath();
+			return (leaf.getViewState().state as { file?: unknown } | undefined)?.file;
+		};
+		const note = findLeafForFile(this.app, file);
+		const noteWin = note ? getWindowForLeaf(note) : null;
+		const videos = ws.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => fileOf(leaf) === file.path);
+		const video = videos.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? videos[0] ?? null;
+		const transcript = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).find((leaf) => fileOf(leaf) === file.path) ?? null;
+		return { note, video, transcript };
+	}
+
+	/** Reveal (opening it if needed) and focus one part, raising its window and giving it keyboard focus. */
+	private async goToPart(part: NotePart, file: TFile, leaves: Record<NotePart, WorkspaceLeaf | null>): Promise<void> {
+		let leaf = leaves[part];
+		if (!leaf) {
+			if (part === "note") {
+				leaf = this.app.workspace.getLeaf("tab");
+				await leaf.openFile(file);
+			} else if (part === "video") {
+				leaf = await this.openViewerForNote(file);
+			} else {
+				await this.showTranscript(file);
+				leaf = this.partLeaves(file).transcript;
+			}
+		}
+		if (!leaf) return;
+		await this.app.workspace.revealLeaf(leaf);
+		focusLeafAndWindow(this.app, leaf, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
+		const target = leaf;
+		const win = getWindowForLeaf(target);
+		// After Obsidian has finished moving focus to the leaf.
+		if (win) {
+			requestFrameIn(win, () => {
+				const view = target.view;
+				if (view instanceof VideoView) view.focusKeys();
+				else if (view instanceof TranscriptView) view.focusLines();
+			});
+		}
+	}
+
+	/** Open the viewer on the video a note links to (the first YouTube link in it). */
+	private async openViewerForNote(file: TFile, autoplay = false): Promise<WorkspaceLeaf | null> {
+		const videoId = await noteVideoId(this.app, file);
+		if (!videoId) {
+			new Notice(`No YouTube link in ${file.basename}.`);
+			return null;
+		}
+		return openVideoViewer(
+			this.app,
+			{ videoId, seconds: 0, sourcePath: file.path, autoplay },
+			this.settings.videoViewerLocation
+		);
+	}
+
+	/**
+	 * Show a note's transcript panel. A viewer in a pop-out window gets the panel
+	 * to its right in that window (sidebars exist only in the main window);
+	 * otherwise the panel goes in the sidebar or below the viewer per the setting.
+	 */
+	async showTranscript(file: TFile): Promise<void> {
+		const viewer = getVideoLeaf(this.app);
+		let placement: TranscriptPlacement | null = null;
+		if (viewer && this.viewerInPopout(viewer)) {
+			placement = { nextTo: viewer, direction: "vertical" };
+		} else if (this.settings.transcriptPanelLocation === "viewer") {
+			const nextTo = viewer ?? (await this.openViewerForNote(file, false));
+			if (nextTo) placement = { nextTo, direction: "horizontal" };
+		}
+		await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement);
+	}
+
+	private viewerInPopout(viewer: WorkspaceLeaf): boolean {
+		const win = getWindowForLeaf(viewer);
+		return !!win && win !== getMainWindow(this.app);
+	}
+
+	/** Transcript panels the viewer's button controls: those in its pop-out window, or all of them. */
+	private transcriptScope(viewer: WorkspaceLeaf | null): WorkspaceLeaf | null {
+		return viewer && this.viewerInPopout(viewer) ? viewer : null;
+	}
+
+	/** The viewer's transcript button: close a visible transcript panel, or show this note's. */
+	async toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf | null): Promise<void> {
+		if (hideTranscriptPanels(this.app, this.transcriptScope(viewer))) return;
+		if (!file) {
+			new Notice("This video is not linked to a note.");
+			return;
+		}
+		await this.showTranscript(file);
 	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
@@ -864,6 +1163,12 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							disabled: () => this.plugin.settings.authorFormatStyle !== "last-first",
 						},
 					},
+				],
+			},
+			{
+				type: "group",
+				heading: "YouTube transcripts",
+				items: [
 					{
 						name: "Download YouTube transcripts",
 						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under the transcript heading when creating literature notes from YouTube video references.",
@@ -883,13 +1188,69 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Transcript detail",
-						desc: "How downloaded YouTube transcripts are written. Every caption keeps each caption with its exact start and end time (lossless; gives the best paragraph formatting in the transcript panel). 5-caption blocks are shorter but keep only a whole-second start time per block of 5 captions.",
+						desc: "How downloaded YouTube transcripts are written. Every caption keeps each caption as a short m:ss link, with its exact start and end time in the link title (shown on hover; lossless, and gives the best paragraph formatting in the transcript panel). 5-caption blocks are shorter but keep only a whole-second start time per block of 5 captions.",
 						control: {
 							type: "dropdown",
 							key: "transcriptFormat",
 							options: {
 								cues: "Every caption, start and end times (default)",
 								blocks: "5-caption blocks, start time only",
+							},
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Transcript panel",
+				items: [
+					{
+						name: "Transcript panel location",
+						desc: "Where the transcript panel opens: in the right sidebar, or below the YouTube video viewer (the viewer opens too if needed).",
+						control: {
+							type: "dropdown",
+							key: "transcriptPanelLocation",
+							options: {
+								sidebar: "Right sidebar (default)",
+								viewer: "Below the video viewer",
+							},
+						},
+					},
+					{
+						name: "Follow playback in transcript",
+						desc: "While the video viewer plays, highlight the current line in the transcript panel and scroll to keep it in view. Scrolling stops for a few seconds after you scroll the panel yourself, and while a search is active.",
+						control: {
+							type: "toggle",
+							key: "followTranscript",
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Video viewer",
+				items: [
+					{
+						name: "Timestamp link click",
+						desc: "What clicking a YouTube link with a timestamp does, in notes and in the transcript panel. Ctrl/Cmd-click does the other.",
+						control: {
+							type: "dropdown",
+							key: "timestampClickAction",
+							options: {
+								viewer: "Open in the video viewer (default)",
+								browser: "Open in the browser",
+							},
+						},
+					},
+					{
+						name: "Video viewer location",
+						desc: "Where a new video viewer opens. An open viewer is always reused.",
+						control: {
+							type: "dropdown",
+							key: "videoViewerLocation",
+							options: {
+								split: "Split next to the note (default)",
+								window: "New window",
 							},
 						},
 					},
@@ -1217,6 +1578,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					});
 			});
 
+		new Setting(containerEl).setName("YouTube transcripts").setHeading();
+
 		new Setting(containerEl)
 			.setName("Download YouTube transcripts")
 			.setDesc(
@@ -1253,7 +1616,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Transcript detail")
 			.setDesc(
-				"How downloaded YouTube transcripts are written. Every caption keeps each caption with its exact start and end time (lossless). 5-caption blocks are shorter but keep only a whole-second start time per block."
+				"How downloaded YouTube transcripts are written. Every caption keeps each caption as a short m:ss link, with its exact start and end time in the link title (lossless). 5-caption blocks are shorter but keep only a whole-second start time per block."
 			)
 			.addDropdown((dropdown) => {
 				dropdown
@@ -1265,6 +1628,64 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						if (this.plugin.litNoteServerSettings) {
 							this.plugin.litNoteServerSettings.transcriptFormat = value as TranscriptFormat;
 						}
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl).setName("Transcript panel").setHeading();
+
+		this.addChoiceSetting(
+			containerEl,
+			"Transcript panel location",
+			"Where the transcript panel opens: in the right sidebar, or below the YouTube video viewer (the viewer opens too if needed).",
+			"transcriptPanelLocation",
+			{ sidebar: "Right sidebar (default)", viewer: "Below the video viewer" }
+		);
+		new Setting(containerEl)
+			.setName("Follow playback in transcript")
+			.setDesc(
+				"While the video viewer plays, highlight the current line in the transcript panel and scroll to keep it in view. Scrolling stops for a few seconds after you scroll the panel yourself, and while a search is active."
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.followTranscript).onChange(async (value) => {
+					this.plugin.settings.followTranscript = value;
+					await this.plugin.saveSettings();
+				})
+			);
+		new Setting(containerEl).setName("Video viewer").setHeading();
+
+		this.addChoiceSetting(
+			containerEl,
+			"Timestamp link click",
+			"What clicking a YouTube link with a timestamp does, in notes and in the transcript panel. Ctrl/Cmd-click does the other.",
+			"timestampClickAction",
+			{ viewer: "Open in the video viewer (default)", browser: "Open in the browser" }
+		);
+		this.addChoiceSetting(
+			containerEl,
+			"Video viewer location",
+			"Where a new video viewer opens. An open viewer is always reused.",
+			"videoViewerLocation",
+			{ split: "Split next to the note (default)", window: "New window" }
+		);
+	}
+
+	private addChoiceSetting(
+		containerEl: HTMLElement,
+		name: string,
+		desc: string,
+		key: "transcriptPanelLocation" | "timestampClickAction" | "videoViewerLocation",
+		options: Record<string, string>
+	): void {
+		new Setting(containerEl)
+			.setName(name)
+			.setDesc(desc)
+			.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(options)
+					.setValue(this.plugin.settings[key])
+					.onChange(async (value) => {
+						(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
 						await this.plugin.saveSettings();
 					});
 			});

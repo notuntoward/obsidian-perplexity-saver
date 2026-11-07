@@ -191,8 +191,8 @@ describe("youtubeTranscript", () => {
 
 			const result = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
 			expect(result).toBe(
-				"[00:00.000 → 00:02.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello\n" +
-					"[00:02.000 → 00:04.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World"
+				'[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Hello\n' +
+					'[0:02](https://youtu.be/dQw4w9WgXcQ?t=2 "2–4") World'
 			);
 
 			const blocks = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {

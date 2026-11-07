@@ -175,6 +175,15 @@ export function formatTimestamp(offsetMs: number): string {
 	return time.map(fnum).join(":");
 }
 
+/** Short video clock `m:ss` or `h:mm:ss` (whole seconds, floored). */
+export function formatShortTimestamp(offsetMs: number): string {
+	const total = Math.max(0, Math.floor((Number.isFinite(offsetMs) ? offsetMs : 0) / 1000));
+	const h = Math.floor(total / 3600);
+	const m = Math.floor((total % 3600) / 60);
+	const ss = String(total % 60).padStart(2, "0");
+	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
 /**
  * Decode common HTML entities from caption XML text.
  */
@@ -297,14 +306,15 @@ export function formatTranscript(
 
 /**
  * How a downloaded transcript is written into the note:
- * - "cues": one line per caption cue with millisecond start and end times (lossless).
+ * - "cues": one line per caption cue with millisecond start and end times (lossless),
+ *   shown as a short `m:ss` link with the exact times in the link title.
  * - "blocks": one line per `timestampMod` cues with only a whole-second start time.
  */
 export type TranscriptFormat = "cues" | "blocks";
 
 export const DEFAULT_TRANSCRIPT_FORMAT: TranscriptFormat = "cues";
 
-/** Separator between the start and end time of a stored cue. */
+/** Separator between the start and end time of a cue in the older `[mm:ss.mmm → mm:ss.mmm]` format. */
 export const CUE_TIME_SEPARATOR = " → ";
 
 /** Format milliseconds as `[h:]mm:ss.mmm`. */
@@ -329,18 +339,30 @@ export function unescapeCueText(text: string): string {
 }
 
 /**
- * Format every caption cue as its own line, keeping exact start and end times:
- *   [mm:ss.mmm → mm:ss.mmm](url&t=SECONDS) caption text
+ * Format every caption cue as its own short line. The visible link text is the
+ * whole-second start; the link title (hidden in reading view and live preview,
+ * shown on hover) keeps the exact start and end in seconds, so nothing is lost
+ * and the transcript panel can still group cues into paragraphs:
+ *   [m:ss](https://youtu.be/ID?t=SECONDS "START–END") caption text
  */
 export function formatTranscriptCues(lines: TranscriptLine[], url: string): string {
+	const videoId = url ? extractYouTubeVideoId(url) : null;
 	return lines
 		.map(({ text, offset, duration }) => {
-			const start = formatPreciseTimestamp(offset);
-			const end = formatPreciseTimestamp(offset + duration);
-			const href = url ? buildTimestampUrl(url, offset) : "#";
-			return `[${start}${CUE_TIME_SEPARATOR}${end}](${href}) ${escapeCueText(text.trim())}`;
+			const t = Math.max(0, Math.floor(offset / 1000));
+			const href = videoId ? `https://youtu.be/${videoId}?t=${t}` : url ? buildTimestampUrl(url, offset) : "#";
+			const timing = `${preciseSeconds(offset)}${CUE_TIME_RANGE}${preciseSeconds(offset + duration)}`;
+			return `[${formatShortTimestamp(offset)}](${href} "${timing}") ${escapeCueText(text.trim())}`;
 		})
 		.join("\n");
+}
+
+/** Separator between the exact start and end seconds in a cue's link title. */
+export const CUE_TIME_RANGE = "–";
+
+/** Milliseconds as seconds with up to three decimals and no trailing zeros (`2.345`, `4`). */
+export function preciseSeconds(offsetMs: number): string {
+	return String(Math.max(0, Math.round(offsetMs)) / 1000);
 }
 
 function findCaptionTrack(captionTracks: any[], langCode = "en"): any {

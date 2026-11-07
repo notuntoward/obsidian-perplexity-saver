@@ -4,8 +4,10 @@
  * The transcript is written by `buildLitNoteBody` under a level-1 heading whose
  * text is the `transcriptHeading` setting, one line per caption cue (default)
  * or one line per block of cues:
- *   [mm:ss.mmm → mm:ss.mmm](https://youtube.com/watch?v=ID&t=SECONDS) caption text
+ *   [m:ss](https://youtu.be/ID?t=SECONDS "START–END") caption text
  *   [mm:ss](https://youtube.com/watch?v=ID&t=SECONDS) caption text ...
+ * Notes written by earlier versions may use per-cue lines of the form
+ *   [mm:ss.mmm → mm:ss.mmm](https://youtube.com/watch?v=ID&t=SECONDS) caption text
  */
 
 import type { HeadingCache } from "obsidian";
@@ -48,6 +50,16 @@ export function findTranscriptSection(
 	headings: HeadingCache[] | undefined,
 	headingName: string
 ): string | null {
+	const range = findTranscriptRange(content, headings, headingName);
+	return range ? content.slice(range.start, range.end).trim() : null;
+}
+
+/** Character range of the transcript section body (after its heading line), or null. */
+export function findTranscriptRange(
+	content: string,
+	headings: HeadingCache[] | undefined,
+	headingName: string
+): { start: number; end: number } | null {
 	if (!headings || headings.length === 0) return null;
 	const wanted = normalizeTranscriptHeading(headingName);
 	const candidates = sameHeading(wanted, DEFAULT_TRANSCRIPT_HEADING)
@@ -59,14 +71,19 @@ export function findTranscriptSection(
 		if (idx === -1) continue;
 		const heading = headings[idx];
 		const next = headings.slice(idx + 1).find((h) => h.level <= heading.level);
-		const start = heading.position.end.offset;
-		const end = next ? next.position.start.offset : content.length;
-		return content.slice(start, end).trim();
+		return {
+			start: heading.position.end.offset,
+			end: next ? next.position.start.offset : content.length,
+		};
 	}
 	return null;
 }
 
 const TIME = String.raw`\d{1,2}(?::\d{1,2}){1,2}(?:\.\d{1,3})?`;
+const SECONDS = String.raw`\d+(?:\.\d+)?`;
+const COMPACT_CUE_LINE = new RegExp(
+	String.raw`^\s*\[(${TIME})\]\(([^)\s]*)\s+"(${SECONDS})\s*[–-]\s*(${SECONDS})"\)\s?(.*)$`
+);
 const CUE_LINE = new RegExp(
 	String.raw`^\s*\[(${TIME})\s*(?:→|->|-->)\s*(${TIME})\]\(([^)\s]*)\)\s?(.*)$`
 );
@@ -80,10 +97,12 @@ export function parseTimestamp(stamp: string): number {
 }
 
 /**
- * Parse the stored transcript section into timestamped lines. Two line formats
- * are recognised: per-cue lines with start and end times
- * (`[mm:ss.mmm → mm:ss.mmm](url) text`, text backslash-escaped) and the older
- * block lines with only a start time (`[mm:ss](url) text`). Text lines that do
+ * Parse the stored transcript section into timestamped lines. Three line
+ * formats are recognised: compact per-cue lines whose link title holds the
+ * exact start and end seconds (`[m:ss](url "1.23–4.56") text`), the earlier
+ * per-cue lines (`[mm:ss.mmm → mm:ss.mmm](url) text`), both with
+ * backslash-escaped text, and block lines with only a start time
+ * (`[mm:ss](url) text`). Text lines that do
  * not start with a timestamp link (for example wrapped or hand-edited lines)
  * are appended to the preceding timestamped line.
  */
@@ -91,6 +110,13 @@ export function parseStoredTranscript(section: string): StoredTranscriptLine[] {
 	const lines: StoredTranscriptLine[] = [];
 	for (const raw of section.split(/\r?\n/)) {
 		if (!raw.trim()) continue;
+		const compact = raw.match(COMPACT_CUE_LINE);
+		if (compact) {
+			const startSec = Number(compact[3]);
+			const endSec = Number(compact[4]);
+			lines.push({ startSec, endSec, url: compact[2], text: unescapeCueText(compact[5].trim()) });
+			continue;
+		}
 		const cue = raw.match(CUE_LINE);
 		if (cue) {
 			const startSec = parseTimestamp(cue[1]);

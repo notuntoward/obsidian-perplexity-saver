@@ -127,6 +127,46 @@ describe("writeLitNote", () => {
 		expect(fmApplied.title).toBe("New Title");
 	});
 
+	it("uses the create event when the vault index has not resolved a newly written file", async () => {
+		const mockFile = makeMockFile("lit/notes/DelayedIndex.md");
+		let onCreate: ((file: unknown) => void) | undefined;
+		let fmApplied: Record<string, unknown> = {};
+
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: vi.fn(() => null),
+				createFolder: vi.fn(),
+				on: vi.fn((_event: string, callback: (file: unknown) => void) => {
+					onCreate = callback;
+					return {};
+				}),
+				offref: vi.fn(),
+				create: vi.fn(async () => {
+					onCreate?.(mockFile);
+					return null;
+				}),
+			},
+			fileManager: {
+				processFrontMatter: vi.fn(async (_file: TFile, fn: (fm: any) => void) => {
+					fn(fmApplied);
+				}),
+			},
+		} as unknown as App;
+
+		const file = await writeLitNote(
+			app,
+			"lit/notes/DelayedIndex.md",
+			"Note body",
+			{ citekey: "DelayedIndex" }
+		);
+
+		expect(file).toBe(mockFile);
+		expect(app.fileManager.processFrontMatter).toHaveBeenCalledWith(mockFile, expect.any(Function));
+		expect(fmApplied.citekey).toBe("DelayedIndex");
+		expect(app.vault.offref).toHaveBeenCalledOnce();
+	});
+
 	it("modifies existing file in writeLitNote", async () => {
 		const mockFile = makeMockFile("lit/notes/ExistingNote.md");
 		let modifiedContent = "";
@@ -322,7 +362,7 @@ describe("writeLitNote", () => {
 
 		expect(createdContent).toContain("# Transcript");
 		expect(createdContent).toContain(
-			"[00:00.000 → 00:02.000](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Intro to Physics"
+			'[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Intro to Physics'
 		);
 	});
 
