@@ -16,6 +16,7 @@ export class Plugin {
 	addCommand(_command: any): any {}
 	addSettingTab(_tab: any): void {}
 	registerEvent(_event: any): void {}
+	register(_cleanup: () => void): void {}
 	registerDomEvent(_el: any, _type: string, _callback: any): void {}
 	registerInterval(_id: number): number {
 		return _id;

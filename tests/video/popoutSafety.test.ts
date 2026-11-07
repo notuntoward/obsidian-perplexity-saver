@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 const files = [
 	...readdirSync(path.resolve(__dirname, "../../src/video")).map((f) => `src/video/${f}`),
 	"src/litNote/transcriptView.ts",
+	"src/litNote/transcriptFolding.ts",
 ];
 const FORBIDDEN = /(?<![\w.$])(document|window|navigator|activeDocument|activeWindow)\s*\.(?!\s*implementation)/;
 

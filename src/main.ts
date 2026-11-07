@@ -37,6 +37,7 @@ import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } fro
 import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
+import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
 import {
 	TRANSCRIPT_VIEW_TYPE,
@@ -144,6 +145,8 @@ export interface PerplexitySaverSettings {
 	 * under, and that the transcript side panel reads from.
 	 */
 	transcriptHeading: string;
+	/** Fold the stored transcript once whenever its note opens. */
+	collapseTranscriptOnOpen: boolean;
 	/**
 	 * "cues": one line per caption cue with millisecond start and end times (lossless).
 	 * "blocks": one line per 5 cues with a whole-second start time only.
@@ -183,6 +186,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	authorDropVon: false,
 	downloadYoutubeTranscripts: true,
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
+	collapseTranscriptOnOpen: true,
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
@@ -218,6 +222,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		registerTranscriptFolding(this, () => this.settings);
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
 		this.viewTracker = new ViewTracker(this.settings.litNoteLastViewed);
@@ -1195,6 +1200,14 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				heading: "YouTube transcripts",
 				items: [
 					{
+						name: "Collapse transcript on open",
+						desc: "Start each note with its transcript heading folded, in editing and reading view. Click the heading arrow to expand it; it stays open while you work.",
+						control: {
+							type: "toggle",
+							key: "collapseTranscriptOnOpen",
+						},
+					},
+					{
 						name: "Download YouTube transcripts",
 						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under the transcript heading when creating literature notes from YouTube video references.",
 						control: {
@@ -1643,6 +1656,20 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl).setName("YouTube transcripts").setHeading();
+
+		new Setting(containerEl)
+			.setName("Collapse transcript on open")
+			.setDesc(
+				"Start each note with its transcript heading folded, in editing and reading view. Click the heading arrow to expand it; it stays open while you work."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.collapseTranscriptOnOpen)
+					.onChange(async (value) => {
+						this.plugin.settings.collapseTranscriptOnOpen = value;
+						await this.plugin.saveSettings();
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Download YouTube transcripts")

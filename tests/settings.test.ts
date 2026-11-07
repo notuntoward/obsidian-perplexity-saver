@@ -9,6 +9,31 @@ vi.mock("obsidian", async (original) => ({
 }));
 
 describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
+	it("defaults transcript folding on and preserves an explicit off setting", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.collapseTranscriptOnOpen).toBe(true);
+		vi.mocked(plugin.loadData).mockResolvedValue({ collapseTranscriptOnOpen: false });
+		await plugin.loadSettings();
+		expect(plugin.settings.collapseTranscriptOnOpen).toBe(false);
+		const tab = new PerplexitySaverSettingTab({} as App, plugin);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Collapse transcript on open",
+			control: { type: "toggle", key: "collapseTranscriptOnOpen" },
+		}));
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("collapseTranscriptOnOpen", true);
+		expect(plugin.settings.collapseTranscriptOnOpen).toBe(true);
+		expect(plugin.saveSettings).toHaveBeenCalledOnce();
+	});
+
 	it("defaults existing installations to list copies while retaining an explicit link-only choice", async () => {
 		const plugin = new PerplexitySaverPlugin({} as App, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
