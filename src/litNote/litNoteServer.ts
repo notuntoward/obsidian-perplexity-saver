@@ -52,6 +52,8 @@ export interface LitNoteServerSettings {
 	transcriptHeading?: string;
 	/** Per-cue (lossless) or 5-cue block transcript lines. */
 	transcriptFormat?: TranscriptFormat;
+	/** Called after note loading and final cursor/ephemeral state placement. */
+	onNoteOpened?: (file: TFile) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,7 +240,7 @@ async function handleCreateBatch(
 		for (const e of existingEntries) {
 			const file = existingFile(app, settings, e.citekey);
 			if (file) {
-				await openFile(app, file, null, { modifyText: false, transcriptHeading: settings.transcriptHeading });
+				await openFile(app, file, null, { modifyText: false, transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 			}
 		}
 
@@ -341,16 +343,16 @@ async function handleCreateBatch(
 					continue;
 				}
 				if (decision === "open-existing") {
-					await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading });
+					await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 					results.push({ citekey: entry.citekey, status: "opened" });
 					continue;
 				}
 				await writeNote(app, settings, entry.item, existing);
-				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading });
+				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 				results.push({ citekey: entry.citekey, status: "overwritten" });
 			} else {
 				const created = await writeNote(app, settings, entry.item, null);
-				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading });
+				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 				results.push({ citekey: entry.citekey, status: "created" });
 			}
 		} catch (err: unknown) {
@@ -447,7 +449,7 @@ async function openFile(
 	app: App,
 	file: TFile,
 	preferredLeaf?: WorkspaceLeaf | null,
-	options?: { modifyText?: boolean; transcriptHeading?: string }
+	options?: { modifyText?: boolean; transcriptHeading?: string; onNoteOpened?: (file: TFile) => void }
 ): Promise<void> {
 	await openFileInLeaf(app, file, {
 		preferredLeaf,
@@ -476,6 +478,7 @@ async function openFile(
 			}
 		},
 	});
+	options?.onNoteOpened?.(file);
 }
 
 async function restorePreviousLeaf(
@@ -550,7 +553,7 @@ async function handleOpenBatch(
 			continue;
 		}
 		try {
-			await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading });
+			await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 			results.push({ citekey: entry.citekey, status: "opened" });
 		} catch (err: unknown) {
 			results.push({
@@ -687,9 +690,9 @@ async function handleOpenBatch(
 						const file = await writeNote(app, settings, entry.item!, null);
 						if (i === 0 && blankLeaf) {
 							blankLeafConsumed = true;
-							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading });
+							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 						} else {
-							await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading });
+							await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
 						}
 						results.push({ citekey: entry.citekey, status: "created" });
 					} catch (err: unknown) {

@@ -16,7 +16,7 @@ describe("transcript folding on note opening", () => {
 	});
 	afterEach(() => vi.useRealTimers());
 
-	function setup(secondDocument = false) {
+	function setup(secondDocument = false, initiallyActive = true) {
 		const doc = secondDocument ? document.implementation.createHTMLDocument() : document;
 		const win = { setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window) };
 		if (secondDocument) Object.defineProperty(doc, "defaultView", { value: win });
@@ -36,7 +36,7 @@ describe("transcript folding on note opening", () => {
 		const callbacks = new Map<string, (...args: unknown[]) => void>();
 		const on = (name: string, callback: (...args: unknown[]) => void) => { callbacks.set(name, callback); };
 		const getFileCache = vi.fn<() => { headings: HeadingCache[] } | null>(() => ({ headings }));
-		let active: MarkdownView | null = view;
+		let active: MarkdownView | null = initiallyActive ? view : null;
 		const app = {
 			workspace: { on, onLayoutReady: (fn: () => void) => fn(), getActiveViewOfType: () => active },
 			metadataCache: { on, getFileCache },
@@ -44,9 +44,9 @@ describe("transcript folding on note opening", () => {
 		const plugin = new class extends Plugin {}(app, { id: "test", name: "Test", version: "1", minAppVersion: "1.14.0", author: "", description: "" });
 		const cleanup = vi.spyOn(plugin, "register");
 		const settings = { collapseTranscriptOnOpen: true, transcriptHeading: "Transcript" };
-		registerTranscriptFolding(plugin, () => settings);
+		const opened = registerTranscriptFolding(plugin, () => settings);
 		return {
-			view, file, settings, headings, getFileCache, cleanup,
+			view, file, settings, headings, getFileCache, cleanup, opened,
 			emit: (name: string, ...args: unknown[]) => callbacks.get(name)?.(...args),
 			setContent: (text: string) => { content = text; },
 			setActive: (next: MarkdownView | null) => { active = next; },
@@ -91,6 +91,7 @@ describe("transcript folding on note opening", () => {
 		expect(foldHeadingInView).toHaveBeenCalledTimes(2);
 		h.emit("file-open", h.file);
 		h.setContent("# Summary\nUser edit");
+		h.view.containerEl.dispatchEvent(new Event("beforeinput", { bubbles: true }));
 		h.emit("editor-change", h.view.editor, h.view);
 		vi.runAllTimers();
 		expect(foldHeadingInView).toHaveBeenCalledTimes(2);
@@ -102,6 +103,8 @@ describe("transcript folding on note opening", () => {
 		vi.runAllTimers();
 		expect(foldHeadingInView).toHaveBeenCalledWith(h.view, 2, 5);
 		h.headings[1].heading = "Captions";
+		h.headings[1].position.end.offset = 26;
+		h.setContent("# Summary\nNotes\n# Captions\nlong transcript\n## Child\nmore\n# Backlinks\nlink");
 		h.emit("file-open", h.file);
 		vi.runAllTimers();
 		expect(foldHeadingInView).toHaveBeenCalledTimes(2);
@@ -138,5 +141,63 @@ describe("transcript folding on note opening", () => {
 		h.emit("file-open", h.file);
 		vi.runAllTimers();
 		expect(foldHeadingInView).toHaveBeenCalledWith(h.view, 2, 5);
+	});
+
+	it.each([false, true])("folds a restored background tab on its first activation (pop-out: %s)", (secondDocument) => {
+		const h = setup(secondDocument, false);
+		vi.runAllTimers();
+		expect(foldHeadingInView).not.toHaveBeenCalled();
+		h.setActive(h.view);
+		h.emit("active-leaf-change", { view: h.view });
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledWith(h.view, 2, 5);
+		h.emit("active-leaf-change", { view: h.view });
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledOnce();
+	});
+
+	it("initializes a restored tab whose Markdown view is deferred during activation", () => {
+		const h = setup(false, false);
+		h.emit("active-leaf-change", { view: {} });
+		vi.runAllTimers();
+		h.setActive(h.view);
+		h.emit("layout-change");
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledWith(h.view, 2, 5);
+	});
+
+	it("does not treat programmatic note loading as a user edit", () => {
+		const h = setup();
+		h.setContent("");
+		h.emit("file-open", h.file);
+		vi.mocked(foldHeadingInView).mockReturnValueOnce("not-ready");
+		vi.runAllTimers();
+		h.setContent("# Summary\nNotes\n# Transcript\nlong transcript\n## Child\nmore\n# Backlinks\nlink");
+		h.emit("editor-change", h.view.editor, h.view);
+		vi.runAllTimers();
+		h.emit("layout-change");
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenLastCalledWith(h.view, 2, 5);
+		expect(foldHeadingInView).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries after Zotero finishes cursor placement, even if the file was already active", () => {
+		const h = setup();
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledOnce();
+		h.opened(h.file);
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not re-fold a section when the user clicks before a pending render retry", () => {
+		const h = setup();
+		vi.mocked(foldHeadingInView).mockReturnValueOnce("not-ready");
+		vi.runAllTimers();
+		h.view.containerEl.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+		h.emit("layout-change");
+		h.emit("changed", h.file);
+		vi.runAllTimers();
+		expect(foldHeadingInView).toHaveBeenCalledOnce();
 	});
 });

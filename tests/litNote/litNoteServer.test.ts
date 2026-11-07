@@ -155,6 +155,30 @@ describe("Lit Note Server", () => {
 	});
 
 	describe("create action", () => {
+		it.each(["create", "open"])("signals transcript folding after final cursor placement for %s", async (action) => {
+			const { app } = makeApp();
+			const setEphemeralState = vi.fn();
+			const leaf = {
+				openFile: vi.fn(), setEphemeralState,
+				view: { editor: { focus: vi.fn(), setCursor: vi.fn() } },
+				detach: vi.fn(),
+			};
+			app.workspace.getLeaf.mockReturnValue(leaf);
+			vi.mocked(askNoteDecision).mockResolvedValue("create");
+			const onNoteOpened = vi.fn(() => {
+				expect(setEphemeralState).toHaveBeenLastCalledWith({
+					cursor: { from: { line: 99999, ch: 0 }, to: { line: 99999, ch: 0 } },
+					line: 99999,
+				});
+				expect(leaf.view.editor.setCursor).toHaveBeenCalled();
+			});
+			const json = await post(app, {
+				action, data: [{ citekey: "new-note", title: "New Note" }],
+			}, { litNotesFolder: FOLDER, onNoteOpened });
+			expect(json.success).toBe(true);
+			expect(onNoteOpened).toHaveBeenCalledWith(expect.objectContaining({ path: `${FOLDER}/new-note.md` }));
+		});
+
 		it("creates new notes and opens them", async () => {
 			const { app, created } = makeApp();
 			const json = await post(app, {

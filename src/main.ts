@@ -222,7 +222,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		registerTranscriptFolding(this, () => this.settings);
+		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
 		this.viewTracker = new ViewTracker(this.settings.litNoteLastViewed);
@@ -258,6 +258,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 			transcriptHeading: this.settings.transcriptHeading,
 			transcriptFormat: this.settings.transcriptFormat,
+			onNoteOpened: foldOpenedTranscript,
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
 
