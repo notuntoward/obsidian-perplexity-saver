@@ -374,7 +374,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerTimestampLinks(
 			this,
 			() => this.settings.timestampClickAction,
-			(request) => void this.openTimestamp(request)
+			(request) => void this.openTimestamp(request).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not open timestamp", error);
+				new Notice("Could not open timestamp in video viewer.");
+			})
 		);
 
 		this.registerEditorExtension(perplexityInputStateField(this));

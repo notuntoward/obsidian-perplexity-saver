@@ -1,6 +1,8 @@
 import { EditorView } from "@codemirror/view";
 import type { Plugin } from "obsidian";
 import { onEachDocument } from "commons/windows";
+import { registerLinkActivation, registerNativeLinkActivation } from "commons/links";
+import { Notice } from "obsidian";
 import { linkUrlAt, parseYouTubeUrl } from "./youtubeLinks";
 
 export type TimestampClickAction = "viewer" | "browser";
@@ -53,6 +55,24 @@ export function timestampForEvent(evt: MouseEvent, action: TimestampClickAction)
 	return { videoId: parsed.videoId, seconds: parsed.seconds, target };
 }
 
+/** Native keyboard following reads the cursor, not the mouse hit-test or rendered link span. */
+export function keyboardTimestamp(target: Element, action: TimestampClickAction): TimestampRequest | null {
+	if (action !== "viewer") return null;
+	const editorEl = target.closest(".cm-editor");
+	let url: string | null;
+	if (editorEl) {
+		const view = EditorView.findFromDOM(editorEl as HTMLElement);
+		if (!view || view.composing || view.state.selection.ranges.length !== 1 || !view.state.selection.main.empty) return null;
+		const head = view.state.selection.main.head;
+		const line = view.state.doc.lineAt(head);
+		url = linkUrlAt(line.text, head - line.from);
+	} else {
+		url = target.closest("a[href]")?.getAttribute("href") ?? null;
+	}
+	const parsed = url ? parseYouTubeUrl(url) : null;
+	return parsed && parsed.seconds !== null ? { ...parsed, seconds: parsed.seconds, target } : null;
+}
+
 /**
  * Route clicks on YouTube timestamp links (in notes and in the transcript panel)
  * to the video viewer, in the main window and every pop-out.
@@ -62,6 +82,15 @@ export function registerTimestampLinks(
 	getAction: () => TimestampClickAction,
 	open: (request: TimestampRequest) => void
 ): void {
+	registerLinkActivation(plugin, (target, checking) => {
+		const request = keyboardTimestamp(target, getAction());
+		if (!request) return false;
+		if (!checking) open(request);
+		return true;
+	});
+	const restore = registerNativeLinkActivation(plugin.app);
+	if (restore) plugin.register(restore);
+	else new Notice("Keyboard timestamp links unavailable: native follow link command could not be registered.");
 	const swallow = (evt: MouseEvent): void => {
 		if (!timestampForEvent(evt, getAction())) return;
 		evt.preventDefault();
