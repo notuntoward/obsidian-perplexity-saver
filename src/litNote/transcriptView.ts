@@ -40,9 +40,9 @@ export function transcriptSearchCommands(app: App): Command[] {
 		checkCallback: (checking: boolean): boolean => {
 			for (const leaf of app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 				if (!(leaf.view instanceof TranscriptView)) continue;
-				const input = leaf.view.contentEl.querySelector(".perplexity-saver-transcript-search input");
-				if (input && input.ownerDocument.activeElement === input) {
-					return dispatchSearchNavigation(input, direction, checking);
+				const target = leaf.view.contentEl.ownerDocument.activeElement;
+				if (target && leaf.view.contentEl.contains(target)) {
+					return dispatchSearchNavigation(target, direction, checking);
 				}
 			}
 			return false;
@@ -155,7 +155,8 @@ export function stepRow(visible: number[], current: number, delta: 1 | -1, onScr
 
 function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 	const navigation = (["forward", "backward"] as const).map((direction): KeyHint => {
-		const key = getCommandHotkeyLabel(app, `perplexity-saver:transcript-search-${direction}`);
+		const key = getCommandHotkeyLabel(app, `perplexity-saver:transcript-search-${direction}`)
+			|| getCommandHotkeyLabel(app, `incremental-search:${direction}`);
 		return {
 			key: key || "Unassigned",
 			action: direction === "forward" ? "next match" : "previous",
@@ -527,9 +528,10 @@ export class TranscriptView extends ItemView {
 			this.rememberSearchOrigin();
 			this.updateSearchHints();
 		});
-		this.searchNavigationCleanup = onSearchNavigation(search.inputEl, (direction, checking) => {
+		this.searchNavigationCleanup = onSearchNavigation(this.contentEl, (direction, checking) => {
 			if (!checking) {
-				this.stepMatch(direction === "forward" ? 1 : -1);
+				if (search.inputEl.ownerDocument.activeElement !== search.inputEl) this.focusSearch();
+				else this.stepMatch(direction === "forward" ? 1 : -1);
 				this.updateSearchHints();
 			}
 			return true;

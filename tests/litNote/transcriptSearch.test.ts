@@ -118,7 +118,46 @@ describe("accepting transcript search", () => {
 		expect(doc.activeElement).toBe(input);
 		expect(play).not.toHaveBeenCalled();
 		key(input, "Tab");
+		expect(commands[0].checkCallback!(true)).toBe(true);
+	});
+
+	it.each([false, true])("starts transcript search from a row before advancing, with either command owner (popout=%s)", async (popout) => {
+		settings.keyboard = "emacs";
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const input = view.contentEl.querySelector("input")!;
+		if (popout) {
+			for (const el of [input, ...rows(view)]) el.focus = () => { active = el; };
+		}
+		Object.assign(view.app.workspace, { getLeavesOfType: () => [{ view }] });
+		const commands = transcriptSearchCommands(view.app);
+		for (const native of [true, false]) {
+			for (const direction of ["forward", "backward"] as const) {
+				const command = (checking: boolean): boolean => native
+					? commands[direction === "forward" ? 0 : 1].checkCallback!(checking) === true
+					: dispatchSearchNavigation(doc.activeElement, direction, checking);
+				input.value = "";
+				input.dispatchEvent(new Event("input"));
+				rows(view)[2].focus();
+				expect(command(true)).toBe(true);
+				expect(doc.activeElement).toBe(rows(view)[2]);
+				expect(command(false)).toBe(true);
+				expect(doc.activeElement).toBe(input);
+				expect(input.value).toBe("");
+				search(view);
+				expect(command(false)).toBe(true);
+				expect(rows(view)[3].classList.contains("is-search-current")).toBe(true);
+				expect(doc.activeElement).toBe(input);
+			}
+		}
+		const outside = doc.body.createEl("input");
+		if (popout) outside.focus = () => { active = outside; };
+		outside.focus();
 		expect(commands[0].checkCallback!(true)).toBe(false);
+		expect(dispatchSearchNavigation(outside, "forward", true)).toBe(false);
+		expect(play).not.toHaveBeenCalled();
 	});
 
 	it.each(["emacs", "obsidian"] as const)("advances with the shared commands without exiting or playing (%s)", async (keyboard) => {
@@ -198,6 +237,19 @@ describe("accepting transcript search", () => {
 		expect(view.contentEl.querySelector(".is-search .is-disabled")).not.toBeNull();
 	});
 
+	it("shows optional Incremental Search bindings when Saver commands are unassigned", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		Object.assign(view.app, { hotkeyManager: {
+			printHotkeyForCommand: (id: string) => id === "incremental-search:forward" ? "Ctrl + S"
+				: id === "incremental-search:backward" ? "Ctrl + R" : "",
+		} });
+		search(view);
+		expect(view.contentEl.querySelector(".is-search")?.textContent).toContain("Ctrl + S next match");
+		expect(view.contentEl.querySelector(".is-search")?.textContent).toContain("Ctrl + R previous");
+		expect(view.contentEl.querySelector(".is-search .is-disabled")).toBeNull();
+	});
+
 	it("removes command receivers on rerender and close", async () => {
 		const view = await panel();
 		const old = search(view);
@@ -209,7 +261,7 @@ describe("accepting transcript search", () => {
 		expect(dispatchSearchNavigation(input, "forward", false)).toBe(false);
 	});
 
-	it("routes shared navigation in a pop-out and stops claiming after acceptance", async () => {
+	it("routes shared navigation in a pop-out and starts searching again after acceptance", async () => {
 		const doc = document.implementation.createHTMLDocument();
 		let active: Element | null = null;
 		Object.defineProperty(doc, "activeElement", { get: () => active });
@@ -219,8 +271,9 @@ describe("accepting transcript search", () => {
 		expect(dispatchSearchNavigation(active, "forward", false)).toBe(true);
 		expect(rows(view)[3].classList.contains("is-search-current")).toBe(true);
 		key(input, "Tab");
-		expect(dispatchSearchNavigation(active, "forward", false)).toBe(false);
 		expect(active).toBe(rows(view)[3]);
+		expect(dispatchSearchNavigation(active, "forward", false)).toBe(true);
+		expect(active).toBe(input);
 		expect(play).not.toHaveBeenCalled();
 	});
 
