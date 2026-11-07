@@ -44,6 +44,7 @@ import {
 	hideTranscriptPanels,
 	showTranscriptPanel,
 	visibleTranscriptLeaves,
+	transcriptSearchCommands,
 	type TranscriptPanelLocation,
 	type TranscriptPlacement,
 	type TranscriptSearchSettings,
@@ -288,6 +289,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				return true;
 			},
 		});
+		for (const command of transcriptSearchCommands(this.app)) this.addCommand(command);
 
 		this.registerView(
 			VIDEO_VIEW_TYPE,
@@ -1223,7 +1225,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Search keyboard behavior",
-						desc: "Emacs: Incremental Search's Forward Emacs / Reverse Emacs commands navigate using their assigned hotkeys; Enter accepts and Escape cancels. Obsidian: Enter next; Shift+Enter previous; Escape accepts. Tab accepts without playing; Ctrl/Cmd+G cancels; Ctrl/Cmd+Enter plays.",
+						desc: "Emacs: Perplexity Saver's Transcript search: Forward Emacs / Reverse Emacs commands navigate using their assigned hotkeys; Enter accepts and Escape cancels. Assign shortcuts in Settings → Hotkeys. No other plugin is required. Obsidian: Enter next; Shift+Enter previous; Escape accepts. Tab accepts without playing; Ctrl/Cmd+G cancels; Ctrl/Cmd+Enter plays.",
 						control: {
 							type: "dropdown",
 							key: "transcriptSearchBehavior",

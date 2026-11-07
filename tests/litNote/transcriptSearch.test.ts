@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
-import { TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
+import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
 
@@ -59,8 +59,8 @@ async function panel(doc = document): Promise<TranscriptView> {
 		},
 		workspace: { requestSaveLayout: vi.fn() },
 		hotkeyManager: {
-			printHotkeyForCommand: (id: string) => id === "incremental-search:forward" ? "Ctrl + S"
-				: id === "incremental-search:backward" ? "Ctrl + R" : "",
+			printHotkeyForCommand: (id: string) => id === "perplexity-saver:transcript-search-forward" ? "Ctrl + S"
+				: id === "perplexity-saver:transcript-search-backward" ? "Ctrl + R" : "",
 		},
 	} as unknown as App;
 	const view = new TranscriptView({ app } as unknown as WorkspaceLeaf, {
@@ -91,6 +91,36 @@ function rows(view: TranscriptView): HTMLElement[] {
 }
 
 describe("accepting transcript search", () => {
+	it.each([false, true])("provides standalone native transcript commands with no Incremental Search installed (popout=%s)", async (popout) => {
+		settings.keyboard = "emacs";
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const input = view.contentEl.querySelector("input")!;
+		if (popout) {
+			input.focus = () => { active = input; };
+			for (const row of rows(view)) row.focus = () => { active = row; };
+		}
+		Object.assign(view.app.workspace, { getLeavesOfType: () => [{ view }] });
+		const commands = transcriptSearchCommands(view.app);
+		expect(commands.map((command) => command.name)).toEqual([
+			"Transcript search: Forward Emacs", "Transcript search: Reverse Emacs",
+		]);
+		expect(commands.every((command) => command.hotkeys === undefined)).toBe(true);
+		search(view);
+		expect(commands[0].checkCallback!(true)).toBe(true);
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+		expect(commands[0].checkCallback!(false)).toBe(true);
+		expect(rows(view)[3].classList.contains("is-search-current")).toBe(true);
+		expect(commands[1].checkCallback!(false)).toBe(true);
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+		expect(doc.activeElement).toBe(input);
+		expect(play).not.toHaveBeenCalled();
+		key(input, "Tab");
+		expect(commands[0].checkCallback!(true)).toBe(false);
+	});
+
 	it.each(["emacs", "obsidian"] as const)("advances with the shared commands without exiting or playing (%s)", async (keyboard) => {
 		settings.keyboard = keyboard;
 		const view = await panel();
@@ -123,10 +153,12 @@ describe("accepting transcript search", () => {
 		const view = await panel();
 		const input = search(view);
 		let forwardKey = "s";
+		Object.assign(view.app.workspace, { getLeavesOfType: () => [{ view }] });
+		const commands = transcriptSearchCommands(view.app);
 		const nativeCommandDispatcher = (event: KeyboardEvent): void => {
 			const direction = event.ctrlKey && event.key === forwardKey ? "forward"
 				: event.ctrlKey && event.key === "r" ? "backward" : null;
-			if (direction && dispatchSearchNavigation(event.target as Element, direction, false)) {
+			if (direction && commands[direction === "forward" ? 0 : 1].checkCallback!(false)) {
 				event.preventDefault();
 				event.stopPropagation();
 			}

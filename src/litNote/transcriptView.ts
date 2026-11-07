@@ -1,9 +1,10 @@
 import { ItemView, Notice, Scope, SearchComponent, TFile, setIcon } from "obsidian";
-import type { App, ViewStateResult, WorkspaceLeaf } from "obsidian";
+import type { App, Command, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import { getCommandHotkeyLabel, renderHighlightedText, renderKeyHints, type KeyHint } from "commons/modal";
 import { writeClipboardIn } from "commons/windows";
 import {
 	findLiteralRanges,
+	dispatchSearchNavigation,
 	matchAllWords,
 	onSearchNavigation,
 	searchExitAction,
@@ -30,6 +31,24 @@ import { formatShortTimestamp } from "./youtubeTranscript";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
 
 export const TRANSCRIPT_VIEW_TYPE = "perplexity-saver-transcript";
+
+/** Native shortcuts belong to Saver; other search plugins are optional. */
+export function transcriptSearchCommands(app: App): Command[] {
+	return (["forward", "backward"] as const).map((direction) => ({
+		id: `transcript-search-${direction}`,
+		name: `Transcript search: ${direction === "forward" ? "Forward" : "Reverse"} Emacs`,
+		checkCallback: (checking: boolean): boolean => {
+			for (const leaf of app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+				if (!(leaf.view instanceof TranscriptView)) continue;
+				const input = leaf.view.contentEl.querySelector(".perplexity-saver-transcript-search input");
+				if (input && input.ownerDocument.activeElement === input) {
+					return dispatchSearchNavigation(input, direction, checking);
+				}
+			}
+			return false;
+		},
+	}));
+}
 
 export type TranscriptViewMode = "lines" | "paragraphs";
 
@@ -136,7 +155,7 @@ export function stepRow(visible: number[], current: number, delta: 1 | -1, onScr
 
 function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 	const navigation = (["forward", "backward"] as const).map((direction): KeyHint => {
-		const key = getCommandHotkeyLabel(app, `incremental-search:${direction}`);
+		const key = getCommandHotkeyLabel(app, `perplexity-saver:transcript-search-${direction}`);
 		return {
 			key: key || "Unassigned",
 			action: direction === "forward" ? "next match" : "previous",
