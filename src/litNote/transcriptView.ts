@@ -2,7 +2,14 @@ import { ItemView, Notice, Scope, SearchComponent, TFile, setIcon } from "obsidi
 import type { App, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import { renderHighlightedText, renderKeyHints, type KeyHint } from "commons/modal";
 import { writeClipboardIn } from "commons/windows";
-import { matchAllWords } from "commons/search";
+import {
+	findLiteralRanges,
+	matchAllWords,
+	searchExitAction,
+	shouldShowAllMatches,
+	type AllMatchesDisplayMode,
+	type SearchExitBehavior,
+} from "commons/search";
 import {
 	getWindowForLeaf,
 	isInCollapsedSidebar,
@@ -24,6 +31,12 @@ import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLin
 export const TRANSCRIPT_VIEW_TYPE = "perplexity-saver-transcript";
 
 export type TranscriptViewMode = "lines" | "paragraphs";
+
+export interface TranscriptSearchSettings {
+	keyboard: SearchExitBehavior;
+	matching: "all-words" | "phrase";
+	highlights: AllMatchesDisplayMode;
+}
 
 interface TranscriptViewState {
 	file?: string | null;
@@ -69,6 +82,7 @@ export function transcriptRows(
 /** What the transcript panel needs from the plugin. */
 export interface TranscriptViewHost {
 	getHeadingName(): string;
+	getSearchSettings(): TranscriptSearchSettings;
 	/**
 	 * Show the video at `seconds` in the video viewer; `url` is the row's timestamp
 	 * link (may be empty). With `play`, start playing; otherwise keep playing or paused.
@@ -119,17 +133,18 @@ export function stepRow(visible: number[], current: number, delta: 1 | -1, onScr
 	return visible[Math.min(visible.length - 1, Math.max(0, pos + delta))];
 }
 
-const SEARCH_HINTS: KeyHint[][] = [
-	[
-		{ key: "Enter", action: "next match" },
-		{ key: "Shift+Enter", action: "previous" },
-		{ key: "Ctrl+Enter", action: "play match" },
-	],
-	[
-		{ key: "Tab", action: "go to lines" },
-		{ key: "Esc", action: "clear" },
-	],
-];
+function searchHints(behavior: SearchExitBehavior): KeyHint[][] {
+	return [
+		behavior === "emacs"
+			? [{ key: "Enter", action: "accept match" }, { key: "Esc", action: "cancel" }]
+			: [{ key: "Enter", action: "next match" }, { key: "Shift+Enter", action: "previous" }, { key: "Esc", action: "accept match" }],
+		[
+			{ key: "Tab", action: "accept & browse" },
+			{ key: "Ctrl+Enter", action: "play match" },
+			{ key: "Ctrl+G", action: "cancel" },
+		],
+	];
+}
 
 const ROW_HINTS: KeyHint[][] = [
 	[
@@ -151,6 +166,7 @@ interface RenderedRow {
 	el: HTMLElement;
 	textEl: HTMLElement;
 	highlighted: boolean;
+	ranges: [number, number][];
 }
 
 /** Side panel listing a literature note's stored YouTube transcript, with search and playback following. */
@@ -169,6 +185,9 @@ export class TranscriptView extends ItemView {
 	private matchCountEl: HTMLElement | null = null;
 	private listEl: HTMLElement | null = null;
 	private filterBtn: HTMLElement | null = null;
+	private highlightBtn: HTMLElement | null = null;
+	private demandHighlights = false;
+	private searchOrigin: { row: number; scrollTop: number } | null = null;
 	/** Show only the rows matching the search. */
 	private filter = false;
 	/** The keydown already handled by the search box or list, so the view scope does not handle it twice. */
@@ -186,9 +205,18 @@ export class TranscriptView extends ItemView {
 		this.scope = new Scope(this.app.scope);
 		this.scope.register(["Mod"], "Enter", (evt) => {
 			if (evt === this.handledKey) return false;
+			this.handledKey = evt;
 			const row = this.focusedRowIndex();
 			if (row >= 0) this.playRow(row, true);
 			else this.playMatch();
+			return false;
+		});
+		this.scope.register(["Mod"], "G", (evt) => {
+			if (evt === this.handledKey) return false;
+			const input = this.search?.inputEl;
+			if (!input || input.ownerDocument.activeElement !== input) return true;
+			this.handledKey = evt;
+			this.finishSearch(false);
 			return false;
 		});
 		this.scope.register(["Mod"], "F", () => {
@@ -293,6 +321,7 @@ export class TranscriptView extends ItemView {
 	focusSearch(): void {
 		const input = this.search?.inputEl;
 		if (!input) return;
+		this.rememberSearchOrigin();
 		input.focus();
 		input.select();
 	}
@@ -331,10 +360,16 @@ export class TranscriptView extends ItemView {
 		this.render();
 	}
 
+	/** Apply changed preferences without reloading the note or discarding the query. */
+	refreshSearchSettings(): void {
+		this.render();
+	}
+
 	private render(): void {
 		const el = this.contentEl;
 		const input = this.search?.inputEl;
 		const searchFocused = !!input && input.ownerDocument.activeElement === input;
+		const rowHadFocus = this.focusedRowIndex() >= 0;
 		el.empty();
 		el.addClass("perplexity-saver-transcript-view");
 		this.rendered = [];
@@ -342,9 +377,9 @@ export class TranscriptView extends ItemView {
 		this.matches = [];
 		this.search = null;
 		this.matchCountEl = null;
-		const rowHadFocus = this.focusedRowIndex() >= 0;
 		this.listEl = null;
 		this.filterBtn = null;
+		this.highlightBtn = null;
 		this.currentRow = -1;
 
 		const heading = normalizeTranscriptHeading(this.host.getHeadingName());
@@ -392,7 +427,7 @@ export class TranscriptView extends ItemView {
 		});
 		this.buildSearch(header);
 		const hints = header.createDiv({ cls: "perplexity-saver-transcript-hints" });
-		renderKeyHints(hints.createDiv({ cls: "is-search" }), SEARCH_HINTS, "perplexity-saver");
+		renderKeyHints(hints.createDiv({ cls: "is-search" }), searchHints(this.host.getSearchSettings().keyboard), "perplexity-saver");
 		renderKeyHints(hints.createDiv({ cls: "is-rows" }), ROW_HINTS, "perplexity-saver");
 
 		const list = el.createDiv({
@@ -423,7 +458,7 @@ export class TranscriptView extends ItemView {
 				rowEl.createSpan({ cls: "perplexity-saver-transcript-time", text: stamp });
 			}
 			const textEl = rowEl.createDiv({ cls: "perplexity-saver-transcript-text", text: row.text });
-			this.rendered.push({ row, el: rowEl, textEl, highlighted: false });
+			this.rendered.push({ row, el: rowEl, textEl, highlighted: false, ranges: [] });
 			this.rowStarts.push(row.startSec);
 		}
 
@@ -440,43 +475,49 @@ export class TranscriptView extends ItemView {
 	private buildSearch(header: HTMLElement): void {
 		const bar = header.createDiv({ cls: "perplexity-saver-transcript-search" });
 		const search = new SearchComponent(bar);
+		const behavior = this.host.getSearchSettings().keyboard;
 		search.setPlaceholder("Search transcript");
 		search.setValue(this.query);
 		search.inputEl.setAttribute(
 			"aria-label",
-			"Search the transcript. Enter: next match, Shift+Enter: previous, Ctrl+Enter: play from the match, Escape: clear."
+			behavior === "emacs"
+				? "Search the transcript. Enter or Tab: accept and browse, Escape or Ctrl+G: cancel, Ctrl+Enter: play."
+				: "Search the transcript. Enter: next match, Shift+Enter: previous, Escape or Tab: accept and browse, Ctrl+G: cancel, Ctrl+Enter: play."
 		);
-		search.inputEl.setAttribute("aria-keyshortcuts", "Enter Shift+Enter Control+Enter Escape");
+		search.inputEl.setAttribute("aria-keyshortcuts", "Enter Shift+Enter Control+Enter Meta+Enter Tab Escape Control+g Meta+g F3 Shift+F3");
+		search.inputEl.addEventListener("focus", () => this.rememberSearchOrigin());
 		search.onChange((value) => {
 			this.query = value;
 			this.applySearch(true);
 		});
 		search.inputEl.addEventListener("keydown", (evt) => {
-			if (evt.key === "Enter") {
-				evt.preventDefault();
-				this.handledKey = evt;
-				if (evt.ctrlKey || evt.metaKey) {
-					evt.stopPropagation();
-					this.playMatch();
-				} else {
-					this.stepMatch(evt.shiftKey ? -1 : 1);
-				}
-			} else if (evt.key === "Tab" && !evt.shiftKey && !evt.ctrlKey && !evt.metaKey && !evt.altKey) {
-				evt.preventDefault();
-				this.focusLines();
-			} else if (evt.key === "Escape" && search.getValue()) {
-				evt.preventDefault();
-				evt.stopPropagation();
-				search.setValue("");
-				this.query = "";
-				this.applySearch(false);
-			}
+			if (evt === this.handledKey) return;
+			const mod = evt.ctrlKey || evt.metaKey;
+			const action = searchExitAction(evt.key, evt.shiftKey, this.host.getSearchSettings().keyboard);
+			if (mod && evt.key.toLowerCase() === "g") this.finishSearch(false);
+			else if (mod && evt.key === "Enter") this.playMatch();
+			else if (evt.key === "Tab" && !evt.shiftKey && !mod && !evt.altKey) this.finishSearch(true);
+			else if (evt.key === "F3") this.stepMatch(evt.shiftKey ? -1 : 1);
+			else if (action === "accept") this.finishSearch(true);
+			else if (action === "cancel") this.finishSearch(false);
+			else if (action === "next" || action === "previous") this.stepMatch(action === "previous" ? -1 : 1);
+			else return;
+			evt.preventDefault();
+			evt.stopPropagation();
+			this.handledKey = evt;
 		});
 		this.search = search;
 		this.matchCountEl = bar.createSpan({ cls: "perplexity-saver-transcript-matches" });
-		this.iconButton(bar, "chevron-up", "Previous match (Shift+Enter)", () => this.stepMatch(-1));
-		this.iconButton(bar, "chevron-down", "Next match (Enter)", () => this.stepMatch(1));
+		this.iconButton(bar, "chevron-up", behavior === "obsidian" ? "Previous match (Shift+Enter)" : "Previous match (Shift+F3)", () => this.stepMatch(-1));
+		this.iconButton(bar, "chevron-down", behavior === "obsidian" ? "Next match (Enter)" : "Next match (F3)", () => this.stepMatch(1));
+		this.iconButton(bar, "check", "Accept match and browse transcript (Tab)", () => this.finishSearch(true));
 		this.iconButton(bar, "play", "Play the video from this match (Ctrl+Enter)", () => this.playMatch());
+		if (this.host.getSearchSettings().highlights === "on-demand") {
+			this.highlightBtn = this.iconButton(bar, "highlighter", "Toggle other match highlights", () => {
+				this.demandHighlights = !this.demandHighlights;
+				this.updateHighlights();
+			});
+		}
 		this.filterBtn = this.iconButton(bar, "filter", "Show only matching lines", () => {
 			this.filter = !this.filter;
 			this.applyFilter();
@@ -504,22 +545,35 @@ export class TranscriptView extends ItemView {
 	/** Highlight the rows matching the query and, with `jump`, scroll to the first match. */
 	private applySearch(jump: boolean): void {
 		const query = this.query.trim();
+		const matching = this.host.getSearchSettings().matching;
 		this.matches = [];
 		this.rendered.forEach((r, i) => {
-			const ranges = query ? matchAllWords(r.row.text, query) : null;
-			if (ranges || r.highlighted) {
-				r.textEl.empty();
-				renderHighlightedText(r.textEl, r.row.text, ranges ?? []);
-				r.highlighted = !!ranges;
-			}
-			r.el.toggleClass("is-match", !!ranges);
+			r.ranges = !query ? [] : matching === "phrase"
+				? findLiteralRanges(r.row.text, query)
+				: matchAllWords(r.row.text, query) ?? [];
+			r.el.toggleClass("is-match", r.ranges.length > 0);
 			r.el.removeClass("is-search-current");
-			if (ranges) this.matches.push(i);
+			if (r.ranges.length) this.matches.push(i);
 		});
 		this.matchIndex = -1;
 		this.applyFilter();
 		if (this.matches.length) this.selectMatch(0, jump);
+		else this.updateHighlights();
 		this.updateMatchCount();
+	}
+
+	private updateHighlights(): void {
+		const all = shouldShowAllMatches(this.host.getSearchSettings().highlights, this.demandHighlights);
+		this.highlightBtn?.toggleClass("is-active", this.demandHighlights);
+		this.highlightBtn?.setAttribute("aria-pressed", String(this.demandHighlights));
+		this.rendered.forEach((r, i) => {
+			const highlight = r.ranges.length > 0 && (all || i === this.matches[this.matchIndex]);
+			if (highlight || r.highlighted) {
+				r.textEl.empty();
+				renderHighlightedText(r.textEl, r.row.text, highlight ? r.ranges : []);
+			}
+			r.highlighted = highlight;
+		});
 	}
 
 	private selectMatch(index: number, scroll: boolean): void {
@@ -531,7 +585,28 @@ export class TranscriptView extends ItemView {
 			this.setFocusRow(this.matches[index]);
 			if (scroll) this.scrollToRow(r.el, false, false);
 		}
+		this.updateHighlights();
 		this.updateMatchCount();
+	}
+
+	private rememberSearchOrigin(): void {
+		this.searchOrigin ??= { row: this.focusRow, scrollTop: this.listEl ? scrollParent(this.listEl)?.scrollTop ?? 0 : 0 };
+	}
+
+	private finishSearch(accept: boolean): void {
+		const origin = this.searchOrigin;
+		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow : origin?.row ?? this.focusRow;
+		this.query = "";
+		this.search?.setValue("");
+		this.demandHighlights = false;
+		this.applySearch(false);
+		this.searchOrigin = null;
+		this.moveFocus(target);
+		if (!accept && origin && this.listEl) {
+			const box = scrollParent(this.listEl);
+			if (box) box.scrollTop = origin.scrollTop;
+		}
+		this.userScrollAt = Date.now();
 	}
 
 	private stepMatch(delta: number): void {
@@ -604,6 +679,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	private onListKey(evt: KeyboardEvent): void {
+		if (evt === this.handledKey) return;
 		const index = this.focusedRowIndex();
 		if (index < 0) return;
 		const mod = evt.ctrlKey || evt.metaKey;

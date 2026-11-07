@@ -9,6 +9,7 @@ tsconfig.tsbuildinfo
 # npm
 node_modules
 .eslintcache
+test-results/
 
 # IDEs
 .vscode/

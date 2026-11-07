@@ -46,6 +46,7 @@ import {
 	visibleTranscriptLeaves,
 	type TranscriptPanelLocation,
 	type TranscriptPlacement,
+	type TranscriptSearchSettings,
 } from "./litNote/transcriptView";
 import {
 	VIDEO_VIEW_TYPE,
@@ -155,6 +156,9 @@ export interface PerplexitySaverSettings {
 	transcriptPanelLocation: TranscriptPanelLocation;
 	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
 	followTranscript: boolean;
+	transcriptSearchBehavior: TranscriptSearchSettings["keyboard"];
+	transcriptSearchMatching: TranscriptSearchSettings["matching"];
+	transcriptSearchHighlights: TranscriptSearchSettings["highlights"];
 }
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -182,6 +186,9 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	videoViewerLocation: "split",
 	transcriptPanelLocation: "sidebar",
 	followTranscript: true,
+	transcriptSearchBehavior: "obsidian",
+	transcriptSearchMatching: "all-words",
+	transcriptSearchHighlights: "always",
 };
 
 interface InlineInputData {
@@ -251,6 +258,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
+					getSearchSettings: () => ({
+						keyboard: this.settings.transcriptSearchBehavior,
+						matching: this.settings.transcriptSearchMatching,
+						highlights: this.settings.transcriptSearchHighlights,
+					}),
 					playAt: (filePath, url, seconds, play) => void this.playTranscriptAt(filePath, url, seconds, play),
 				})
 		);
@@ -961,6 +973,11 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		if (key === "transcriptHeading") {
 			this.plugin.applyTranscriptHeading();
 		}
+		if (key === "transcriptSearchBehavior" || key === "transcriptSearchMatching" || key === "transcriptSearchHighlights") {
+			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+				if (leaf.view instanceof TranscriptView) leaf.view.refreshSearchSettings();
+			}
+		}
 		if (key === "transcriptFormat") {
 			if (this.plugin.litNoteServerSettings) {
 				this.plugin.litNoteServerSettings.transcriptFormat = value as TranscriptFormat;
@@ -1204,6 +1221,33 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				type: "group",
 				heading: "Transcript panel",
 				items: [
+					{
+						name: "Search keyboard behavior",
+						desc: "Emacs: Enter accepts; Escape cancels. Obsidian: Enter next; Shift+Enter previous; Escape accepts. Tab accepts and restores all lines without playing. Ctrl/Cmd+G cancels; Ctrl/Cmd+Enter plays.",
+						control: {
+							type: "dropdown",
+							key: "transcriptSearchBehavior",
+							options: { emacs: "Emacs-style", obsidian: "Obsidian-style (default)" },
+						},
+					},
+					{
+						name: "Transcript matching",
+						desc: "All words matches each word in any order. Literal phrase requires the exact phrase. Both ignore case.",
+						control: {
+							type: "dropdown",
+							key: "transcriptSearchMatching",
+							options: { "all-words": "All words (default)", phrase: "Literal phrase" },
+						},
+					},
+					{
+						name: "Highlight all matches",
+						desc: "Always highlights every matching row. On demand uses the search bar's highlighter button. Off highlights only the current match. Filtering is independent.",
+						control: {
+							type: "dropdown",
+							key: "transcriptSearchHighlights",
+							options: { always: "Always (default)", "on-demand": "On demand", off: "Off" },
+						},
+					},
 					{
 						name: "Transcript panel location",
 						desc: "Where the transcript panel opens: in the right sidebar, or below the YouTube video viewer (the viewer opens too if needed).",

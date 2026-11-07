@@ -172,12 +172,13 @@
 
 .perplexity-saver-transcript-search {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--size-2-2);
 }
 
 .perplexity-saver-transcript-search .search-input-container {
-	flex: 1 1 auto;
+	flex: 1 1 160px;
 	min-width: 0;
 }
 
