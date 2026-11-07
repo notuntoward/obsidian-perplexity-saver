@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EditorState } from "@codemirror/state";
 import {
 	clampPan,
 	collectNoteTimestamps,
@@ -14,6 +15,7 @@ import {
 	compactNoteName,
 	snipRect,
 	timestampLink,
+	timestampClipboardText,
 	watchUrl,
 	zoomAt,
 } from "../../src/video/youtubeLinks";
@@ -95,6 +97,23 @@ describe("linkUrlAt", () => {
 });
 
 describe("formatting", () => {
+	it("defaults copied timestamps to a list item with space for a plain-text description", () => {
+		const link = timestampLink(ID, 65.9);
+		expect(timestampClipboardText(ID, 65.9)).toBe(`- ${link}: `);
+		expect(timestampClipboardText(ID, 65.9, "link")).toBe(link);
+		expect(timestampClipboardText(ID, 65.9, "list")).toBe(`- ${link}: `);
+		expect(timestampClipboardText(ID, 65.9)).toMatch(/\): $/);
+	});
+
+	it("leaves the native editor insertion cursor after the description separator", () => {
+		const text = timestampClipboardText(ID, 65);
+		const empty = EditorState.create();
+		const pasted = empty.update(empty.replaceSelection(text)).state;
+		expect(pasted.selection.main.head).toBe(text.length);
+		const described = pasted.update(pasted.replaceSelection("description")).state;
+		expect(described.doc.toString()).toBe(`- ${timestampLink(ID, 65)}: description`);
+	});
+
 	it("formats clocks and links", () => {
 		expect(formatClock(65)).toBe("1:05");
 		expect(formatClock(3723.9)).toBe("1:02:03");
@@ -109,6 +128,7 @@ describe("formatting", () => {
 		expect(url.searchParams.get("enablejsapi")).toBe("1");
 		expect(url.searchParams.get("controls")).toBe("0");
 		expect(url.searchParams.get("start")).toBe("42");
+		expect(url.searchParams.get("autoplay")).toBe("0");
 	});
 
 	it("names screenshots safely and pairs the embed with a timestamp link", () => {

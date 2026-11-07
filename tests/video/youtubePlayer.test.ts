@@ -86,7 +86,7 @@ describe("YouTubeEmbed", () => {
 		t.player.toggle();
 		t.player.seekTo(90);
 		t.player.setPlaybackRate(1.5);
-		expect(t.commands()).toEqual(["playVideo", "pauseVideo", "seekTo", "setPlaybackRate"]);
+		expect(t.commands()).toEqual(["playVideo", "pauseVideo", "seekTo", "pauseVideo", "setPlaybackRate"]);
 		expect(t.player.playing).toBe(false);
 	});
 
@@ -95,6 +95,45 @@ describe("YouTubeEmbed", () => {
 		t.load();
 		t.reply({ currentTime: 30, playerState: PLAYER_STATE.cued });
 		expect(t.commands()).not.toContain("playVideo");
+	});
+
+	it("keeps a seek paused before readiness and after a delayed playing reply", () => {
+		const t = setup();
+		t.player.seekTo(65);
+		expect(t.commands().slice(-2)).toEqual(["seekTo", "pauseVideo"]);
+		t.load();
+		t.reply({ currentTime: 65, playerState: PLAYER_STATE.playing });
+		expect(t.commands().at(-1)).toBe("pauseVideo");
+		expect(t.player.playing).toBe(false);
+	});
+
+	it("keeps paused seeks paused but does not interrupt an already-playing video", () => {
+		const t = setup();
+		t.reply({ currentTime: 30, playerState: PLAYER_STATE.paused });
+		t.player.seekTo(65);
+		expect(t.commands().slice(-2)).toEqual(["seekTo", "pauseVideo"]);
+		t.player.play();
+		t.player.seekTo(90);
+		expect(t.commands().at(-1)).toBe("seekTo");
+		expect(t.player.playing).toBe(true);
+	});
+
+	it("honors explicit playback before readiness and explicit cancellation of autoplay", () => {
+		const playing = setup();
+		playing.player.play();
+		playing.reply({ currentTime: 30, playerState: PLAYER_STATE.cued });
+		expect(playing.player.playing).toBe(true);
+		const paused = setup({ autoplay: true });
+		paused.player.pause();
+		paused.reply({ currentTime: 30, playerState: PLAYER_STATE.cued });
+		expect(paused.commands()).not.toContain("playVideo");
+	});
+
+	it("plays when opened with explicit timestamp playback", () => {
+		const t = setup({ autoplay: true });
+		t.reply({ currentTime: 30, playerState: PLAYER_STATE.cued });
+		expect(t.commands().at(-1)).toBe("playVideo");
+		expect(t.player.playing).toBe(true);
 	});
 
 	it("stops listening on destroy", () => {

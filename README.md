@@ -91,7 +91,9 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 
 ### YouTube video viewer
 
-Clicking a YouTube link that has a time (`&t=83`, `?t=1m23s`, `#t=83`), whether one you typed, one in the stored transcript, or one in the transcript panel, opens the video at that moment in the viewer. This works in reading view and live preview. Ctrl/Cmd-click does the opposite of the *Timestamp link click* setting (opens the browser instead of the viewer, or the other way round). One viewer is reused: clicking another timestamp seeks the open video, keeping it playing or paused. A newly opened video starts paused at the time; press play (or Space) to start it. Playing from a transcript search match starts playback.
+Clicking a YouTube link that has a time (`&t=83`, `?t=1m23s`, `#t=83`), whether one you typed, one in the stored transcript, or one in the transcript panel, opens the video at that moment in the viewer and starts playback. This works in reading view and live preview. Ctrl/Cmd-click does the opposite of the *Timestamp link click* setting (opens the browser instead of the viewer, or the other way round). One viewer is reused. **Opening the viewer with a command, opening it alongside a transcript, or restoring it when Obsidian starts does not start playback**; press play (or Space) when ready. Seeking with the viewer's controls preserves paused/playing state. Playing from a transcript search match starts playback; accepting a search match does not.
+
+- **Copy timestamp**: the viewer's link button and **Video viewer: copy timestamp link** command copy the current position as plain-text Markdown. In **Settings → Video viewer → Copied timestamp format**, choose **List item** (the default) or **Timestamp link only** (the previous behavior). The default copies `- [1:23](https://www.youtube.com/watch?v=ID&t=83): `, including the trailing space. Paste into an editable note to leave the cursor after `: `, outside the link, ready to type a plain-text description. The default also applies to existing installations without an explicit format choice. This setting does not change transcript-row copies or screenshot copies.
 
 - **Controls**: back/forward 10 s, play/pause, current time, playback speed, zoom, copy timestamp link, open in browser, screenshot, and show/hide transcript. All controls are also commands that can be bound to hotkeys (see above).
 - **Keyboard**: click the picture (or Tab into the viewer) to give it keyboard focus. Space/K play-pause, J/L ±10 s, ←/→ ±5 s, Page Up/Page Down ±1 minute, Home/End start/end, `[`/`]` previous/next timestamp from your note, `<`/`>` slower/faster, `+`/`-` zoom, `0` reset zoom, C show/hide transcript. Tab moves through the buttons (Enter or Space presses the focused one; the speed button opens its menu, which arrow keys navigate) and the timeline, which is a slider (arrows move ±5 s).
@@ -162,6 +164,7 @@ Clicking a YouTube link that has a time (`&t=83`, `?t=1m23s`, `#t=83`), whether 
 
 ### Video Viewer
 - **Timestamp link click** (default: open in the video viewer): What a plain click on a YouTube link with a time does, in notes and in the transcript panel. Ctrl/Cmd-click does the other (open in the browser).
+- **Copied timestamp format** (default: list item): The video viewer copies `- <timestamp link>: `, ready for a description after pasting. Choose *Timestamp link only* for the previous `[m:ss](URL)` output. The setting applies to both the viewer button and its copy command, not transcript-row or screenshot copies.
 - **Video viewer location** (default: split next to the note): Where a new video viewer opens; *New window* opens it in a pop-out window. An open viewer is always reused.
 
 ---

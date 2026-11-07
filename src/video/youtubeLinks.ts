@@ -120,6 +120,7 @@ export function watchUrl(videoId: string, seconds = 0): string {
 /** Embed URL controlled through postMessage (`enablejsapi`), without YouTube's own controls. */
 export function embedUrl(videoId: string, startSeconds = 0): string {
 	const params = new URLSearchParams({
+		autoplay: "0",
 		enablejsapi: "1",
 		controls: "0",
 		disablekb: "1",
@@ -141,6 +142,14 @@ export function formatClock(seconds: number): string {
 /** Markdown timestamp link for a video position: `[m:ss](watch-url&t=N)`. */
 export function timestampLink(videoId: string, seconds: number): string {
 	return `[${formatClock(seconds)}](${watchUrl(videoId, seconds)})`;
+}
+
+export type TimestampCopyFormat = "list" | "link";
+
+/** Keep the description suffix outside the Markdown link and preserve its trailing space. */
+export function timestampClipboardText(videoId: string, seconds: number, format: TimestampCopyFormat = "list"): string {
+	const link = timestampLink(videoId, seconds);
+	return format === "link" ? link : `- ${link}: `;
 }
 
 /** Longest note-name part of a screenshot file name, before the date and time. */

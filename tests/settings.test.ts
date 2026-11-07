@@ -1,10 +1,30 @@
 import { describe, expect, it, vi } from "vitest";
-import { PerplexitySaverSettingTab } from "../src/main";
+import PerplexitySaverPlugin, { PerplexitySaverSettingTab } from "../src/main";
+import type { App, SettingDefinitionGroup } from "obsidian";
 import { HeadlineMethod } from "../src/normalize/headlines";
 
+vi.mock("obsidian", async (original) => ({
+	...await original<Record<string, unknown>>(),
+	debounce: (callback: () => void) => callback,
+}));
+
 describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
+	it("defaults existing installations to list copies while retaining an explicit link-only choice", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.timestampCopyFormat).toBe("list");
+		vi.mocked(plugin.loadData).mockResolvedValue({ timestampCopyFormat: "link" });
+		await plugin.loadSettings();
+		expect(plugin.settings.timestampCopyFormat).toBe("link");
+	});
+
 	const createMockPlugin = () => ({
 		settings: {
+			timestampCopyFormat: "list",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
 			collapseBlankLines: true,
@@ -101,6 +121,23 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.settings.searchesFolder).toBe("custom-folder");
 		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("offers and saves both timestamp copy formats in the video viewer settings", async () => {
+		const plugin = createMockPlugin();
+		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "Video viewer");
+		expect(group?.type).toBe("group");
+		if (!group?.items) throw new Error("Missing Video viewer settings");
+		const format = group.items.find((item) => "name" in item && item.name === "Copied timestamp format");
+		expect(format && "control" in format ? format.control : undefined).toMatchObject({
+			type: "dropdown", key: "timestampCopyFormat",
+			options: { list: expect.any(String), link: expect.any(String) },
+		});
+		await tab.setControlValue("timestampCopyFormat", "link");
+		expect(plugin.settings.timestampCopyFormat).toBe("link");
+		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
 	});
 
 	it("authorDropVon disabled predicate evaluates based on authorFormatStyle", () => {

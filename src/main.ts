@@ -58,7 +58,7 @@ import {
 	type VideoViewerLocation,
 } from "./video/videoView";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
-import { parseYouTubeUrl } from "./video/youtubeLinks";
+import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, type NotePart } from "./video/switchParts";
 import { findLeafForFile, focusLeafAndWindow, getMainWindow, getWindowForLeaf } from "commons/workspace";
 import { requestFrameIn, setTimeoutIn, readClipboardIn } from "commons/windows";
@@ -153,6 +153,7 @@ export interface PerplexitySaverSettings {
 	timestampClickAction: TimestampClickAction;
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
 	videoViewerLocation: VideoViewerLocation;
+	timestampCopyFormat: TimestampCopyFormat;
 	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
 	transcriptPanelLocation: TranscriptPanelLocation;
 	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
@@ -185,6 +186,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
+	timestampCopyFormat: "list",
 	transcriptPanelLocation: "sidebar",
 	followTranscript: true,
 	transcriptSearchBehavior: "obsidian",
@@ -296,6 +298,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new VideoView(leaf, {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
+					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, this.transcriptScope(viewer)).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
@@ -481,7 +484,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private async openTimestamp(request: TimestampRequest): Promise<void> {
 		await openVideoViewer(
 			this.app,
-			{ videoId: request.videoId, seconds: request.seconds, sourcePath: this.sourcePathFor(request.target) },
+			{ videoId: request.videoId, seconds: request.seconds, sourcePath: this.sourcePathFor(request.target), autoplay: true },
 			this.settings.videoViewerLocation
 		);
 	}
@@ -1300,6 +1303,18 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							},
 						},
 					},
+					{
+						name: "Copied timestamp format",
+						desc: "Format copied by the video viewer's timestamp button and command. The list item ends with ': ' so pasting leaves the cursor ready for a plain-text description outside the link. Transcript-row and screenshot copies are unchanged.",
+						control: {
+							type: "dropdown",
+							key: "timestampCopyFormat",
+							options: {
+								list: "List item: - <timestamp link>: (default)",
+								link: "Timestamp link only",
+							},
+						},
+					},
 				],
 			},
 		];
@@ -1714,13 +1729,20 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			"videoViewerLocation",
 			{ split: "Split next to the note (default)", window: "New window" }
 		);
+		this.addChoiceSetting(
+			containerEl,
+			"Copied timestamp format",
+			"Format copied by the video viewer's timestamp button and command. The default list item ends with ': ' for a plain-text description after pasting. Transcript-row and screenshot copies are unchanged.",
+			"timestampCopyFormat",
+			{ list: "List item: - <timestamp link>: (default)", link: "Timestamp link only" }
+		);
 	}
 
 	private addChoiceSetting(
 		containerEl: HTMLElement,
 		name: string,
 		desc: string,
-		key: "transcriptPanelLocation" | "timestampClickAction" | "videoViewerLocation",
+		key: "transcriptPanelLocation" | "timestampClickAction" | "videoViewerLocation" | "timestampCopyFormat",
 		options: Record<string, string>
 	): void {
 		new Setting(containerEl)

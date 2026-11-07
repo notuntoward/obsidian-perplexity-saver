@@ -12,11 +12,12 @@ import {
 	screenshotClipboardText,
 	screenshotFileName,
 	snipRect,
-	timestampLink,
+	timestampClipboardText,
 	watchUrl,
 	zoomAt,
 	type SnipRect,
 	type ZoomState,
+	type TimestampCopyFormat,
 } from "./youtubeLinks";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "./youtubePlayer";
 
@@ -39,6 +40,7 @@ interface VideoViewState {
 
 export interface VideoViewHost {
 	getTranscriptHeading(): string;
+	getTimestampCopyFormat(): TimestampCopyFormat;
 	/** True when a transcript panel the button controls is on screen. */
 	isTranscriptShown(viewer: WorkspaceLeaf): boolean;
 	/** Close that transcript panel if it is on screen, otherwise show the note's transcript (beside a pop-out viewer, else per the plugin setting). */
@@ -549,11 +551,11 @@ export class VideoView extends ItemView {
 		return this.contentEl.ownerDocument.defaultView;
 	}
 
-	/** Copy a markdown timestamp link for the current position. */
+	/** Copy the current position using the configured plain-text Markdown format. */
 	async copyTimestampLink(): Promise<void> {
 		if (!this.player || !this.videoId) return;
 		const win = this.ownerWin;
-		const text = timestampLink(this.videoId, this.player.info.currentTime);
+		const text = timestampClipboardText(this.videoId, this.player.info.currentTime, this.host.getTimestampCopyFormat());
 		if (win && (await writeClipboardIn(win, text).catch(() => false))) {
 			new Notice(`Copied ${formatClock(this.player.info.currentTime)} link.`);
 		} else {

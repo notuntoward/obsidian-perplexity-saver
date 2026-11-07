@@ -74,6 +74,7 @@ export class YouTubeEmbed {
 			this.pendingSeek = null;
 			if (this.desiredRate !== 1) this.setPlaybackRate(this.desiredRate);
 			if (this.autoplay) this.play();
+			else this.pause();
 			this.autoplay = false;
 		}
 		this.onUpdate(this.info);
@@ -156,11 +157,13 @@ export class YouTubeEmbed {
 
 	// Updates the state optimistically so the controls keep working if the player's replies are lost.
 	play(): void {
+		if (!this.ready) this.autoplay = true;
 		this.command("playVideo");
 		this.setOptimisticState(PLAYER_STATE.playing);
 	}
 
 	pause(): void {
+		if (!this.ready) this.autoplay = false;
 		this.command("pauseVideo");
 		this.setOptimisticState(PLAYER_STATE.paused);
 	}
@@ -177,11 +180,14 @@ export class YouTubeEmbed {
 	}
 
 	seekTo(seconds: number): void {
+		const keepPlaying = this.ready ? this.playing : this.autoplay;
 		const max = this.info.duration > 0 ? this.info.duration : Number.POSITIVE_INFINITY;
 		const target = Math.min(max, Math.max(0, seconds));
 		this.info.currentTime = target;
 		if (!this.ready) this.pendingSeek = target;
 		this.command("seekTo", [target, true]);
+		// YouTube can start a cued video when seeking; seeking alone is not a play request.
+		if (!keepPlaying) this.pause();
 		this.onUpdate(this.info);
 	}
 
