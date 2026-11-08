@@ -58,6 +58,7 @@ import {
 	noteVideoId,
 	openVideoViewer,
 	type VideoViewerLocation,
+	type VideoToolbarCaptureAction,
 } from "./video/videoView";
 import {
 	createNoteInsertionAnchor,
@@ -164,6 +165,8 @@ export interface PerplexitySaverSettings {
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
 	videoViewerLocation: VideoViewerLocation;
 	timestampCopyFormat: TimestampCopyFormat;
+	videoToolbarCaptureAction: VideoToolbarCaptureAction;
+	showYoutubeCaptions: boolean;
 	videoNoteFocusIndicator: boolean;
 	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
 	transcriptPanelLocation: TranscriptPanelLocation;
@@ -199,6 +202,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
 	timestampCopyFormat: "list",
+	videoToolbarCaptureAction: "insert",
+	showYoutubeCaptions: false,
 	videoNoteFocusIndicator: true,
 	transcriptPanelLocation: "sidebar",
 	followTranscript: true,
@@ -307,6 +312,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new VideoView(leaf, {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
+					getToolbarCaptureAction: () => this.settings.videoToolbarCaptureAction,
+					getShowYoutubeCaptions: () => this.settings.showYoutubeCaptions,
+					insertTimestamp: (view) => this.insertTimestampIntoNote(view),
+					insertScreenshot: (view, whole) => this.insertScreenshotIntoNote(view, whole),
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
@@ -894,6 +903,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 		this.refreshVideoNoteFocusIndicator?.();
+		for (const leaf of this.app.workspace?.getLeavesOfType?.(VIDEO_VIEW_TYPE) ?? []) {
+			if (leaf.view instanceof VideoView) {
+				leaf.view.updateToolbarCaptureLabels();
+				leaf.view.updateYoutubeCaptions();
+			}
+		}
 	}
 
 	/**
@@ -1519,8 +1534,25 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: "Toolbar timestamp and screenshot action",
+						desc: "Default click action for the player's timestamp and screenshot icons. Right-click either icon for both actions. Shift-click the camera captures the whole picture using this destination. Insert requires the associated note in editing view.",
+						control: {
+							type: "dropdown",
+							key: "videoToolbarCaptureAction",
+							options: {
+								insert: "Insert into note (default)",
+								copy: "Copy to clipboard",
+							},
+						},
+					},
+					{
+						name: "Show YouTube captions",
+						desc: "Show closed captions over the video picture. Off by default for clearer screenshots. Applies to open viewers without restarting playback. Separate from the transcript panel; cannot remove captions burned into the video.",
+						control: { type: "toggle", key: "showYoutubeCaptions" },
+					},
+					{
 						name: "Copied timestamp format",
-						desc: "Format copied by the video viewer's timestamp button and command. The list item ends with ': ' so pasting leaves the cursor ready for a plain-text description outside the link. Transcript-row and screenshot copies are unchanged.",
+						desc: "Format used when copying a timestamp from the toolbar or copy command. The list item ends with ': ' so pasting leaves the cursor ready for a plain-text description outside the link. Insertions, transcript-row and screenshot copies are unchanged.",
 						control: {
 							type: "dropdown",
 							key: "timestampCopyFormat",
@@ -1955,6 +1987,15 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				})
 			);
 		new Setting(containerEl).setName("Video viewer").setHeading();
+		new Setting(containerEl)
+			.setName("Show YouTube captions")
+			.setDesc("Show closed captions over the video picture. Off by default for clearer screenshots. Applies to open viewers without restarting playback. Separate from the transcript panel; cannot remove captions burned into the video.")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.showYoutubeCaptions).onChange(async (value) => {
+					this.plugin.settings.showYoutubeCaptions = value;
+					await this.plugin.saveSettings();
+				})
+			);
 
 		this.addChoiceSetting(
 			containerEl,
@@ -1972,8 +2013,15 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		);
 		this.addChoiceSetting(
 			containerEl,
+			"Toolbar timestamp and screenshot action",
+			"Default click action for the player's timestamp and screenshot icons. Right-click either icon for both actions. Shift-click the camera captures the whole picture using this destination. Insert requires the associated note in editing view.",
+			"videoToolbarCaptureAction",
+			{ insert: "Insert into note (default)", copy: "Copy to clipboard" }
+		);
+		this.addChoiceSetting(
+			containerEl,
 			"Copied timestamp format",
-			"Format copied by the video viewer's timestamp button and command. The default list item ends with ': ' for a plain-text description after pasting. Transcript-row and screenshot copies are unchanged.",
+			"Format used when copying a timestamp from the toolbar or copy command. The default list item ends with ': ' for a plain-text description after pasting. Insertions, transcript-row and screenshot copies are unchanged.",
 			"timestampCopyFormat",
 			{ list: "List item: - <timestamp link>: (default)", link: "Timestamp link only" }
 		);
@@ -1983,7 +2031,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		containerEl: HTMLElement,
 		name: string,
 		desc: string,
-		key: "transcriptPanelLocation" | "timestampClickAction" | "videoViewerLocation" | "timestampCopyFormat",
+		key: "transcriptPanelLocation" | "timestampClickAction" | "videoViewerLocation" | "timestampCopyFormat" | "videoToolbarCaptureAction",
 		options: Record<string, string>
 	): void {
 		new Setting(containerEl)

@@ -38,13 +38,16 @@ const LISTEN_INTERVAL_MS = 250;
 const LISTEN_ATTEMPTS = 40;
 let nextWidgetId = 1;
 
-function messageId(data: unknown): unknown {
-	if (typeof data !== "string") return (data as { id?: unknown } | null)?.id;
-	try {
-		return (JSON.parse(data) as { id?: unknown } | null)?.id;
-	} catch {
-		return undefined;
+function messageEnvelope(data: unknown): { id?: unknown; event?: unknown; info?: unknown } | null {
+	let parsed: unknown = data;
+	if (typeof data === "string") {
+		try {
+			parsed = JSON.parse(data);
+		} catch {
+			return null;
+		}
 	}
+	return parsed && typeof parsed === "object" ? parsed : null;
 }
 
 /**
@@ -58,14 +61,37 @@ export class YouTubeEmbed {
 	private cancelListen: CancelTimer | null = null;
 	private pendingSeek: number | null = null;
 	private desiredRate = 1;
+	private captions = false;
+	private cancelCaptionRetry: CancelTimer | null = null;
+	private captionRetryUsed = false;
+	private cancelCaptionStartup: CancelTimer[] = [];
+	private reportedPlayerState: number = PLAYER_STATE.unstarted;
 	private autoplay: boolean;
 	private ready = false;
 	private listenAttempts = 0;
 	private readonly widgetId = `perplexity-saver-${nextWidgetId++}`;
 	private readonly onMessage = (evt: MessageEvent): void => {
 		// In a pop-out the event's source may not be identical to contentWindow, so the widget id also identifies the player.
-		if (evt.source !== this.iframe.contentWindow && messageId(evt.data) !== this.widgetId) return;
-		if (!applyPlayerMessage(this.info, evt.data)) return;
+		const message = messageEnvelope(evt.data);
+		if (evt.source !== this.iframe.contentWindow && message?.id !== this.widgetId) return;
+		if (message?.event === "onApiChange") {
+			// Loading/unloading captions also fires this event; allow only one correction per iframe load.
+			if (this.ready && !this.captionRetryUsed && this.boundWindow) {
+				this.captionRetryUsed = true;
+				this.cancelCaptionRetry = setTimeoutIn(this.boundWindow, () => {
+					this.cancelCaptionRetry = null;
+					this.applyCaptions();
+				}, 250);
+			}
+			return;
+		}
+		const payload = message?.info;
+		const reportedState = payload && typeof payload === "object" && "playerState" in payload ? payload.playerState : undefined;
+		const startedPlaying = reportedState === PLAYER_STATE.playing && this.reportedPlayerState !== PLAYER_STATE.playing;
+		if (typeof reportedState === "number" && Number.isFinite(reportedState)) this.reportedPlayerState = reportedState;
+		const changed = applyPlayerMessage(this.info, evt.data);
+		if (!changed && !startedPlaying) return;
+		const wasReady = this.ready;
 		if (!this.ready) {
 			this.ready = true;
 			this.cancelListen?.();
@@ -73,15 +99,24 @@ export class YouTubeEmbed {
 			if (this.pendingSeek !== null) this.seekTo(this.pendingSeek);
 			this.pendingSeek = null;
 			if (this.desiredRate !== 1) this.setPlaybackRate(this.desiredRate);
+			this.command("addEventListener", ["onApiChange"]);
+			this.applyCaptions();
+			this.retryCaptionStartup(false);
 			if (this.autoplay) this.play();
 			else this.pause();
 			this.autoplay = false;
 		}
+		if (wasReady && startedPlaying) this.retryCaptionStartup(true);
 		this.onUpdate(this.info);
 	};
 	private readonly onLoad = (): void => {
 		this.bindWindow();
 		this.ready = false;
+		this.cancelCaptionRetry?.();
+		this.cancelCaptionRetry = null;
+		this.captionRetryUsed = false;
+		this.clearCaptionStartup();
+		this.reportedPlayerState = PLAYER_STATE.unstarted;
 		this.listenAttempts = 0;
 		this.scheduleListen(100);
 	};
@@ -108,11 +143,12 @@ export class YouTubeEmbed {
 		readonly videoId: string,
 		startSeconds: number,
 		private readonly onUpdate: (info: PlayerInfo) => void,
-		options: { autoplay?: boolean; playbackRate?: number } = {}
+		options: { autoplay?: boolean; playbackRate?: number; captions?: boolean } = {}
 	) {
 		this.info.currentTime = startSeconds;
 		this.autoplay = options.autoplay ?? false;
 		this.desiredRate = options.playbackRate ?? 1;
+		this.captions = options.captions ?? false;
 		this.iframe = parent.createEl("iframe", {
 			cls: "perplexity-saver-video-iframe",
 			attr: {
@@ -196,8 +232,41 @@ export class YouTubeEmbed {
 		this.command("setPlaybackRate", [rate]);
 	}
 
+	setCaptions(enabled: boolean): void {
+		this.captions = enabled;
+		this.clearCaptionStartup();
+		if (this.ready) {
+			this.applyCaptions();
+			this.retryCaptionStartup(false);
+		}
+	}
+
+	private retryCaptionStartup(applyNow: boolean): void {
+		if (this.captions) return;
+		this.clearCaptionStartup();
+		if (applyNow) this.applyCaptions();
+		const win = this.iframe.ownerDocument.defaultView;
+		if (!win) return;
+		// Captions can load after the first API event. Retry briefly, not on every time update or indefinitely.
+		this.cancelCaptionStartup = [250, 1000, 3000].map((delay) =>
+			setTimeoutIn(win, () => this.applyCaptions(), delay)
+		);
+	}
+
+	private clearCaptionStartup(): void {
+		for (const cancel of this.cancelCaptionStartup) cancel();
+		this.cancelCaptionStartup = [];
+	}
+
+	private applyCaptions(): void {
+		// YouTube's undocumented module commands are verified in the live embed; URL parameters cannot force captions off.
+		this.command(this.captions ? "loadModule" : "unloadModule", ["captions"]);
+	}
+
 	destroy(): void {
 		this.cancelListen?.();
+		this.cancelCaptionRetry?.();
+		this.clearCaptionStartup();
 		this.iframe.removeEventListener("load", this.onLoad);
 		this.boundWindow?.removeEventListener("message", this.onMessage);
 		this.boundWindow = null;

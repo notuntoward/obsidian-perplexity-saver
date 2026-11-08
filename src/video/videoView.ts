@@ -33,6 +33,7 @@ import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "./youtubePlayer";
 export const VIDEO_VIEW_TYPE = "perplexity-saver-video";
 
 export type VideoViewerLocation = "split" | "window";
+export type VideoToolbarCaptureAction = "copy" | "insert";
 
 export const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 const SKIP_SECONDS = 10;
@@ -50,6 +51,10 @@ interface VideoViewState {
 export interface VideoViewHost {
 	getTranscriptHeading(): string;
 	getTimestampCopyFormat(): TimestampCopyFormat;
+	getToolbarCaptureAction(): VideoToolbarCaptureAction;
+	getShowYoutubeCaptions(): boolean;
+	insertTimestamp(view: VideoView): Promise<void>;
+	insertScreenshot(view: VideoView, whole: boolean): Promise<void>;
 	/** True when a transcript panel the button controls is on screen. */
 	isTranscriptShown(viewer: WorkspaceLeaf): boolean;
 	/** Close that transcript panel if it is on screen, otherwise show the note's transcript (beside a pop-out viewer, else per the plugin setting). */
@@ -82,6 +87,8 @@ export class VideoView extends ItemView {
 	private marksEl!: HTMLElement;
 	private emptyEl!: HTMLElement;
 	private transcriptBtn!: HTMLElement;
+	private timestampBtn!: HTMLElement;
+	private screenshotBtn?: HTMLElement;
 
 	constructor(leaf: WorkspaceLeaf, private readonly host: VideoViewHost) {
 		super(leaf);
@@ -254,13 +261,23 @@ export class VideoView extends ItemView {
 		});
 		this.zoomLabel.addEventListener("click", () => this.resetZoom());
 		this.button(bar, "zoom-in", "Zoom in (+)", () => this.zoomBy(ZOOM_STEP), "Plus");
-		this.button(bar, "link", "Copy timestamp link", () => void this.copyTimestampLink());
+		this.timestampBtn = this.button(bar, "link", "", () => {
+			if (this.host.getToolbarCaptureAction() === "insert") void this.host.insertTimestamp(this);
+			else void this.copyTimestampLink();
+		});
+		this.timestampBtn.setAttribute("aria-haspopup", "menu");
+		this.timestampBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, this.timestampBtn, false));
 		this.button(bar, "external-link", "Open in browser at this time", () => this.openInBrowser());
 		if (Platform.isDesktopApp) {
-			this.button(bar, "camera", "Screenshot: drag an area, or click for the whole picture (shift-click: whole picture now)", (evt) =>
-				void this.screenshot(evt.shiftKey)
-			);
+			this.screenshotBtn = this.button(bar, "camera", "", (evt) => {
+				if (this.host.getToolbarCaptureAction() === "insert") void this.host.insertScreenshot(this, evt.shiftKey);
+				else void this.screenshot(evt.shiftKey);
+			});
+			const screenshotBtn = this.screenshotBtn;
+			screenshotBtn.setAttribute("aria-haspopup", "menu");
+			screenshotBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, screenshotBtn, true));
 		}
+		this.updateToolbarCaptureLabels();
 		this.transcriptBtn = this.button(bar, "captions", "Show transcript (C)", () => void this.toggleTranscript(), "C");
 		this.updateTranscriptButton();
 
@@ -370,6 +387,34 @@ export class VideoView extends ItemView {
 		return btn;
 	}
 
+	updateToolbarCaptureLabels(): void {
+		const insert = this.host.getToolbarCaptureAction() === "insert";
+		this.timestampBtn?.setAttribute("aria-label", `${insert ? "Insert timestamp into note" : "Copy timestamp"} (right-click for both actions)`);
+		this.screenshotBtn?.setAttribute("aria-label",
+			`${insert ? "Insert screenshot into note" : "Copy screenshot"}: drag an area, or click for the whole picture (Shift-click: whole picture now; right-click for both actions)`);
+	}
+
+	updateYoutubeCaptions(): void {
+		this.player?.setCaptions(this.host.getShowYoutubeCaptions());
+	}
+
+	private showCaptureMenu(evt: MouseEvent, button: HTMLElement, screenshot: boolean): void {
+		evt.preventDefault();
+		evt.stopPropagation();
+		const menu = new Menu();
+		if (screenshot) {
+			menu.addItem((item) => item.setTitle("Insert selected area into note...").onClick(() => void this.host.insertScreenshot(this, false)));
+			menu.addItem((item) => item.setTitle("Copy selected area...").onClick(() => void this.screenshot(false)));
+			menu.addItem((item) => item.setTitle("Insert whole picture into note").onClick(() => void this.host.insertScreenshot(this, true)));
+			menu.addItem((item) => item.setTitle("Copy whole picture").onClick(() => void this.screenshot(true)));
+		} else {
+			menu.addItem((item) => item.setTitle("Insert timestamp into note").onClick(() => void this.host.insertTimestamp(this)));
+			menu.addItem((item) => item.setTitle("Copy timestamp").onClick(() => void this.copyTimestampLink()));
+		}
+		const rect = button.getBoundingClientRect();
+		menu.showAtPosition({ x: rect.left, y: rect.bottom }, button.ownerDocument);
+	}
+
 	private showRate(rate: number): void {
 		this.rate = rate;
 		this.rateLabel.setText(rate === 1 ? "" : `${rate}×`);
@@ -413,6 +458,7 @@ export class VideoView extends ItemView {
 			this.player = new YouTubeEmbed(this.frameEl, this.videoId, this.startTime, (info) => this.update(info), {
 				autoplay,
 				playbackRate: this.rate,
+				captions: this.host.getShowYoutubeCaptions(),
 			});
 			// If the YouTube page takes focus anyway (e.g. a click that reaches it), hand focus back to the viewer so hotkeys keep working.
 			this.player.iframe.addEventListener("focus", () => this.focusKeys());

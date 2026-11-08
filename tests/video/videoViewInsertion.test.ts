@@ -64,6 +64,8 @@ function videoView() {
 	const host: VideoViewHost = {
 		getTranscriptHeading: () => "Transcript",
 		getTimestampCopyFormat: () => "list",
+		getShowYoutubeCaptions: () => false,
+		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false,
 		toggleTranscript: async () => {},
 		onPlayback: () => {},

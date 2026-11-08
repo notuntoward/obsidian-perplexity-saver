@@ -89,12 +89,14 @@ async function harness() {
 	vi.spyOn(transcript, "focusLines").mockImplementation(() => {});
 	const viewer = new VideoView({ app } as unknown as WorkspaceLeaf, {
 		getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+		getShowYoutubeCaptions: () => false,
+		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l), onPlayback: () => {}, focusNote: async () => {},
 	});
 	viewer.contentEl = document.createElement("div");
 	viewer.containerEl = viewer.contentEl;
 	viewer.contentEl.tabIndex = 0;
-	Object.assign(viewer, { videoId: "abc", filePath: file.path, player: { info: { currentTime: 25.75 } } });
+	Object.assign(viewer, { videoId: "abc", filePath: file.path, player: { info: { currentTime: 25.75 }, setCaptions: vi.fn() } });
 	const viewerLeaf = { view: viewer } as unknown as WorkspaceLeaf;
 	leaves.push(viewerLeaf);
 	return { plugin, app, file, leaves, transcript, transcriptLeaf, viewerLeaf };
@@ -115,6 +117,22 @@ describe("transcript activation commands", () => {
 		const commands: import("obsidian").Command[] = [];
 		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
 		await h.plugin.onload();
+		const factory = vi.mocked(h.plugin.registerView).mock.calls.find(([type]) => type === h.viewerLeaf.view.getViewType())?.[1];
+		if (!factory) throw new Error("Missing video view registration");
+		const registered = factory(h.viewerLeaf) as VideoView;
+		expect(registered["host"].getToolbarCaptureAction()).toBe("insert");
+		h.plugin.settings.videoToolbarCaptureAction = "copy";
+		expect(registered["host"].getToolbarCaptureAction()).toBe("copy");
+		expect(registered["host"].getShowYoutubeCaptions()).toBe(false);
+		h.plugin.settings.showYoutubeCaptions = true;
+		expect(registered["host"].getShowYoutubeCaptions()).toBe(true);
+		const noticeCount = createdNotices.length;
+		await registered["host"].insertTimestamp(h.viewerLeaf.view as VideoView);
+		await registered["host"].insertScreenshot(h.viewerLeaf.view as VideoView, true);
+		expect(createdNotices.slice(noticeCount).map((notice) => notice.message)).toEqual([
+			"Open the literature note in editing view before inserting a video capture.",
+			"Open the literature note in editing view before inserting a video capture.",
+		]);
 		const ids = commands.map((c) => c.id);
 		expect(new Set(ids).size).toBe(ids.length);
 		for (const id of duplicates) expect(ids.includes(id)).toBe(bound);
@@ -135,6 +153,33 @@ describe("transcript activation commands", () => {
 			open.checkCallback!(false);
 			await vi.waitFor(() => expect(focus).toHaveBeenCalled());
 		}
+	});
+
+	it("refreshes labels on existing viewers when the toolbar destination setting is saved", async () => {
+		const h = await harness();
+		const refresh = vi.spyOn(h.viewerLeaf.view as VideoView, "updateToolbarCaptureLabels");
+		const save = vi.spyOn(h.plugin, "saveData").mockResolvedValue();
+		h.plugin.settings.videoToolbarCaptureAction = "copy";
+		await h.plugin.saveSettings();
+		expect(save).toHaveBeenCalledWith(expect.objectContaining({ videoToolbarCaptureAction: "copy" }));
+		expect(refresh).toHaveBeenCalledOnce();
+	});
+
+	it("applies saved captions to open viewers without moving playback or toggling the transcript", async () => {
+		const h = await harness();
+		const setCaptions = vi.fn();
+		Object.assign(h.viewerLeaf.view, { player: { setCaptions, info: { currentTime: 25.75 } } });
+		const transcript = vi.spyOn(h.plugin, "toggleTranscript").mockResolvedValue();
+		const getter = vi.spyOn((h.viewerLeaf.view as VideoView)["host"], "getShowYoutubeCaptions");
+		getter.mockImplementation(() => h.plugin.settings.showYoutubeCaptions);
+		h.plugin.settings.showYoutubeCaptions = true;
+		await h.plugin.saveSettings();
+		expect(setCaptions).toHaveBeenLastCalledWith(true);
+		h.plugin.settings.showYoutubeCaptions = false;
+		await h.plugin.saveSettings();
+		expect(setCaptions).toHaveBeenLastCalledWith(false);
+		expect((h.viewerLeaf.view as VideoView).getPlaybackSeconds()).toBe(25.75);
+		expect(transcript).not.toHaveBeenCalled();
 	});
 
 	it("registers one visibility toggle and one orientation toggle without unbound placement aliases", async () => {
@@ -371,6 +416,8 @@ describe("transcript activation commands", () => {
 		const other = new VideoView(h.viewerLeaf as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript",
 			getTimestampCopyFormat: () => "list",
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
 			onPlayback: () => {},

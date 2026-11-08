@@ -20,6 +20,8 @@ describe("video timestamp copy", () => {
 	it.each([1, 2])("exposes exact playback time independently of playing/paused state (%s)", (playerState) => {
 		const view = new VideoView({} as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => {}, onPlayback: () => {}, focusNote: async () => {},
 		});
 		Object.assign(view, { startTime: 27.25 });
@@ -34,6 +36,8 @@ describe("video timestamp copy", () => {
 		const app = { vault: { getFileByPath: () => null } };
 		const view = new VideoView({ app } as unknown as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => { throw error; }, onPlayback: () => {}, focusNote: async () => {},
 		});
 		await view.toggleTranscript();
@@ -47,6 +51,8 @@ describe("video timestamp copy", () => {
 		const host: VideoViewHost = {
 			getTranscriptHeading: () => "Transcript",
 			getTimestampCopyFormat: () => format,
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
 			onPlayback: () => {},
@@ -68,6 +74,8 @@ describe("video timestamp copy", () => {
 		const view = new VideoView({} as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript",
 			getTimestampCopyFormat: () => "list",
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
 			onPlayback: () => {},

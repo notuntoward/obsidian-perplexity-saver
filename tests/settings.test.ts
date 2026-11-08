@@ -47,6 +47,59 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.settings.timestampCopyFormat).toBe("link");
 	});
 
+	it("defaults toolbar captures to insertion and preserves and saves an explicit copy choice", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.videoToolbarCaptureAction).toBe("insert");
+		vi.mocked(plugin.loadData).mockResolvedValue({ videoToolbarCaptureAction: "copy" });
+		await plugin.loadSettings();
+		expect(plugin.settings.videoToolbarCaptureAction).toBe("copy");
+		const tab = new PerplexitySaverSettingTab({} as App, plugin);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "Video viewer");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Toolbar timestamp and screenshot action",
+			control: {
+				type: "dropdown", key: "videoToolbarCaptureAction",
+				options: { insert: "Insert into note (default)", copy: "Copy to clipboard" },
+			},
+		}));
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("videoToolbarCaptureAction", "insert");
+		expect(plugin.settings.videoToolbarCaptureAction).toBe("insert");
+		expect(plugin.saveSettings).toHaveBeenCalledOnce();
+	});
+
+	it("defaults YouTube captions off, preserves an explicit on choice and exposes a saved toggle", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.showYoutubeCaptions).toBe(false);
+		vi.mocked(plugin.loadData).mockResolvedValue({ showYoutubeCaptions: true });
+		await plugin.loadSettings();
+		expect(plugin.settings.showYoutubeCaptions).toBe(true);
+		const tab = new PerplexitySaverSettingTab({} as App, plugin);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "Video viewer");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Show YouTube captions",
+			control: { type: "toggle", key: "showYoutubeCaptions" },
+		}));
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("showYoutubeCaptions", false);
+		expect(plugin.settings.showYoutubeCaptions).toBe(false);
+		expect(plugin.saveSettings).toHaveBeenCalledOnce();
+	});
+
 	const createMockPlugin = () => ({
 		settings: {
 			timestampCopyFormat: "list",
