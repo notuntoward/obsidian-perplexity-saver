@@ -58,9 +58,16 @@ import {
 	openVideoViewer,
 	type VideoViewerLocation,
 } from "./video/videoView";
+import {
+	createNoteInsertionAnchor,
+	noteInsertionAnchors,
+	releaseNoteInsertionAnchor,
+	type NoteInsertionTarget,
+} from "./video/noteInsertion";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
 import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, type NotePart } from "./video/switchParts";
+import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
 import { findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
@@ -155,6 +162,7 @@ export interface PerplexitySaverSettings {
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
 	videoViewerLocation: VideoViewerLocation;
 	timestampCopyFormat: TimestampCopyFormat;
+	videoNoteFocusIndicator: boolean;
 	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
 	transcriptPanelLocation: TranscriptPanelLocation;
 	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
@@ -189,6 +197,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
 	timestampCopyFormat: "list",
+	videoNoteFocusIndicator: true,
 	transcriptPanelLocation: "sidebar",
 	followTranscript: true,
 	transcriptSearchBehavior: "obsidian",
@@ -217,9 +226,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 	viewTracker!: ViewTracker;
 	litNoteServerSettings: LitNoteServerSettings | null = null;
 	private litNoteServer: http.Server | null = null;
+	private refreshVideoNoteFocusIndicator: (() => void) | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		this.refreshVideoNoteFocusIndicator = registerVideoNoteFocusIndicator(this, () => this.settings.videoNoteFocusIndicator);
+		this.registerEditorExtension(noteInsertionAnchors);
 		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
@@ -313,6 +325,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
+					focusNote: (target) => this.focusNoteInsertionTarget(target),
 				})
 		);
 		this.addCommand({
@@ -368,7 +381,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
 			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
 			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
+			["video-viewer-insert-screenshot", "Video viewer: Insert screenshot (drag an area)", (v) => void this.insertScreenshotIntoNote(v, false)],
+			["video-viewer-insert-screenshot-whole", "Video viewer: Insert screenshot of the whole picture", (v) => void this.insertScreenshotIntoNote(v, true)],
 			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
+			["video-viewer-insert-timestamp", "Video viewer: insert timestamp bullet into literature note", (v) => this.insertTimestampIntoNote(v)],
 			["video-viewer-toggle-transcript", "Video viewer: show or hide transcript", (v) => v.toggleTranscript()],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
@@ -377,8 +393,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 				id,
 				name,
 				checkCallback: (checking: boolean) => {
-					const view = getVideoLeaf(this.app)?.view;
-					if (!(view instanceof VideoView)) return false;
+					const view = this.videoViewForActivePart();
+					if (!view) return false;
 					if (!checking) void run(view);
 					return true;
 				},
@@ -540,6 +556,17 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return { note, video, transcript };
 	}
 
+	/** Prefer the video associated with the focused note/transcript over another viewer in the same window. */
+	private videoViewForActivePart(): VideoView | null {
+		const { file } = this.activePart();
+		if (file) {
+			const related = this.partLeaves(file).video?.view;
+			return related instanceof VideoView ? related : null;
+		}
+		const fallback = getVideoLeaf(this.app)?.view;
+		return fallback instanceof VideoView ? fallback : null;
+	}
+
 	/** Reveal (opening it if needed) and focus one part, raising its window and giving it keyboard focus. */
 	private async goToPart(part: NotePart, file: TFile, leaves: Record<NotePart, WorkspaceLeaf | null>): Promise<void> {
 		let leaf = leaves[part];
@@ -558,6 +585,75 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.activatePartLeaf(leaf, leaves.video);
 	}
 
+	private createNoteInsertionTarget(view: VideoView): NoteInsertionTarget | null {
+		const filePath = view.getFilePath();
+		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true });
+		const activeNote = active?.view instanceof MarkdownView && active.view.file?.path === file?.path ? active : null;
+		const leaf = activeNote ?? (file ? findLeafForFile(this.app, file.path) : null);
+		if (!file || !leaf || !(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== file.path) {
+			new Notice("Open the literature note in editing view before inserting a video capture.");
+			return null;
+		}
+		const editorEl = leaf.view.containerEl.querySelector(".cm-editor");
+		const editorView = editorEl ? EditorView.findFromDOM(editorEl as HTMLElement) : null;
+		if (!editorView) {
+			new Notice("Switch the literature note to editing view and place the Cursor where you want the insertion.");
+			return null;
+		}
+		const anchor = createNoteInsertionAnchor(editorView);
+		if (!anchor) {
+			new Notice("Could not track the literature note insertion point.");
+			return null;
+		}
+		const targetPath = file.path;
+		return {
+			leaf,
+			filePath: targetPath,
+			anchor,
+			isValid: () =>
+				leaf.view instanceof MarkdownView &&
+				leaf.view.file?.path === targetPath &&
+				editorView.dom.isConnected,
+		};
+	}
+
+	private async insertTimestampIntoNote(view: VideoView): Promise<void> {
+		const target = this.createNoteInsertionTarget(view);
+		if (!target) return;
+		try {
+			await view.insertTimestampBullet(target);
+		} catch (error) {
+			releaseNoteInsertionAnchor(target.anchor);
+			console.error("Perplexity Saver: could not insert timestamp", error);
+			new Notice("Could not insert a timestamp into the literature note.");
+		}
+	}
+
+	private async insertScreenshotIntoNote(view: VideoView, whole: boolean): Promise<void> {
+		const target = this.createNoteInsertionTarget(view);
+		if (!target) return;
+		try {
+			await this.activatePartLeaf(view.leaf, null);
+			await view.insertScreenshotForNote(target, whole);
+		} catch (error) {
+			releaseNoteInsertionAnchor(target.anchor);
+			console.error("Perplexity Saver: could not start screenshot insertion", error);
+			new Notice("Could not start screenshot insertion.");
+		}
+	}
+
+	private async focusNoteInsertionTarget(target: NoteInsertionTarget): Promise<void> {
+		if (!target.isValid()) throw new Error("The literature note insertion target is no longer available.");
+		await revealAndFocusLeaf(this.app, target.leaf, {
+			raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined,
+			onFocus: () => {
+				if (!target.isValid()) throw new Error("The literature note insertion target changed before focus.");
+				target.anchor.view.focus();
+			},
+		});
+	}
+
 	private async activatePartLeaf(leaf: WorkspaceLeaf, viewer: WorkspaceLeaf | null, search = false): Promise<void> {
 		await revealAndFocusLeaf(this.app, leaf, {
 			raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined,
@@ -573,7 +669,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 						view.showPlayback(seconds, this.settings.followTranscript);
 						view.focusSearch();
 					} else view.focusPlayback(seconds, this.settings.followTranscript);
-				}
+				} else if (view instanceof MarkdownView) view.editor.focus();
 			},
 		});
 	}
@@ -715,6 +811,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+		this.refreshVideoNoteFocusIndicator?.();
 	}
 
 	/**
@@ -1679,6 +1776,18 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl).setName("YouTube transcripts").setHeading();
+
+		new Setting(containerEl)
+			.setName("Video note focus indicator")
+			.setDesc("Show a theme-accent line beneath the focused note, video or transcript header.")
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.videoNoteFocusIndicator)
+					.onChange(async (value) => {
+						this.plugin.settings.videoNoteFocusIndicator = value;
+						await this.plugin.saveSettings();
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Collapse transcript on open")

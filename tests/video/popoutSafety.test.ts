@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 // The viewer may live in a pop-out window, where the bare globals are the MAIN window's.
 const files = [
 	...readdirSync(path.resolve(__dirname, "../../src/video")).map((f) => `src/video/${f}`),
+	"src/main.ts",
 	"src/litNote/transcriptView.ts",
 	"src/litNote/transcriptFolding.ts",
 ];

@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { App, TFile, WorkspaceLeaf } from "obsidian";
+import { MarkdownView, type App, type TFile, type WorkspaceLeaf } from "obsidian";
+import type { EditorView } from "@codemirror/view";
 import PerplexitySaverPlugin from "../../src/main";
 import { TranscriptView } from "../../src/litNote/transcriptView";
 import { VideoView } from "../../src/video/videoView";
 import { nextPart } from "../../src/video/switchParts";
 import { createdNotices } from "../__mocks__/obsidian";
+import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
 import "commons/testing";
 
 vi.mock("obsidian", async (original) => ({
@@ -20,6 +22,7 @@ vi.mock("commons/windows", async (original) => ({
 }));
 vi.mock("commons/workspace", async (original) => ({
 	...await original<Record<string, unknown>>(),
+	getActiveLeafInFocusedWindow: (app: App) => app.workspace.activeLeaf ?? null,
 	getMainWindow: () => globalThis.window,
 	getWindowForLeaf: (leaf: WorkspaceLeaf | null) => leaf?.view.containerEl.ownerDocument.defaultView ?? globalThis.window,
 	focusLeafAndWindow: (app: App, leaf: WorkspaceLeaf) => app.workspace.setActiveLeaf(leaf, { focus: true }),
@@ -64,7 +67,7 @@ async function harness() {
 	vi.spyOn(transcript, "focusLines").mockImplementation(() => {});
 	const viewer = new VideoView({ app } as unknown as WorkspaceLeaf, {
 		getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
-		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l), onPlayback: () => {},
+		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l), onPlayback: () => {}, focusNote: async () => {},
 	});
 	viewer.contentEl = document.createElement("div");
 	viewer.containerEl = viewer.contentEl;
@@ -76,6 +79,14 @@ async function harness() {
 }
 
 describe("transcript activation commands", () => {
+	it("defaults the focus indicator on while preserving an explicitly disabled setting", async () => {
+		const h = await harness();
+		expect(h.plugin.settings.videoNoteFocusIndicator).toBe(true);
+		vi.spyOn(h.plugin, "loadData").mockResolvedValue({ videoNoteFocusIndicator: false });
+		await h.plugin.loadSettings();
+		expect(h.plugin.settings.videoNoteFocusIndicator).toBe(false);
+	});
+
 	it.each(["show", "toggle", "go-to", "cycle", "search"] as const)("%s opens a missing panel and assigns keyboard focus", async (action) => {
 		const h = await harness();
 		const search = vi.spyOn(h.transcript, "focusSearch").mockImplementation(() => {});
@@ -95,6 +106,60 @@ describe("transcript activation commands", () => {
 		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.viewerLeaf, { focus: true });
 		expect(focus).toHaveBeenCalledOnce();
+	});
+
+	it("targets the viewer associated with the focused note when other videos share its window", async () => {
+		const h = await harness();
+		const note = Object.create(MarkdownView.prototype) as MarkdownView;
+		note.file = h.file as TFile;
+		note.containerEl = document.createElement("div");
+		const noteLeaf = {
+			view: note,
+			parent: {},
+			getViewState: () => ({ state: { file: h.file.path } }),
+		} as unknown as WorkspaceLeaf;
+		const other = new VideoView(h.viewerLeaf as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript",
+			getTimestampCopyFormat: () => "list",
+			isTranscriptShown: () => false,
+			toggleTranscript: async () => {},
+			onPlayback: () => {},
+			focusNote: async () => {},
+		});
+		other.containerEl = document.createElement("div");
+		Object.assign(other, { filePath: "other.md" });
+		const otherLeaf = { view: other, parent: {} } as unknown as WorkspaceLeaf;
+		h.leaves.unshift(otherLeaf);
+		h.leaves.push(noteLeaf);
+		h.app.workspace.activeLeaf = noteLeaf;
+
+		expect(h.plugin["videoViewForActivePart"]()).toBe(h.viewerLeaf.view);
+	});
+
+	it("returns focus to the note editor in a pop-out document after insertion", async () => {
+		const h = await harness();
+		const popoutDocument = document.implementation.createHTMLDocument();
+		const popoutWindow = { document: popoutDocument, closed: false, focus: vi.fn() } as unknown as Window;
+		Object.defineProperty(popoutDocument, "defaultView", { value: popoutWindow });
+		const activeElement = popoutDocument.createElement("div");
+		Object.defineProperty(popoutDocument, "activeElement", { value: activeElement, configurable: true });
+
+		const note = Object.create(MarkdownView.prototype) as MarkdownView;
+		note.file = h.file as TFile;
+		note.containerEl = popoutDocument.createElement("div");
+		const leaf = { view: note } as unknown as WorkspaceLeaf;
+		const editorFocus = vi.fn();
+		const target: NoteInsertionTarget = {
+			leaf,
+			filePath: h.file.path,
+			anchor: { view: { focus: editorFocus } as unknown as EditorView, id: 1 },
+			isValid: () => true,
+		};
+
+		await h.plugin["focusNoteInsertionTarget"](target);
+
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(leaf, { focus: true });
+		expect(editorFocus).toHaveBeenCalledOnce();
 	});
 
 	it("does not close an unrelated note's visible transcript", async () => {

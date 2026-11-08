@@ -91,6 +91,127 @@ function rows(view: TranscriptView): HTMLElement[] {
 }
 
 describe("accepting transcript search", () => {
+	it.each([false, true])("recalls accepted or cancelled Emacs queries only on repeat, in either direction (popout=%s)", async (popout) => {
+		settings.keyboard = "emacs";
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const input = view.contentEl.querySelector("input")!;
+		if (popout) for (const el of [input, ...rows(view)]) el.focus = () => {
+			active = el;
+			el.dispatchEvent(new FocusEvent("focus"));
+			el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+		};
+		Object.assign(view.app.workspace, { getLeavesOfType: () => [{ view }] });
+		const commands = transcriptSearchCommands(view.app);
+		for (const exit of ["Enter", "Escape", "Tab", "g"]) {
+			for (const native of [true, false]) {
+				for (const direction of ["forward", "backward"] as const) {
+					rows(view)[2].focus();
+					search(view);
+					key(input, exit, exit === "g" ? { ctrlKey: true } : {});
+					const origin = exit === "Escape" || exit === "g" ? 2 : 1;
+					expect(doc.activeElement).toBe(rows(view)[origin]);
+					const invoke = (checking: boolean): boolean => native
+						? commands[direction === "forward" ? 0 : 1].checkCallback!(checking) === true
+						: dispatchSearchNavigation(doc.activeElement, direction, checking);
+					expect(invoke(false)).toBe(true);
+					expect(doc.activeElement).toBe(input);
+					expect(input.value).toBe("");
+					expect(invoke(true)).toBe(true);
+					expect(input.value).toBe("");
+					expect(invoke(false)).toBe(true);
+					expect(input.value).toBe("target");
+					const next = direction === "forward" || origin === 1 ? 3 : 1;
+					expect(rows(view)[next].classList.contains("is-search-current")).toBe(true);
+					expect(doc.activeElement).toBe(input);
+					expect(input.selectionStart).toBe(input.value.length);
+					expect(invoke(false)).toBe(true);
+					expect(rows(view)[next === 3 ? 1 : 3].classList.contains("is-search-current")).toBe(true);
+					key(input, "Escape");
+				}
+			}
+		}
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("does not replace typed text or recall history in Obsidian mode", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		const input = search(view);
+		key(input, "Enter");
+		view.focusSearch();
+		search(view, "context");
+		dispatchSearchNavigation(input, "forward", false);
+		expect(input.value).toBe("context");
+		key(input, "Escape");
+		settings.keyboard = "obsidian";
+		view.focusSearch();
+		dispatchSearchNavigation(input, "backward", false);
+		expect(input.value).toBe("");
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("preserves history across empty cancellation and rerender, uses the repeat direction and wraps", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		let input = search(view);
+		key(input, "F3");
+		key(input, "Enter");
+		expect(document.activeElement).toBe(rows(view)[3]);
+		dispatchSearchNavigation(document.activeElement, "backward", false);
+		key(input, "Escape");
+		view.refreshSearchSettings();
+		input = view.contentEl.querySelector("input")!;
+		dispatchSearchNavigation(document.activeElement, "backward", false);
+		expect(input.value).toBe("");
+		dispatchSearchNavigation(input, "forward", false);
+		expect(input.value).toBe("target");
+		expect(rows(view)[1].classList.contains("is-search-current")).toBe(true);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("Ctrl+Home/End focus the first/last timestamp from rows and controls without playback (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const input = view.contentEl.querySelector("input")!;
+		const button = view.contentEl.querySelector("button")!;
+		if (popout) for (const el of [input, button, ...rows(view)]) el.focus = () => {
+			active = el;
+			el.dispatchEvent(new FocusEvent("focus"));
+			el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+		};
+		for (const source of [rows(view)[2], input, button]) {
+			for (const name of ["Home", "End"]) {
+				source.focus();
+				const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, bubbles: true, cancelable: true });
+				source.dispatchEvent(event);
+				expect(event.defaultPrevented).toBe(true);
+				expect(doc.activeElement).toBe(rows(view)[name === "Home" ? 0 : 3]);
+			}
+		}
+		rows(view)[2].focus();
+		key(rows(view)[2], "Home", { ctrlKey: true, shiftKey: true });
+		expect(doc.activeElement).toBe(rows(view)[2]);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("reserves Ctrl+Home/End in the native scope, handles each event once and respects filtered rows", async () => {
+		const view = await panel();
+		const input = search(view);
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Show only matching lines"]')!.click();
+		for (const name of ["End", "Home"]) {
+			const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, bubbles: true, cancelable: true });
+			expect(scopeHandlers.get(name)?.(event)).toBe(false);
+			input.dispatchEvent(event);
+			expect(document.activeElement).toBe(rows(view)[name === "Home" ? 1 : 3]);
+		}
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each([false, true])("explicit activation selects and scrolls the current chunk, even after searching (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		let active: Element | null = null;

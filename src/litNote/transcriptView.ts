@@ -8,6 +8,7 @@ import {
 	matchAllWords,
 	onSearchNavigation,
 	searchExitAction,
+	searchRepeatAction,
 	shouldShowAllMatches,
 	type AllMatchesDisplayMode,
 	type SearchExitBehavior,
@@ -179,6 +180,7 @@ function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 const ROW_HINTS: KeyHint[][] = [
 	[
 		{ key: "↑↓ / Ctrl+N/P", action: "move" },
+		{ key: "Ctrl+Home/End", action: "first/last timestamp" },
 		{ key: "Enter", action: "play from here" },
 		{ key: "Shift+Enter", action: "go here" },
 	],
@@ -208,6 +210,7 @@ export class TranscriptView extends ItemView {
 	private rendered: RenderedRow[] = [];
 	private rowStarts: number[] = [];
 	private query = "";
+	private previousQuery = "";
 	/** Indexes into `rendered` of the rows matching `query`. */
 	private matches: number[] = [];
 	private matchIndex = -1;
@@ -259,6 +262,8 @@ export class TranscriptView extends ItemView {
 		});
 		this.scope.register(["Ctrl"], "N", (evt) => this.moveFocusedRow(1, evt));
 		this.scope.register(["Ctrl"], "P", (evt) => this.moveFocusedRow(-1, evt));
+		this.scope.register(["Ctrl"], "Home", (evt) => this.handleEdgeKey(evt));
+		this.scope.register(["Ctrl"], "End", (evt) => this.handleEdgeKey(evt));
 	}
 
 	getViewType(): string {
@@ -537,6 +542,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	private buildSearch(header: HTMLElement): void {
+		header.addEventListener("keydown", (evt) => { this.handleEdgeKey(evt); });
 		const bar = header.createDiv({ cls: "perplexity-saver-transcript-search" });
 		const search = new SearchComponent(bar);
 		const behavior = this.host.getSearchSettings().keyboard;
@@ -555,8 +561,27 @@ export class TranscriptView extends ItemView {
 		});
 		this.searchNavigationCleanup = onSearchNavigation(this.contentEl, (direction, checking) => {
 			if (!checking) {
-				if (search.inputEl.ownerDocument.activeElement !== search.inputEl) this.focusSearch();
-				else this.stepMatch(direction === "forward" ? 1 : -1);
+				const settings = this.host.getSearchSettings();
+				const action = searchRepeatAction(
+					search.inputEl.ownerDocument.activeElement === search.inputEl,
+					this.query,
+					settings.keyboard === "emacs" ? this.previousQuery : ""
+				);
+				if (action === "start") this.focusSearch();
+				else if (action === "recall") {
+					const origin = this.searchOrigin?.row ?? this.focusRow;
+					this.query = this.previousQuery;
+					search.setValue(this.query);
+					this.applySearch(false);
+					const next = direction === "forward"
+						? this.matches.findIndex((row) => row > origin)
+						: this.matches.filter((row) => row < origin).length - 1;
+					if (this.matches.length) {
+						this.selectMatch(next >= 0 ? next : direction === "forward" ? 0 : this.matches.length - 1, true);
+					}
+					search.inputEl.focus();
+					search.inputEl.setSelectionRange(this.query.length, this.query.length);
+				} else this.stepMatch(direction === "forward" ? 1 : -1);
 				this.updateSearchHints();
 			}
 			return true;
@@ -689,6 +714,7 @@ export class TranscriptView extends ItemView {
 	private finishSearch(accept: boolean): void {
 		const origin = this.searchOrigin;
 		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow : origin?.row ?? this.focusRow;
+		if (this.query) this.previousQuery = this.query;
 		this.query = "";
 		this.search?.setValue("");
 		this.demandHighlights = false;
@@ -785,6 +811,7 @@ export class TranscriptView extends ItemView {
 
 	private onListKey(evt: KeyboardEvent): void {
 		if (evt === this.handledKey) return;
+		if (!this.handleEdgeKey(evt)) return;
 		const index = this.focusedRowIndex();
 		if (index < 0) return;
 		const mod = evt.ctrlKey || evt.metaKey;
@@ -813,6 +840,20 @@ export class TranscriptView extends ItemView {
 		evt.stopPropagation();
 		this.handledKey = evt;
 		this.userScrollAt = Date.now();
+	}
+
+	private handleEdgeKey(evt: KeyboardEvent): boolean {
+		if (evt === this.handledKey) return false;
+		if (!evt.ctrlKey || evt.metaKey || evt.altKey || evt.shiftKey || (evt.key !== "Home" && evt.key !== "End")) return true;
+		const active = this.contentEl.ownerDocument.activeElement;
+		if (!active || !this.contentEl.contains(active)) return true;
+		const { visible } = this.visibleRows();
+		this.moveFocus(visible[evt.key === "Home" ? 0 : visible.length - 1] ?? -1);
+		evt.preventDefault();
+		evt.stopPropagation();
+		this.handledKey = evt;
+		this.userScrollAt = Date.now();
+		return false;
 	}
 
 	private hasTextSelection(): boolean {

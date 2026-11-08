@@ -257,7 +257,6 @@
 /* The line the video viewer is playing. */
 .perplexity-saver-transcript-row.is-playing {
 	background-color: hsla(var(--interactive-accent-hsl), 0.12);
-	box-shadow: inset 3px 0 0 var(--interactive-accent);
 	border-radius: var(--radius-s);
 }
 
@@ -346,8 +345,10 @@
 
 .perplexity-saver-video-stage {
 	position: relative;
-	flex: 1 1 auto;
-	min-height: 120px;
+	flex: 0 0 auto;
+	width: 100%;
+	aspect-ratio: 16 / 9;
+	min-height: 0;
 	overflow: hidden;
 	background: #000;
 	border-radius: var(--radius-s);
@@ -390,6 +391,26 @@
 
 .perplexity-saver-video-view:focus-visible .perplexity-saver-video-stage {
 	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+}
+
+.workspace-leaf.perplexity-saver-focused-pane:not(:has(.perplexity-saver-transcript-view)) > .workspace-leaf-content > .view-header {
+	box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+.workspace-leaf-content:has(> .perplexity-saver-transcript-view) {
+	position: relative;
+}
+
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-transcript-view)::after {
+	content: "";
+	position: absolute;
+	top: calc(var(--header-height) - 2px);
+	left: 0;
+	right: 0;
+	height: 2px;
+	background-color: var(--interactive-accent);
+	pointer-events: none;
+	z-index: 2;
 }
 
 .perplexity-saver-video-controls button:focus-visible,

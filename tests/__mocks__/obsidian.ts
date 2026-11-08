@@ -43,6 +43,20 @@ export class PluginSettingTab {
 	refreshDomState(): void {}
 }
 
+export class MarkdownView {
+	file: any;
+	containerEl: any;
+	editor: any;
+
+	constructor() {
+		this.editor = { focus(): void {} };
+	}
+
+	getViewType(): string {
+		return "markdown";
+	}
+}
+
 export class Setting {
 	containerEl: any;
 	settingEl: any;
