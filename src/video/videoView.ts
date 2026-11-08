@@ -139,6 +139,11 @@ export class VideoView extends ItemView {
 		return this.videoId;
 	}
 
+	/** Exact current position, including paused playback and restored viewers. */
+	getPlaybackSeconds(): number {
+		return this.player?.info.currentTime ?? this.startTime;
+	}
+
 	/** Give the viewer keyboard focus, so its keys (Space, arrows, …) work. */
 	focusKeys(): void {
 		this.contentEl.focus({ preventScroll: true });
@@ -237,7 +242,13 @@ export class VideoView extends ItemView {
 	/** Show or hide the note's transcript panel. */
 	async toggleTranscript(): Promise<void> {
 		const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
-		await this.host.toggleTranscript(file, this.leaf);
+		try {
+			await this.host.toggleTranscript(file, this.leaf);
+		} catch (error) {
+			console.error("Perplexity Saver: could not toggle transcript", error);
+			new Notice("Could not show or hide transcript.");
+			return;
+		}
 		this.updateTranscriptButton();
 	}
 

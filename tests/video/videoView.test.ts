@@ -17,6 +17,31 @@ describe("video timestamp copy", () => {
 		createdNotices.length = 0;
 	});
 
+	it.each([1, 2])("exposes exact playback time independently of playing/paused state (%s)", (playerState) => {
+		const view = new VideoView({} as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			isTranscriptShown: () => false, toggleTranscript: async () => {}, onPlayback: () => {},
+		});
+		Object.assign(view, { startTime: 27.25 });
+		expect(view.getPlaybackSeconds()).toBe(27.25);
+		Object.assign(view, { player: { info: { currentTime: 55.75, playerState } } });
+		expect(view.getPlaybackSeconds()).toBe(55.75);
+	});
+
+	it("surfaces transcript activation failures from the viewer button/command", async () => {
+		const error = new Error("Could not reveal leaf");
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const app = { vault: { getFileByPath: () => null } };
+		const view = new VideoView({ app } as unknown as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			isTranscriptShown: () => false, toggleTranscript: async () => { throw error; }, onPlayback: () => {},
+		});
+		await view.toggleTranscript();
+		expect(log).toHaveBeenCalledWith("Perplexity Saver: could not toggle transcript", error);
+		expect(createdNotices.at(-1)?.message).toBe("Could not show or hide transcript.");
+		log.mockRestore();
+	});
+
 	it.each(["list", "link"] as const)("copies the live setting's exact %s format from the owning window", async (initial) => {
 		let format: TimestampCopyFormat = initial;
 		const host: VideoViewHost = {

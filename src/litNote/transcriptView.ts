@@ -17,6 +17,7 @@ import {
 	isInCollapsedSidebar,
 	isSidebarCollapsed,
 	isSidebarLeaf,
+	loadLeafIfDeferred,
 	setSidebarCollapsed,
 } from "commons/workspace";
 import {
@@ -338,6 +339,12 @@ export class TranscriptView extends ItemView {
 
 	/** Show the transcript of the note at `path`. */
 	async showFile(path: string): Promise<void> {
+		if (path !== this.filePath) {
+			this.playbackSec = null;
+			this.focusRow = -1;
+			this.query = "";
+			this.searchOrigin = null;
+		}
 		this.filePath = path;
 		await this.reload();
 	}
@@ -380,11 +387,27 @@ export class TranscriptView extends ItemView {
 		}
 	}
 
+	/** Explicit navigation goes to the current chunk even while paused or with following disabled. */
+	focusPlayback(seconds: number | null, follow = true): void {
+		this.query = "";
+		this.search?.setValue("");
+		this.searchOrigin = null;
+		this.demandHighlights = false;
+		this.applySearch(false);
+		this.showPlayback(seconds, follow);
+		this.focusLines();
+		this.userScrollAt = Date.now();
+	}
+
 	private async followFile(file: TFile): Promise<void> {
 		if (file.extension !== "md") return;
 		const token = ++this.loadToken;
 		const lines = await loadTranscriptLines(this.app, file, this.host.getHeadingName());
 		if (token !== this.loadToken || !lines?.length) return;
+		this.playbackSec = null;
+		this.focusRow = -1;
+		this.query = "";
+		this.searchOrigin = null;
 		this.filePath = file.path;
 		this.lines = lines;
 		this.render();
@@ -856,11 +879,12 @@ let expandedRightSidebar = false;
  * element is hidden) and not inside a collapsed sidebar. With `scope`, only
  * panels in the same window as that leaf.
  */
-export function visibleTranscriptLeaves(app: App, scope?: WorkspaceLeaf | null): WorkspaceLeaf[] {
+export function visibleTranscriptLeaves(app: App, scope?: WorkspaceLeaf | null, filePath?: string | null): WorkspaceLeaf[] {
 	const scopeWin = scope ? getWindowForLeaf(scope) : undefined;
 	return app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => {
 		if (isInCollapsedSidebar(app, leaf)) return false;
 		if (scope && getWindowForLeaf(leaf) !== scopeWin) return false;
+		if (filePath && (!(leaf.view instanceof TranscriptView) || leaf.view.getFilePath() !== filePath)) return false;
 		const el = leaf.view?.containerEl;
 		return !el || typeof el.isShown !== "function" || el.isShown();
 	});
@@ -871,8 +895,8 @@ export function visibleTranscriptLeaves(app: App, scope?: WorkspaceLeaf | null):
  * collapse the right sidebar again if showing the transcript expanded it.
  * Returns true when a panel was closed.
  */
-export function hideTranscriptPanels(app: App, scope?: WorkspaceLeaf | null): boolean {
-	const leaves = visibleTranscriptLeaves(app, scope);
+export function hideTranscriptPanels(app: App, scope?: WorkspaceLeaf | null, filePath?: string | null): boolean {
+	const leaves = visibleTranscriptLeaves(app, scope, filePath);
 	const inSidebar = leaves.some((leaf) => isSidebarLeaf(app, leaf));
 	for (const leaf of leaves) leaf.detach();
 	if (inSidebar) {
@@ -885,21 +909,19 @@ export function hideTranscriptPanels(app: App, scope?: WorkspaceLeaf | null): bo
 }
 
 /**
- * Open (or reuse) the transcript panel for `file` without taking focus away
- * from the editor: in the right sidebar, or split off the video viewer when
- * `placement` is given.
+ * Open (or reuse) the transcript panel for `file`, returning its leaf for activation.
  */
 export async function showTranscriptPanel(
 	app: App,
 	file: TFile,
 	headingName: string,
 	placement?: TranscriptPlacement | null
-): Promise<void> {
+): Promise<WorkspaceLeaf | null> {
 	const lines = await loadTranscriptLines(app, file, headingName);
 	if (!lines?.length) {
 		const heading = normalizeTranscriptHeading(headingName);
 		new Notice(`No timestamped transcript under a "${heading}" heading in ${file.basename}.`);
-		return;
+		return null;
 	}
 	let leaf: WorkspaceLeaf;
 	if (placement) {
@@ -925,5 +947,7 @@ export async function showTranscriptPanel(
 			state: { file: file.path },
 		});
 	}
+	await loadLeafIfDeferred(leaf);
 	if (leaf.view instanceof TranscriptView) await leaf.view.showFile(file.path);
+	return leaf;
 }

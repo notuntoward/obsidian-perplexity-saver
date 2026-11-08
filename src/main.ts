@@ -61,11 +61,9 @@ import {
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
 import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, type NotePart } from "./video/switchParts";
-import { findLeafForFile, focusLeafAndWindow, getMainWindow, getWindowForLeaf } from "commons/workspace";
-import { requestFrameIn, setTimeoutIn, readClipboardIn } from "commons/windows";
+import { findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
+import { setTimeoutIn, readClipboardIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
-
-const PART_KEYS: NotePart[] = ["note", "video", "transcript"];
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -279,9 +277,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 			id: "show-youtube-transcript",
 			name: "Show YouTube transcript panel",
 			checkCallback: (checking: boolean) => {
-				const file = this.app.workspace.getActiveFile();
+				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
-				if (!checking) void this.showTranscript(file);
+				if (!checking) void this.showTranscript(file).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not show transcript", error);
+					new Notice("Could not show transcript.");
+				});
 				return true;
 			},
 		});
@@ -290,10 +291,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 			id: "search-youtube-transcript",
 			name: "Search YouTube transcript",
 			checkCallback: (checking: boolean) => {
-				const leaf = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)[0];
-				const file = this.app.workspace.getActiveFile();
+				const file = this.activePart().file;
+				const leaf = file ? this.partLeaves(file).transcript : null;
 				if (!leaf && (!file || file.extension !== "md")) return false;
-				if (!checking) void this.focusTranscriptSearch(leaf ?? null, file);
+				if (!checking) void this.focusTranscriptSearch(leaf ?? null, file).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not focus transcript search", error);
+					new Notice("Could not focus transcript search.");
+				});
 				return true;
 			},
 		});
@@ -305,7 +309,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new VideoView(leaf, {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
-					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, this.transcriptScope(viewer)).length > 0,
+					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, viewer,
+						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
 				})
@@ -321,12 +326,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 			},
 		});
 		// Keyboard switching between a literature note, its video and its transcript panel, across windows and sidebars.
-		const switchCommands: [id: string, name: string, target: (current: NotePart | null, open: Set<NotePart>) => NotePart][] = [
+		const switchCommands: [id: string, name: string, target: (current: NotePart | null) => NotePart][] = [
 			["go-to-literature-note", "Go to literature note (from its video or transcript)", () => "note"],
 			["go-to-video-viewer", "Go to YouTube video viewer", () => "video"],
 			["go-to-transcript-panel", "Go to YouTube transcript panel", () => "transcript"],
-			["cycle-note-video-transcript", "Cycle literature note, video and transcript", (c, o) => nextPart(c, o, 1)],
-			["cycle-note-video-transcript-back", "Cycle literature note, video and transcript backwards", (c, o) => nextPart(c, o, -1)],
+			["cycle-note-video-transcript", "Cycle literature note, video and transcript", (c) => nextPart(c, 1)],
+			["cycle-note-video-transcript-back", "Cycle literature note, video and transcript backwards", (c) => nextPart(c, -1)],
 		];
 		for (const [id, name, target] of switchCommands) {
 			this.addCommand({
@@ -337,8 +342,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 					if (!file) return false;
 					if (!checking) {
 						const leaves = this.partLeaves(file);
-						const open = new Set(PART_KEYS.filter((p) => leaves[p]));
-						void this.goToPart(target(part, open), file, leaves);
+						void this.goToPart(target(part), file, leaves).catch((error: unknown) => {
+							console.error("Perplexity Saver: could not navigate note parts", error);
+							new Notice("Could not navigate literature note, video or transcript.");
+						});
 					}
 					return true;
 				},
@@ -469,12 +476,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private async focusTranscriptSearch(leaf: WorkspaceLeaf | null, file: TFile | null): Promise<void> {
 		if (!leaf) {
 			if (!file) return;
-			await this.showTranscript(file);
-			leaf = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)[0] ?? null;
+			await this.showTranscript(file, this.partLeaves(file).video);
+			leaf = this.partLeaves(file).transcript;
 			if (!leaf) return;
 		}
-		await this.app.workspace.revealLeaf(leaf);
-		if (leaf.view instanceof TranscriptView) leaf.view.focusSearch();
+		await this.activatePartLeaf(leaf, file ? this.partLeaves(file).video : null, true);
 	}
 
 	/** The note a clicked element belongs to: its editor/reading view, or the transcript panel's note. */
@@ -502,6 +508,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private activePart(): { part: NotePart | null; file: TFile | null } {
 		const ws = this.app.workspace;
 		const byPath = (path: string | null): TFile | null => (path ? this.app.vault.getFileByPath(path) : null);
+		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view;
+		if (active instanceof VideoView) return { part: "video", file: byPath(active.getFilePath()) };
+		if (active instanceof TranscriptView) return { part: "transcript", file: byPath(active.getFilePath()) };
+		if (active instanceof MarkdownView && active.file) return { part: "note", file: active.file };
 		const video = ws.getActiveViewOfType(VideoView);
 		if (video) return { part: "video", file: byPath(video.getFilePath()) };
 		const transcript = ws.getActiveViewOfType(TranscriptView);
@@ -517,13 +527,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const fileOf = (leaf: WorkspaceLeaf): unknown => {
 			const view = leaf.view;
 			if (view instanceof VideoView || view instanceof TranscriptView) return view.getFilePath();
-			return (leaf.getViewState().state as { file?: unknown } | undefined)?.file;
+			return getLeafFileKey(leaf);
 		};
 		const note = findLeafForFile(this.app, file);
 		const noteWin = note ? getWindowForLeaf(note) : null;
 		const videos = ws.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => fileOf(leaf) === file.path);
-		const video = videos.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? videos[0] ?? null;
-		const transcript = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).find((leaf) => fileOf(leaf) === file.path) ?? null;
+		const activeWin = getWindowForLeaf(getActiveLeafInFocusedWindow(this.app, { includeSidebars: true }) ?? note);
+		const video = videos.find((leaf) => getWindowForLeaf(leaf) === activeWin)
+			?? videos.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? videos[0] ?? null;
+		const transcripts = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => fileOf(leaf) === file.path);
+		const transcript = transcripts.find((leaf) => getWindowForLeaf(leaf) === activeWin) ?? transcripts[0] ?? null;
 		return { note, video, transcript };
 	}
 
@@ -532,28 +545,37 @@ export default class PerplexitySaverPlugin extends Plugin {
 		let leaf = leaves[part];
 		if (!leaf) {
 			if (part === "note") {
-				leaf = this.app.workspace.getLeaf("tab");
-				await leaf.openFile(file);
+				await openFileInLeaf(this.app, file, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
+				return;
 			} else if (part === "video") {
 				leaf = await this.openViewerForNote(file);
 			} else {
-				await this.showTranscript(file);
-				leaf = this.partLeaves(file).transcript;
+				await this.showTranscript(file, leaves.video);
+				return;
 			}
 		}
 		if (!leaf) return;
-		await this.app.workspace.revealLeaf(leaf);
-		focusLeafAndWindow(this.app, leaf, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
-		const target = leaf;
-		const win = getWindowForLeaf(target);
-		// After Obsidian has finished moving focus to the leaf.
-		if (win) {
-			requestFrameIn(win, () => {
+		await this.activatePartLeaf(leaf, leaves.video);
+	}
+
+	private async activatePartLeaf(leaf: WorkspaceLeaf, viewer: WorkspaceLeaf | null, search = false): Promise<void> {
+		await revealAndFocusLeaf(this.app, leaf, {
+			raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined,
+			onFocus: (target) => {
 				const view = target.view;
 				if (view instanceof VideoView) view.focusKeys();
-				else if (view instanceof TranscriptView) view.focusLines();
-			});
-		}
+				else if (view instanceof TranscriptView) {
+					const video = viewer?.view;
+					const videoId = video instanceof VideoView ? video.getVideoId() : null;
+					const sameVideo = video instanceof VideoView && videoId && view.showsVideo(video.getFilePath(), videoId);
+					const seconds = sameVideo ? video.getPlaybackSeconds() : null;
+					if (search) {
+						view.showPlayback(seconds, this.settings.followTranscript);
+						view.focusSearch();
+					} else view.focusPlayback(seconds, this.settings.followTranscript);
+				}
+			},
+		});
 	}
 
 	/** Open the viewer on the video a note links to (the first YouTube link in it). */
@@ -575,8 +597,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 	 * to its right in that window (sidebars exist only in the main window);
 	 * otherwise the panel goes in the sidebar or below the viewer per the setting.
 	 */
-	async showTranscript(file: TFile): Promise<void> {
-		const viewer = getVideoLeaf(this.app);
+	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null): Promise<void> {
+		let viewer = preferredViewer ?? getVideoLeaf(this.app);
+		if (!(viewer?.view instanceof VideoView) || viewer.view.getFilePath() !== file.path) viewer = this.partLeaves(file).video;
 		let placement: TranscriptPlacement | null = null;
 		if (viewer && this.viewerInPopout(viewer)) {
 			placement = { nextTo: viewer, direction: "vertical" };
@@ -584,7 +607,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 			const nextTo = viewer ?? (await this.openViewerForNote(file, false));
 			if (nextTo) placement = { nextTo, direction: "horizontal" };
 		}
-		await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement);
+		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement);
+		if (leaf) await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
 	}
 
 	private viewerInPopout(viewer: WorkspaceLeaf): boolean {
@@ -592,19 +616,17 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return !!win && win !== getMainWindow(this.app);
 	}
 
-	/** Transcript panels the viewer's button controls: those in its pop-out window, or all of them. */
-	private transcriptScope(viewer: WorkspaceLeaf | null): WorkspaceLeaf | null {
-		return viewer && this.viewerInPopout(viewer) ? viewer : null;
-	}
-
 	/** The viewer's transcript button: close a visible transcript panel, or show this note's. */
 	async toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf | null): Promise<void> {
-		if (hideTranscriptPanels(this.app, this.transcriptScope(viewer))) return;
 		if (!file) {
 			new Notice("This video is not linked to a note.");
 			return;
 		}
-		await this.showTranscript(file);
+		if (hideTranscriptPanels(this.app, viewer, file.path)) {
+			if (viewer) await this.activatePartLeaf(viewer, null);
+			return;
+		}
+		await this.showTranscript(file, viewer);
 	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {

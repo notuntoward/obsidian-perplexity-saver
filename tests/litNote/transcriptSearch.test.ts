@@ -91,6 +91,24 @@ function rows(view: TranscriptView): HTMLElement[] {
 }
 
 describe("accepting transcript search", () => {
+	it.each([false, true])("explicit activation selects and scrolls the current chunk, even after searching (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		if (popout) for (const el of [view.contentEl.querySelector("input")!, ...rows(view)]) el.focus = () => { active = el; };
+		const input = search(view);
+		view.showPlayback(2.5);
+		view["focusPlayback"](2.5);
+		expect(doc.activeElement).toBe(rows(view)[2]);
+		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
+		expect(input.value).toBe("");
+		expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+		key(rows(view)[2], "ArrowUp");
+		expect(doc.activeElement).toBe(rows(view)[1]);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each([false, true])("provides standalone native transcript commands with no Incremental Search installed (popout=%s)", async (popout) => {
 		settings.keyboard = "emacs";
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
