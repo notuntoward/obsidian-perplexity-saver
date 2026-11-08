@@ -44,6 +44,7 @@ import {
 	TranscriptView,
 	hideTranscriptPanels,
 	showTranscriptPanel,
+	TRANSCRIPT_LOCATIONS,
 	visibleTranscriptLeaves,
 	transcriptSearchCommands,
 	type TranscriptPanelLocation,
@@ -68,9 +69,10 @@ import { registerTimestampLinks, type TimestampClickAction, type TimestampReques
 import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, type NotePart } from "./video/switchParts";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
-import { findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
+import { buildNavigationModel, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
+import { getCommandHotkeyLabel } from "commons/modal";
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -227,6 +229,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	litNoteServerSettings: LitNoteServerSettings | null = null;
 	private litNoteServer: http.Server | null = null;
 	private refreshVideoNoteFocusIndicator: (() => void) | null = null;
+	private transcriptLocations = new Map<string, TranscriptPanelLocation>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -283,37 +286,20 @@ export default class PerplexitySaverPlugin extends Plugin {
 						highlights: this.settings.transcriptSearchHighlights,
 					}),
 					playAt: (filePath, url, seconds, play) => void this.playTranscriptAt(filePath, url, seconds, play),
+					movePanel: async (filePath, location) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						if (!file) throw new Error(`Transcript note not found: ${filePath}`);
+						await this.showTranscript(file, this.partLeaves(file).video, location);
+					},
+					toggleOrientation: async (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						if (!file) throw new Error(`Transcript note not found: ${filePath}`);
+						await this.toggleTranscriptOrientation(file, this.partLeaves(file).video);
+					},
+					closePanel: (leaf) => this.closeTranscript(leaf),
 				})
 		);
-		this.addCommand({
-			id: "show-youtube-transcript",
-			name: "Show YouTube transcript panel",
-			checkCallback: (checking: boolean) => {
-				const file = this.activePart().file;
-				if (!file || file.extension !== "md") return false;
-				if (!checking) void this.showTranscript(file).catch((error: unknown) => {
-					console.error("Perplexity Saver: could not show transcript", error);
-					new Notice("Could not show transcript.");
-				});
-				return true;
-			},
-		});
-
-		this.addCommand({
-			id: "search-youtube-transcript",
-			name: "Search YouTube transcript",
-			checkCallback: (checking: boolean) => {
-				const file = this.activePart().file;
-				const leaf = file ? this.partLeaves(file).transcript : null;
-				if (!leaf && (!file || file.extension !== "md")) return false;
-				if (!checking) void this.focusTranscriptSearch(leaf ?? null, file).catch((error: unknown) => {
-					console.error("Perplexity Saver: could not focus transcript search", error);
-					new Notice("Could not focus transcript search.");
-				});
-				return true;
-			},
-		});
-		for (const command of transcriptSearchCommands(this.app)) this.addCommand(command);
+		this.registerTranscriptCommands();
 
 		this.registerView(
 			VIDEO_VIEW_TYPE,
@@ -321,20 +307,23 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new VideoView(leaf, {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
-					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, viewer,
+					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
 					focusNote: (target) => this.focusNoteInsertionTarget(target),
 				})
 		);
-		this.addCommand({
+		this.addBoundAlias({
 			id: "open-youtube-video-viewer",
-			name: "Open YouTube video viewer",
+			name: "Go to YouTube video viewer (legacy shortcut)",
 			checkCallback: (checking: boolean) => {
-				const file = this.app.workspace.getActiveFile();
+				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
-				if (!checking) void this.openViewerForNote(file);
+				if (!checking) void this.goToPart("video", file, this.partLeaves(file)).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not open video viewer", error);
+					new Notice("Could not open video viewer.");
+				});
 				return true;
 			},
 		});
@@ -381,21 +370,25 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
 			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
 			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
-			["video-viewer-insert-screenshot", "Video viewer: Insert screenshot (drag an area)", (v) => void this.insertScreenshotIntoNote(v, false)],
-			["video-viewer-insert-screenshot-whole", "Video viewer: Insert screenshot of the whole picture", (v) => void this.insertScreenshotIntoNote(v, true)],
+			["video-viewer-insert-screenshot", "Video viewer: insert screenshot (drag an area)", (v) => this.insertScreenshotIntoNote(v, false)],
+			["video-viewer-insert-screenshot-whole", "Video viewer: insert screenshot of the whole picture", (v) => this.insertScreenshotIntoNote(v, true)],
 			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
 			["video-viewer-insert-timestamp", "Video viewer: insert timestamp bullet into literature note", (v) => this.insertTimestampIntoNote(v)],
-			["video-viewer-toggle-transcript", "Video viewer: show or hide transcript", (v) => v.toggleTranscript()],
+			["video-viewer-toggle-transcript", "Toggle YouTube transcript panel (legacy viewer shortcut)", (v) => v.toggleTranscript()],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
 		for (const [id, name, run] of viewerCommands) {
-			this.addCommand({
+			const register = id === "video-viewer-toggle-transcript" ? this.addBoundAlias.bind(this) : this.addCommand.bind(this);
+			register({
 				id,
 				name,
 				checkCallback: (checking: boolean) => {
 					const view = this.videoViewForActivePart();
-					if (!view) return false;
-					if (!checking) void run(view);
+					if (!view?.getVideoId() || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
+					if (!checking) void Promise.resolve().then(() => run(view)).catch((error: unknown) => {
+						console.error(`Perplexity Saver: could not run ${id}`, error);
+						new Notice(`Could not run "${name}".`);
+					});
 					return true;
 				},
 			});
@@ -439,6 +432,68 @@ export default class PerplexitySaverPlugin extends Plugin {
 					console.debug("Background Zotero cache warming skipped:", err);
 				});
 			}, 1000);
+		}
+	}
+
+	private addBoundAlias(command: import("obsidian").Command): void {
+		if (getCommandHotkeyLabel(this.app, `${this.manifest.id}:${command.id}`)) this.addCommand(command);
+	}
+
+	private registerTranscriptCommands(): void {
+		this.addCommand({
+			id: "show-youtube-transcript",
+			name: "Toggle YouTube transcript panel",
+			checkCallback: (checking: boolean) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.toggleTranscript(file, this.partLeaves(file).video).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not toggle transcript", error);
+					new Notice("Could not show or hide transcript.");
+				});
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "search-youtube-transcript",
+			name: "Search YouTube transcript",
+			checkCallback: (checking: boolean) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.focusTranscriptSearch(this.partLeaves(file).transcript, file).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not focus transcript search", error);
+					new Notice("Could not focus transcript search.");
+				});
+				return true;
+			},
+		});
+		for (const command of transcriptSearchCommands(this.app)) this.addCommand(command);
+		this.addCommand({
+			id: "transcript-toggle-orientation",
+			name: "Transcript: toggle below / beside video",
+			checkCallback: (checking: boolean) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.toggleTranscriptOrientation(file, this.partLeaves(file).video).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not change transcript orientation", error);
+					new Notice("Could not change transcript orientation.");
+				});
+				return true;
+			},
+		});
+		for (const location of Object.keys(TRANSCRIPT_LOCATIONS) as TranscriptPanelLocation[]) {
+			this.addBoundAlias({
+				id: `transcript-location-${location}`,
+				name: `Transcript: move to ${TRANSCRIPT_LOCATIONS[location].toLowerCase()} (legacy shortcut)`,
+				checkCallback: (checking: boolean) => {
+					const file = this.activePart().file;
+					if (!file || file.extension !== "md") return false;
+					if (!checking) void this.showTranscript(file, this.partLeaves(file).video, location).catch((error: unknown) => {
+						console.error("Perplexity Saver: could not move transcript", error);
+						new Notice("Could not move transcript panel.");
+					});
+					return true;
+				},
+			});
 		}
 	}
 
@@ -689,27 +744,42 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/**
-	 * Show a note's transcript panel. A viewer in a pop-out window gets the panel
-	 * to its right in that window (sidebars exist only in the main window);
-	 * otherwise the panel goes in the sidebar or below the viewer per the setting.
+	 * Show a note's transcript using its session placement or the saved default.
+	 * The sidebar default maps to beside a pop-out viewer; explicit moves can use
+	 * the main sidebar, below or beside without changing the saved default.
 	 */
-	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null): Promise<void> {
+	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null, location?: TranscriptPanelLocation): Promise<void> {
 		let viewer = preferredViewer ?? getVideoLeaf(this.app);
 		if (!(viewer?.view instanceof VideoView) || viewer.view.getFilePath() !== file.path) viewer = this.partLeaves(file).video;
 		let placement: TranscriptPlacement | null = null;
-		if (viewer && this.viewerInPopout(viewer)) {
+		const selected = location ?? this.transcriptLocations.get(file.path) ?? this.settings.transcriptPanelLocation;
+		if (!location && !this.transcriptLocations.has(file.path) && selected === "sidebar" && viewer && this.viewerInPopout(viewer)) {
 			placement = { nextTo: viewer, direction: "vertical" };
-		} else if (this.settings.transcriptPanelLocation === "viewer") {
+		} else if (selected !== "sidebar") {
 			const nextTo = viewer ?? (await this.openViewerForNote(file, false));
-			if (nextTo) placement = { nextTo, direction: "horizontal" };
+			if (!nextTo) return;
+			placement = { nextTo, direction: selected === "viewer" ? "horizontal" : "vertical" };
 		}
-		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement);
-		if (leaf) await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
+		const replaceLeaf = location ? this.partLeaves(file).transcript : null;
+		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement, replaceLeaf);
+		if (leaf) {
+			if (location) this.transcriptLocations.set(file.path, location);
+			await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
+		}
 	}
 
 	private viewerInPopout(viewer: WorkspaceLeaf): boolean {
 		const win = getWindowForLeaf(viewer);
 		return !!win && win !== getMainWindow(this.app);
+	}
+
+	private async closeTranscript(leaf: WorkspaceLeaf): Promise<void> {
+		if (!(leaf.view instanceof TranscriptView)) throw new Error("Expected a transcript pane.");
+		const filePath = leaf.view.getFilePath();
+		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+		const viewer = file ? this.partLeaves(file).video : null;
+		hideTranscriptPanels(this.app, leaf, filePath);
+		if (viewer) await this.activatePartLeaf(viewer, null);
 	}
 
 	/** The viewer's transcript button: close a visible transcript panel, or show this note's. */
@@ -718,11 +788,23 @@ export default class PerplexitySaverPlugin extends Plugin {
 			new Notice("This video is not linked to a note.");
 			return;
 		}
-		if (hideTranscriptPanels(this.app, viewer, file.path)) {
+		if (hideTranscriptPanels(this.app, null, file.path)) {
 			if (viewer) await this.activatePartLeaf(viewer, null);
 			return;
 		}
 		await this.showTranscript(file, viewer);
+	}
+
+	async toggleTranscriptOrientation(file: TFile, viewer: WorkspaceLeaf | null): Promise<void> {
+		let current = this.transcriptLocations.get(file.path) ?? this.settings.transcriptPanelLocation;
+		const panel = this.partLeaves(file).transcript;
+		if (panel && isSidebarLeaf(this.app, panel)) current = "sidebar";
+		else if (panel && viewer) {
+			const direction = getGroupForLeaf(buildNavigationModel(this.app, viewer), panel)?.direction;
+			if (direction === "below" || direction === "above") current = "viewer";
+			else if (direction === "left" || direction === "right") current = "beside";
+		}
+		await this.showTranscript(file, viewer, current === "viewer" ? "beside" : "viewer");
 	}
 
 	private async startImport(editor: Editor, view: MarkdownView): Promise<void> {
@@ -1390,15 +1472,12 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						},
 					},
 					{
-						name: "Transcript panel location",
-						desc: "Where the transcript panel opens: in the right sidebar, or below the YouTube video viewer (the viewer opens too if needed).",
+						name: "Default transcript panel location",
+						desc: "Initial placement. Use the transcript's Layout menu or orientation toggle command to change the current note's layout without changing this default.",
 						control: {
 							type: "dropdown",
 							key: "transcriptPanelLocation",
-							options: {
-								sidebar: "Right sidebar (default)",
-								viewer: "Below the video viewer",
-							},
+							options: TRANSCRIPT_LOCATIONS,
 						},
 					},
 					{
@@ -1859,10 +1938,10 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		this.addChoiceSetting(
 			containerEl,
-			"Transcript panel location",
-			"Where the transcript panel opens: in the right sidebar, or below the YouTube video viewer (the viewer opens too if needed).",
+			"Default transcript panel location",
+			"Initial placement. Use the transcript's Layout menu or orientation toggle command to change the current note's layout without changing this default.",
 			"transcriptPanelLocation",
-			{ sidebar: "Right sidebar (default)", viewer: "Below the video viewer" }
+			TRANSCRIPT_LOCATIONS
 		);
 		new Setting(containerEl)
 			.setName("Follow playback in transcript")

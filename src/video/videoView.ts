@@ -123,6 +123,25 @@ export class VideoView extends ItemView {
 		this.player = null;
 	}
 
+	onResize(): void {
+		const el = this.contentEl;
+		const win = el.ownerDocument.defaultView;
+		if (!win || !this.stageEl || el.clientWidth <= 0 || el.clientHeight <= 0) return;
+		const css = win.getComputedStyle(el);
+		const width = el.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
+		const chrome = Array.from(el.querySelectorAll<HTMLElement>(":scope > .perplexity-saver-video-timeline, :scope > .perplexity-saver-video-controls"));
+		const height = el.clientHeight - parseFloat(css.paddingTop) - parseFloat(css.paddingBottom)
+			- chrome.reduce((sum, child) => sum + child.getBoundingClientRect().height, 0)
+			- (parseFloat(css.rowGap) || 0) * chrome.length;
+		const previousWidth = this.stageEl.getBoundingClientRect().width;
+		const nextWidth = Math.max(0, Math.min(width, height * 16 / 9));
+		this.stageEl.style.width = `${nextWidth}px`;
+		if (this.zoom && previousWidth > 0 && nextWidth !== previousWidth) {
+			const scale = nextWidth / previousWidth;
+			this.setZoom({ ...this.zoom, x: this.zoom.x * scale, y: this.zoom.y * scale });
+		}
+	}
+
 	async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		const s = (state ?? {}) as VideoViewState;
 		await super.setState(state, result);
@@ -182,7 +201,7 @@ export class VideoView extends ItemView {
 
 		this.emptyEl = el.createDiv({
 			cls: "perplexity-saver-video-empty",
-			text: "Click a timestamp link to a YouTube video, or run \"Open YouTube video viewer\" in a literature note.",
+			text: "Click a timestamp link to a YouTube video, or run \"Go to YouTube video viewer\" in a literature note.",
 		});
 
 		this.stageEl = el.createDiv({ cls: "perplexity-saver-video-stage" });
@@ -406,6 +425,7 @@ export class VideoView extends ItemView {
 		const empty = !this.videoId;
 		this.emptyEl.toggleClass("is-hidden", !empty);
 		this.contentEl.toggleClass("has-video", !empty);
+		this.onResize();
 	}
 
 	private update(info: PlayerInfo): void {

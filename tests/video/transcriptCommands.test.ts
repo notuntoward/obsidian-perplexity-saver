@@ -9,17 +9,29 @@ import { nextPart } from "../../src/video/switchParts";
 import { createdNotices } from "../__mocks__/obsidian";
 import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
 import "commons/testing";
+import * as workspaceApi from "commons/workspace";
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	debounce: (callback: () => void) => callback,
 	Scope: class { register(): void {} },
 	Platform: { isDesktopApp: false },
+	setIcon: () => {},
+	SearchComponent: class {
+		inputEl: HTMLInputElement;
+		constructor(parent: HTMLElement) { this.inputEl = parent.createEl("input"); }
+		setPlaceholder(value: string): this { this.inputEl.placeholder = value; return this; }
+		setValue(value: string): this { this.inputEl.value = value; return this; }
+		onChange(): this { return this; }
+	},
 }));
 vi.mock("commons/windows", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	requestFrameIn: (_win: Window, callback: () => void) => { callback(); },
 }));
+vi.mock("../../src/video/focusIndicator", () => ({ registerVideoNoteFocusIndicator: () => () => {} }));
+vi.mock("../../src/litNote/transcriptFolding", () => ({ registerTranscriptFolding: () => () => {} }));
+vi.mock("../../src/litNote/litNoteServer", () => ({ startLitNoteServer: () => null, stopLitNoteServer: () => {} }));
 vi.mock("commons/workspace", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	getActiveLeafInFocusedWindow: (app: App) => app.workspace.activeLeaf ?? null,
@@ -29,7 +41,13 @@ vi.mock("commons/workspace", async (original) => ({
 	loadLeafIfDeferred: async () => {},
 }));
 
-beforeEach(() => { document.body.empty(); vi.spyOn(window, "focus").mockImplementation(() => {}); });
+beforeEach(() => {
+	document.body.empty();
+	vi.spyOn(window, "focus").mockImplementation(() => {});
+	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
+	HTMLElement.prototype.isShown = function () { return true; };
+	HTMLElement.prototype.scrollIntoView = vi.fn();
+});
 
 async function harness() {
 	const file = { path: "note.md", basename: "note", extension: "md" };
@@ -42,6 +60,10 @@ async function harness() {
 			iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => leaves.forEach(callback),
 			revealLeaf: vi.fn(async () => {}),
 			setActiveLeaf: vi.fn((leaf: WorkspaceLeaf) => { app.workspace.activeLeaf = leaf; }),
+			getRightLeaf: vi.fn(() => {
+				if (!leaves.includes(transcriptLeaf)) leaves.push(transcriptLeaf);
+				return transcriptLeaf;
+			}),
 			ensureSideLeaf: vi.fn(async () => {
 				if (!leaves.includes(transcriptLeaf)) leaves.push(transcriptLeaf);
 				return transcriptLeaf;
@@ -61,7 +83,7 @@ async function harness() {
 	transcript.containerEl = transcript.contentEl;
 	transcript.containerEl.isShown = () => true;
 	Object.assign(transcript, { filePath: file.path });
-	const transcriptLeaf = { view: transcript, detach: vi.fn(), getViewState: () => ({ state: { file: file.path } }) } as unknown as WorkspaceLeaf;
+	const transcriptLeaf = { view: transcript, setViewState: vi.fn(async () => {}), detach: vi.fn(), getViewState: () => ({ state: { file: file.path } }) } as unknown as WorkspaceLeaf;
 	vi.spyOn(transcript, "showFile").mockResolvedValue();
 	vi.spyOn(transcript, "getFilePath").mockReturnValue(file.path);
 	vi.spyOn(transcript, "focusLines").mockImplementation(() => {});
@@ -79,6 +101,221 @@ async function harness() {
 }
 
 describe("transcript activation commands", () => {
+	it.each([false, true])("full registration preserves duplicate hotkeys only when bound (%s)", async (bound) => {
+		const h = await harness();
+		const duplicates = ["open-youtube-video-viewer", "video-viewer-toggle-transcript", "transcript-location-sidebar", "transcript-location-viewer", "transcript-location-beside"];
+		Object.assign(h.app, { hotkeyManager: {
+			printHotkeyForCommand: (id: string) => bound && duplicates.some((duplicate) => id.endsWith(`:${duplicate}`)) ? "Ctrl + Alt + T" : "",
+		} });
+		Object.assign(h.app.workspace, { on: vi.fn(), onLayoutReady: vi.fn(), getLastOpenFiles: () => [] });
+		Object.assign(h.app.vault, { on: vi.fn() });
+		Object.assign(h.plugin, { registerView: vi.fn() });
+		h.plugin.settings.autoRelinkSources = false;
+		vi.spyOn(h.plugin, "loadSettings").mockResolvedValue();
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		await h.plugin.onload();
+		const ids = commands.map((c) => c.id);
+		expect(new Set(ids).size).toBe(ids.length);
+		for (const id of duplicates) expect(ids.includes(id)).toBe(bound);
+		expect(ids).toContain("go-to-video-viewer");
+		expect(ids).toContain("video-viewer-insert-timestamp");
+		h.app.workspace.activeLeaf = h.viewerLeaf;
+		expect(commands.find((c) => c.id === "video-viewer-play-pause")!.checkCallback!(true)).toBe(true);
+		expect(commands.find((c) => c.id === "video-viewer-screenshot")!.checkCallback!(true)).toBe(false);
+		Object.assign(h.viewerLeaf.view, { videoId: null });
+		expect(commands.find((c) => c.id === "video-viewer-play-pause")!.checkCallback!(true)).toBe(false);
+		Object.assign(h.viewerLeaf.view, { videoId: "abc" });
+		if (bound) {
+			h.app.workspace.activeLeaf = h.viewerLeaf;
+			const open = commands.find((c) => c.id === "open-youtube-video-viewer")!;
+			const focus = vi.spyOn(h.viewerLeaf.view as VideoView, "focusKeys");
+			open.checkCallback!(true);
+			expect(focus).not.toHaveBeenCalled();
+			open.checkCallback!(false);
+			await vi.waitFor(() => expect(focus).toHaveBeenCalled());
+		}
+	});
+
+	it("registers one visibility toggle and one orientation toggle without unbound placement aliases", async () => {
+		const h = await harness();
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.app.workspace.activeLeaf = h.viewerLeaf;
+		h.plugin["registerTranscriptCommands"]();
+		expect(commands.map((c) => c.id)).toEqual([
+			"show-youtube-transcript", "search-youtube-transcript",
+			"transcript-search-forward", "transcript-search-backward", "transcript-toggle-orientation",
+		]);
+		const toggle = commands.find((c) => c.id === "show-youtube-transcript")!;
+		expect(toggle.name).toBe("Toggle YouTube transcript panel");
+		const run = vi.spyOn(h.plugin, "toggleTranscript").mockResolvedValue();
+		expect(toggle.checkCallback!(true)).toBe(true);
+		expect(run).not.toHaveBeenCalled();
+		expect(toggle.checkCallback!(false)).toBe(true);
+		expect(run).toHaveBeenCalledWith(h.file, h.viewerLeaf);
+	});
+
+	it("preserves bound placement aliases without writing hotkeys or settings", async () => {
+		const h = await harness();
+		Object.assign(h.app, { hotkeyManager: { printHotkeyForCommand: (id: string) => id.endsWith("transcript-location-sidebar") ? "Ctrl + Alt + T" : "" } });
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.app.workspace.activeLeaf = h.viewerLeaf;
+		h.plugin["registerTranscriptCommands"]();
+		const alias = commands.find((c) => c.id === "transcript-location-sidebar")!;
+		expect(alias).toBeDefined();
+		const move = vi.spyOn(h.plugin, "showTranscript").mockResolvedValue();
+		alias.checkCallback!(true);
+		expect(move).not.toHaveBeenCalled();
+		alias.checkCallback!(false);
+		expect(move).toHaveBeenCalledWith(h.file, h.viewerLeaf, "sidebar");
+	});
+
+	it("toggles below/beside without changing the saved default", async () => {
+		const h = await harness();
+		const move = vi.spyOn(h.plugin, "showTranscript").mockImplementation(async (file, _viewer, location) => {
+			if (location) h.plugin["transcriptLocations"].set(file.path, location);
+		});
+		await h.plugin.toggleTranscriptOrientation(h.file as TFile, h.viewerLeaf);
+		await h.plugin.toggleTranscriptOrientation(h.file as TFile, h.viewerLeaf);
+		expect(move).toHaveBeenNthCalledWith(1, h.file, h.viewerLeaf, "viewer");
+		expect(move).toHaveBeenNthCalledWith(2, h.file, h.viewerLeaf, "beside");
+		expect(h.plugin.settings.transcriptPanelLocation).toBe("sidebar");
+	});
+
+	it("toggles the restored pane's actual orientation instead of reapplying the default", async () => {
+		const h = await harness();
+		h.leaves.push(h.transcriptLeaf);
+		vi.spyOn(workspaceApi, "getGroupForLeaf").mockReturnValue({
+			group: {} as import("obsidian").WorkspaceParent, window,
+			leaves: [h.transcriptLeaf], representative: h.transcriptLeaf,
+			lastActive: 0, isCurrent: false, direction: "below",
+		});
+		const move = vi.spyOn(h.plugin, "showTranscript").mockResolvedValue();
+		await h.plugin.toggleTranscriptOrientation(h.file as TFile, h.viewerLeaf);
+		expect(move).toHaveBeenCalledWith(h.file, h.viewerLeaf, "beside");
+	});
+
+	it("rejects transcript commands without a markdown note and performs no action while checking", async () => {
+		const h = await harness();
+		Object.assign(h.app.workspace, { getActiveViewOfType: () => null, getActiveFile: () => null });
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.plugin["registerTranscriptCommands"]();
+		for (const c of commands.filter((c) => c.id === "show-youtube-transcript" || c.id === "transcript-toggle-orientation" || c.id === "search-youtube-transcript")) {
+			expect(c.checkCallback!(true)).toBe(false);
+			expect(c.checkCallback!(false)).toBe(false);
+		}
+		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
+	});
+
+	it("a pop-out viewer can hide its explicitly sidebar-placed transcript", async () => {
+		const h = await harness();
+		const popDoc = document.implementation.createHTMLDocument();
+		Object.defineProperty(popDoc, "defaultView", { value: { closed: false } });
+		h.viewerLeaf.view.containerEl = popDoc.createElement("div");
+		h.leaves.push(h.transcriptLeaf);
+		await h.plugin.toggleTranscript(h.file as TFile, h.viewerLeaf);
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
+		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
+	});
+
+	it.each(["viewer", "beside"] as const)("opens the %s layout with the correct split direction", async (location) => {
+		const h = await harness();
+		const split = vi.fn(() => {
+			h.leaves.push(h.transcriptLeaf);
+			return h.transcriptLeaf;
+		});
+		Object.assign(h.transcriptLeaf, { setViewState: vi.fn(async () => {}) });
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		h.plugin.settings.transcriptPanelLocation = location;
+		await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf);
+		expect(split).toHaveBeenCalledWith(h.viewerLeaf, location === "viewer" ? "horizontal" : "vertical");
+	});
+
+	it("moves an existing panel, preserving its mode and leaving the default unchanged", async () => {
+		const h = await harness();
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(h.transcript, { mode: "paragraphs", previousQuery: "target" });
+		const next = new TranscriptView(Object.assign(h.transcriptLeaf, { app: h.app }), {
+			getHeadingName: () => "Transcript",
+			getSearchSettings: () => ({ keyboard: "emacs", matching: "all-words", highlights: "always" }),
+			playAt: vi.fn(),
+		});
+		next.contentEl = document.body.createDiv();
+		next.containerEl = next.contentEl;
+		const newLeaf = { view: next, setViewState: vi.fn(async () => {}), detach: vi.fn() } as unknown as WorkspaceLeaf;
+		const split = vi.fn(() => newLeaf);
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf, "viewer");
+		expect(split).toHaveBeenCalledWith(h.viewerLeaf, "horizontal");
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
+		expect(next.getState().mode).toBe("paragraphs");
+		expect(next["previousQuery"]).toBe("target");
+		expect(h.plugin.settings.transcriptPanelLocation).toBe("sidebar");
+		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
+		await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf);
+		expect(split).toHaveBeenCalledTimes(2);
+		expect(split).toHaveBeenLastCalledWith(h.viewerLeaf, "horizontal");
+	});
+
+	it("keeps the old panel and default when creating the replacement fails", async () => {
+		const h = await harness();
+		h.leaves.push(h.transcriptLeaf);
+		const error = new Error("Could not initialize pane");
+		const next = { setViewState: vi.fn().mockRejectedValue(error), detach: vi.fn() };
+		Object.assign(h.app.workspace, { createLeafBySplit: () => next });
+		await expect(h.plugin.showTranscript(h.file as TFile, h.viewerLeaf, "beside")).rejects.toThrow(error);
+		expect(h.transcriptLeaf.detach).not.toHaveBeenCalled();
+		expect(h.plugin.settings.transcriptPanelLocation).toBe("sidebar");
+		expect(h.plugin["transcriptLocations"].size).toBe(0);
+		expect(next.detach).toHaveBeenCalledOnce();
+	});
+
+	it("honors below-video placement inside the viewer's pop-out", async () => {
+		const h = await harness();
+		const popDoc = document.implementation.createHTMLDocument();
+		const popWin = { closed: false } as Window;
+		Object.defineProperty(popDoc, "defaultView", { value: popWin });
+		h.viewerLeaf.view.containerEl = popDoc.createElement("div");
+		const split = vi.fn(() => h.transcriptLeaf);
+		Object.assign(h.transcriptLeaf, { setViewState: vi.fn(async () => {}) });
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		h.plugin.settings.transcriptPanelLocation = "viewer";
+		await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf);
+		expect(split).toHaveBeenCalledWith(h.viewerLeaf, "horizontal");
+	});
+
+	it("sizes the video from its pop-out document and scales zoomed pan with the picture", async () => {
+		const h = await harness();
+		const doc = document.implementation.createHTMLDocument();
+		const win = { getComputedStyle: vi.fn(() => ({
+			paddingLeft: "8px", paddingRight: "8px", paddingTop: "8px", paddingBottom: "8px", rowGap: "8px",
+		})) };
+		Object.defineProperty(doc, "defaultView", { value: win });
+		const content = doc.createElement("div");
+		Object.defineProperties(content, { clientWidth: { value: 700 }, clientHeight: { value: 260 } });
+		const stage = doc.createElement("div");
+		stage.getBoundingClientRect = () => new DOMRect(0, 0, 684, 384.75);
+		content.appendChild(stage);
+		for (const [cls, height] of [["timeline", 20], ["controls", 30]] as const) {
+			const chrome = doc.createElement("div");
+			chrome.className = `perplexity-saver-video-${cls}`;
+			chrome.getBoundingClientRect = () => new DOMRect(0, 0, 684, height);
+			content.appendChild(chrome);
+		}
+		const view = h.viewerLeaf.view;
+		if (!(view instanceof VideoView)) throw new Error("Expected video view");
+		Object.assign(view, { contentEl: content, stageEl: stage, zoom: { zoom: 2, x: -100, y: -50 } });
+		view.onResize();
+		const width = 178 * 16 / 9;
+		expect(parseFloat(stage.style.width)).toBeCloseTo(width);
+		expect(win.getComputedStyle).toHaveBeenCalledWith(content);
+		expect(view["zoom"].x).toBeCloseTo(-100 * width / 684);
+		expect(view["zoom"].y).toBeCloseTo(-50 * width / 684);
+	});
+
 	it("defaults the focus indicator on while preserving an explicitly disabled setting", async () => {
 		const h = await harness();
 		expect(h.plugin.settings.videoNoteFocusIndicator).toBe(true);
@@ -103,6 +340,19 @@ describe("transcript activation commands", () => {
 		h.leaves.push(h.transcriptLeaf);
 		const focus = vi.spyOn(h.viewerLeaf.view as VideoView, "focusKeys");
 		await h.plugin.toggleTranscript(h.file as TFile, h.viewerLeaf);
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.viewerLeaf, { focus: true });
+		expect(focus).toHaveBeenCalledOnce();
+	});
+
+	it("closing the transcript toolbar targets its own window and restores the associated viewer", async () => {
+		const h = await harness();
+		const popDoc = document.implementation.createHTMLDocument();
+		Object.defineProperty(popDoc, "defaultView", { value: { closed: false } });
+		h.viewerLeaf.view.containerEl = popDoc.createElement("div");
+		h.leaves.push(h.transcriptLeaf);
+		const focus = vi.spyOn(h.viewerLeaf.view as VideoView, "focusKeys");
+		await h.plugin["closeTranscript"](h.transcriptLeaf);
 		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.viewerLeaf, { focus: true });
 		expect(focus).toHaveBeenCalledOnce();

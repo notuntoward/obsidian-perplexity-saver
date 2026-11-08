@@ -37,6 +37,7 @@ function leaf(root: object, shown: boolean, win: Window = mainWin) {
 		getContainer: () => ({ win }),
 		view: { containerEl: { isShown: () => shown } },
 		detach: vi.fn(),
+		setViewState: vi.fn(async () => {}),
 	};
 }
 
@@ -102,6 +103,11 @@ describe("collapsing the right sidebar when the transcript is hidden", () => {
 
 	function appForShow(leaves: FakeLeaf[], sideLeaf: FakeLeaf) {
 		return appWith(leaves, {
+			getRightLeaf: vi.fn(() => {
+				if (!leaves.includes(sideLeaf)) leaves.push(sideLeaf);
+				return sideLeaf;
+			}),
+			revealLeaf: vi.fn(async () => rightSplit.expand()),
 			ensureSideLeaf: vi.fn(async () => {
 				rightSplit.expand();
 				if (!leaves.includes(sideLeaf)) leaves.push(sideLeaf);
@@ -140,6 +146,25 @@ describe("collapsing the right sidebar when the transcript is hidden", () => {
 		await show(app);
 		expect(hideTranscriptPanels(app)).toBe(true);
 		expect(rightSplit.collapsed).toBe(false);
+	});
+
+	it("creates a right-sidebar pane instead of reusing a transcript below the video", async () => {
+		const below = leaf(rootSplit, true);
+		const side = leaf(rightSplit, true);
+		const leaves = [below];
+		const app = appForShow(leaves, side);
+		vi.mocked(app.workspace.ensureSideLeaf).mockResolvedValue(below as unknown as WorkspaceLeaf);
+		await show(app);
+		expect(app.workspace.getRightLeaf).toHaveBeenCalledWith(false);
+		expect(app.workspace.ensureSideLeaf).not.toHaveBeenCalled();
+		expect(side.setViewState).toHaveBeenCalledWith({ type: TRANSCRIPT_VIEW_TYPE, active: false, state: { file: file.path } });
+	});
+
+	it("reports unavailable sidebars instead of claiming to move the transcript", async () => {
+		const side = leaf(rightSplit, true);
+		const app = appForShow([], side);
+		vi.mocked(app.workspace.getRightLeaf).mockReturnValue(null);
+		await expect(show(app)).rejects.toThrow("Right sidebar is unavailable");
 	});
 });
 

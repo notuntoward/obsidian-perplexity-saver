@@ -1,4 +1,4 @@
-import { ItemView, Notice, Scope, SearchComponent, TFile, setIcon } from "obsidian";
+import { ItemView, Menu, Notice, Scope, SearchComponent, TFile, setIcon } from "obsidian";
 import type { App, Command, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import { getCommandHotkeyLabel, renderHighlightedText, renderKeyHints, type KeyHint } from "commons/modal";
 import { writeClipboardIn } from "commons/windows";
@@ -110,6 +110,9 @@ export interface TranscriptViewHost {
 	 * link (may be empty). With `play`, start playing; otherwise keep playing or paused.
 	 */
 	playAt(filePath: string, url: string, seconds: number, play: boolean): void;
+	movePanel?(filePath: string, location: TranscriptPanelLocation): Promise<void>;
+	toggleOrientation?(filePath: string): Promise<void>;
+	closePanel?(leaf: WorkspaceLeaf): Promise<void>;
 }
 
 /** Index of the row playing at `seconds`: the last row starting at or before it, or -1. `starts` is sorted. */
@@ -215,6 +218,9 @@ export class TranscriptView extends ItemView {
 	private matches: number[] = [];
 	private matchIndex = -1;
 	private search: SearchComponent | null = null;
+	private searchBar: HTMLElement | null = null;
+	private searchOpen = false;
+	private searchVisibilityCleanup: (() => void) | null = null;
 	private matchCountEl: HTMLElement | null = null;
 	private listEl: HTMLElement | null = null;
 	private filterBtn: HTMLElement | null = null;
@@ -345,6 +351,7 @@ export class TranscriptView extends ItemView {
 	/** Show the transcript of the note at `path`. */
 	async showFile(path: string): Promise<void> {
 		if (path !== this.filePath) {
+			this.setSearchOpen(false);
 			this.playbackSec = null;
 			this.focusRow = -1;
 			this.query = "";
@@ -368,6 +375,7 @@ export class TranscriptView extends ItemView {
 	focusSearch(): void {
 		const input = this.search?.inputEl;
 		if (!input) return;
+		this.setSearchOpen(true);
 		this.rememberSearchOrigin();
 		input.focus();
 		input.select();
@@ -394,6 +402,8 @@ export class TranscriptView extends ItemView {
 
 	/** Explicit navigation goes to the current chunk even while paused or with following disabled. */
 	focusPlayback(seconds: number | null, follow = true): void {
+		if (this.query) this.previousQuery = this.query;
+		this.setSearchOpen(false);
 		this.query = "";
 		this.search?.setValue("");
 		this.searchOrigin = null;
@@ -414,6 +424,7 @@ export class TranscriptView extends ItemView {
 		this.query = "";
 		this.searchOrigin = null;
 		this.filePath = file.path;
+		this.setSearchOpen(false);
 		this.lines = lines;
 		this.render();
 	}
@@ -434,6 +445,7 @@ export class TranscriptView extends ItemView {
 		const searchFocused = !!input && input.ownerDocument.activeElement === input;
 		const rowHadFocus = this.focusedRowIndex() >= 0;
 		this.searchNavigationCleanup?.();
+		this.searchVisibilityCleanup?.();
 		this.searchNavigationCleanup = null;
 		this.searchHintsEl = null;
 		this.previousMatchBtn = null;
@@ -455,13 +467,14 @@ export class TranscriptView extends ItemView {
 		if (!file) {
 			el.createDiv({
 				cls: "perplexity-saver-transcript-empty",
-				text: "Open a literature note and run \"Show YouTube transcript panel\".",
+				text: "Open a literature note and run \"Toggle YouTube transcript panel\".",
 			});
 			return;
 		}
 
 		const header = el.createDiv({ cls: "perplexity-saver-transcript-header" });
-		const title = header.createEl("a", {
+		const controls = header.createDiv({ cls: "perplexity-saver-transcript-controls" });
+		const title = controls.createEl("a", {
 			cls: "perplexity-saver-transcript-title",
 			text: file.basename,
 			attr: { title: file.path },
@@ -482,16 +495,51 @@ export class TranscriptView extends ItemView {
 
 		const rows = transcriptRows(lines, this.mode);
 		const lineNoun = lines.some((l) => l.endSec !== undefined) ? "captions" : "lines";
-		const controls = header.createDiv({ cls: "perplexity-saver-transcript-controls" });
 		controls.createSpan({
 			cls: "perplexity-saver-transcript-count",
 			text: this.mode === "lines" ? `${rows.length} ${lineNoun}` : `${rows.length} paragraphs`,
 		});
 		const toggle = controls.createEl("button", {
-			text: this.mode === "lines" ? "Format as paragraphs" : `Show original ${lineNoun}`,
+			cls: "perplexity-saver-transcript-format",
+			text: this.mode === "lines" ? "Paragraphs" : lineNoun === "captions" ? "Captions" : "Lines",
+			attr: { "aria-label": this.mode === "lines" ? "Format as paragraphs" : `Show original ${lineNoun}` },
 		});
 		toggle.addEventListener("click", () => {
 			this.setMode(this.mode === "lines" ? "paragraphs" : "lines");
+		});
+		this.iconButton(controls, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
+		if (this.host.toggleOrientation) {
+			const placement = controls.createEl("button", {
+				text: "Layout",
+				attr: { "aria-label": "Transcript layout", "aria-haspopup": "menu" },
+			});
+			placement.addEventListener("click", () => {
+				const menu = new Menu();
+				menu.addItem((item) => item.setTitle("Show pane tabs and navigation")
+					.setChecked(el.hasClass("show-pane-chrome"))
+					.onClick(() => el.toggleClass("show-pane-chrome", !el.hasClass("show-pane-chrome"))));
+				menu.addItem((item) => item.setTitle("Toggle transcript below / beside video").onClick(() => {
+					if (this.filePath) void this.host.toggleOrientation?.(this.filePath).catch((error: unknown) => {
+						console.error("Perplexity Saver: could not change transcript orientation", error);
+						new Notice("Could not change transcript orientation.");
+					});
+				}));
+				const rect = placement.getBoundingClientRect();
+				menu.showAtPosition({ x: rect.left, y: rect.bottom }, placement.ownerDocument);
+			});
+		}
+		const help = this.iconButton(controls, "circle-help", "Transcript keyboard help", () => {
+			const shown = !el.hasClass("show-help");
+			el.toggleClass("show-help", shown);
+			help.setAttribute("aria-expanded", String(shown));
+		});
+		help.setAttribute("aria-expanded", String(el.hasClass("show-help")));
+		this.iconButton(controls, "x", "Close transcript pane", () => {
+			if (this.host.closePanel) void this.host.closePanel(this.leaf).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not close transcript", error);
+				new Notice("Could not close transcript pane.");
+			});
+			else this.leaf.detach();
 		});
 		this.buildSearch(header);
 		const hints = header.createDiv({ cls: "perplexity-saver-transcript-hints" });
@@ -544,6 +592,8 @@ export class TranscriptView extends ItemView {
 	private buildSearch(header: HTMLElement): void {
 		header.addEventListener("keydown", (evt) => { this.handleEdgeKey(evt); });
 		const bar = header.createDiv({ cls: "perplexity-saver-transcript-search" });
+		this.searchBar = bar;
+		bar.hidden = !this.searchOpen;
 		const search = new SearchComponent(bar);
 		const behavior = this.host.getSearchSettings().keyboard;
 		search.setPlaceholder("Search transcript");
@@ -556,9 +606,27 @@ export class TranscriptView extends ItemView {
 		);
 		search.inputEl.setAttribute("aria-keyshortcuts", "Enter Shift+Enter Control+Enter Meta+Enter Tab Escape Control+g Meta+g F3 Shift+F3");
 		search.inputEl.addEventListener("focus", () => {
+			this.setSearchOpen(true);
 			this.rememberSearchOrigin();
 			this.updateSearchHints();
 		});
+		const leave = (): void => {
+			queueMicrotask(() => {
+				if (this.search === search && this.searchOpen && !this.contentEl.contains(this.contentEl.ownerDocument.activeElement)) {
+					this.finishSearch(false, false);
+				}
+			});
+		};
+		this.contentEl.addEventListener("focusout", leave);
+		const win = this.contentEl.ownerDocument.defaultView;
+		const blur = (): void => {
+			if (this.searchOpen && !this.contentEl.ownerDocument.hasFocus()) this.finishSearch(false, false);
+		};
+		win?.addEventListener("blur", blur);
+		this.searchVisibilityCleanup = () => {
+			this.contentEl.removeEventListener("focusout", leave);
+			win?.removeEventListener("blur", blur);
+		};
 		this.searchNavigationCleanup = onSearchNavigation(this.contentEl, (direction, checking) => {
 			if (!checking) {
 				const settings = this.host.getSearchSettings();
@@ -612,6 +680,7 @@ export class TranscriptView extends ItemView {
 		this.nextMatchBtn = this.iconButton(bar, "chevron-down", "Next match", () => this.stepMatch(1));
 		this.updateSearchHints();
 		this.iconButton(bar, "check", "Accept match and browse transcript (Tab)", () => this.finishSearch(true));
+		this.iconButton(bar, "x", "Cancel transcript search", () => this.finishSearch(false));
 		this.iconButton(bar, "play", "Play the video from this match (Ctrl+Enter)", () => this.playMatch());
 		if (this.host.getSearchSettings().highlights === "on-demand") {
 			this.highlightBtn = this.iconButton(bar, "highlighter", "Toggle other match highlights", () => {
@@ -647,6 +716,8 @@ export class TranscriptView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.searchNavigationCleanup?.();
+		this.searchVisibilityCleanup?.();
+		this.searchVisibilityCleanup = null;
 		this.searchNavigationCleanup = null;
 	}
 
@@ -711,16 +782,30 @@ export class TranscriptView extends ItemView {
 		this.searchOrigin ??= { row: this.focusRow, scrollTop: this.listEl ? scrollParent(this.listEl)?.scrollTop ?? 0 : 0 };
 	}
 
-	private finishSearch(accept: boolean): void {
+	private setSearchOpen(open: boolean): void {
+		this.searchOpen = open;
+		if (this.searchBar) this.searchBar.hidden = !open;
+	}
+
+	/** Preserve display preferences and search recall when native placement requires a new leaf. */
+	copySessionFrom(source: TranscriptView): void {
+		this.mode = source.mode;
+		this.filter = source.filter;
+		this.previousQuery = source.query || source.previousQuery;
+		this.render();
+	}
+
+	private finishSearch(accept: boolean, refocus = true): void {
 		const origin = this.searchOrigin;
 		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow : origin?.row ?? this.focusRow;
 		if (this.query) this.previousQuery = this.query;
 		this.query = "";
+		this.setSearchOpen(false);
 		this.search?.setValue("");
 		this.demandHighlights = false;
 		this.applySearch(false);
 		this.searchOrigin = null;
-		this.moveFocus(target);
+		if (refocus) this.moveFocus(target);
 		if (!accept && origin && this.listEl) {
 			const box = scrollParent(this.listEl);
 			if (box) box.scrollTop = origin.scrollTop;
@@ -903,7 +988,13 @@ export class TranscriptView extends ItemView {
 	}
 }
 
-export type TranscriptPanelLocation = "sidebar" | "viewer";
+export type TranscriptPanelLocation = "sidebar" | "viewer" | "beside";
+
+export const TRANSCRIPT_LOCATIONS: Record<TranscriptPanelLocation, string> = {
+	sidebar: "Right sidebar",
+	viewer: "Below the video viewer",
+	beside: "Beside the video viewer",
+};
 
 /** Where a non-sidebar transcript panel goes: split off `nextTo` (the video viewer's leaf). */
 export interface TranscriptPlacement {
@@ -950,13 +1041,15 @@ export function hideTranscriptPanels(app: App, scope?: WorkspaceLeaf | null, fil
 }
 
 /**
- * Open (or reuse) the transcript panel for `file`, returning its leaf for activation.
+ * Open (or reuse) the transcript panel for `file`. With `replaceLeaf`, initialize
+ * the new placement before closing the old pane, retaining display/search recall.
  */
 export async function showTranscriptPanel(
 	app: App,
 	file: TFile,
 	headingName: string,
-	placement?: TranscriptPlacement | null
+	placement?: TranscriptPlacement | null,
+	replaceLeaf?: WorkspaceLeaf | null
 ): Promise<WorkspaceLeaf | null> {
 	const lines = await loadTranscriptLines(app, file, headingName);
 	if (!lines?.length) {
@@ -965,30 +1058,51 @@ export async function showTranscriptPanel(
 		return null;
 	}
 	let leaf: WorkspaceLeaf;
-	if (placement) {
-		const win = getWindowForLeaf(placement.nextTo);
-		const existing = app.workspace
-			.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
-			.find((l) => !isSidebarLeaf(app, l) && getWindowForLeaf(l) === win);
-		leaf = existing ?? app.workspace.createLeafBySplit(placement.nextTo, placement.direction);
-		if (!existing) {
-			await leaf.setViewState({ type: TRANSCRIPT_VIEW_TYPE, active: false, state: { file: file.path } });
+	let createdLeaf: WorkspaceLeaf | null = null;
+	try {
+		if (placement) {
+			const win = getWindowForLeaf(placement.nextTo);
+			const existing = replaceLeaf ? undefined : app.workspace
+				.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
+				.find((l) => !isSidebarLeaf(app, l) && getWindowForLeaf(l) === win);
+			leaf = existing ?? app.workspace.createLeafBySplit(placement.nextTo, placement.direction);
+			if (!existing) {
+				createdLeaf = leaf;
+				await leaf.setViewState({ type: TRANSCRIPT_VIEW_TYPE, active: false, state: { file: file.path } });
+			}
+		} else {
+			const existing = app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
+				.find((l) => isSidebarLeaf(app, l, "right"));
+			const sideLeaf = existing ?? app.workspace.getRightLeaf(false);
+			if (!sideLeaf) throw new Error("Right sidebar is unavailable.");
+			leaf = sideLeaf;
+			if (!existing) {
+				createdLeaf = leaf;
+				await leaf.setViewState({ type: TRANSCRIPT_VIEW_TYPE, active: false, state: { file: file.path } });
+			}
 		}
+		await loadLeafIfDeferred(leaf);
+		if (leaf.view instanceof TranscriptView) await leaf.view.showFile(file.path);
+		const collapsed = !placement && isSidebarCollapsed(app, "right") === true;
 		await app.workspace.revealLeaf(leaf);
-	} else {
-		const collapsed = isSidebarCollapsed(app, "right");
-		if (collapsed === true) {
-			expandedRightSidebar = true;
-		} else if (!visibleTranscriptLeaves(app).some((l) => isSidebarLeaf(app, l))) {
+		if (!placement) {
+			if (collapsed) expandedRightSidebar = true;
+			else if (createdLeaf) expandedRightSidebar = false;
+		}
+		if (replaceLeaf && replaceLeaf !== leaf && leaf.view instanceof TranscriptView && replaceLeaf.view instanceof TranscriptView) {
+			leaf.view.copySessionFrom(replaceLeaf.view);
+		}
+	} catch (error) {
+		createdLeaf?.detach();
+		throw error;
+	}
+	if (replaceLeaf && replaceLeaf !== leaf) {
+		const wasSidebar = isSidebarLeaf(app, replaceLeaf);
+		replaceLeaf.detach();
+		if (wasSidebar && expandedRightSidebar && !app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).some((l) => l !== replaceLeaf && isSidebarLeaf(app, l))) {
+			setSidebarCollapsed(app, "right", true);
 			expandedRightSidebar = false;
 		}
-		leaf = await app.workspace.ensureSideLeaf(TRANSCRIPT_VIEW_TYPE, "right", {
-			active: false,
-			reveal: true,
-			state: { file: file.path },
-		});
 	}
-	await loadLeafIfDeferred(leaf);
-	if (leaf.view instanceof TranscriptView) await leaf.view.showFile(file.path);
 	return leaf;
 }

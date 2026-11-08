@@ -6,12 +6,32 @@ import { dispatchSearchNavigation } from "commons/search";
 import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
+const menuChoices = vi.hoisted(() => [] as { title: string; checked: boolean; run?: () => void }[]);
 
 vi.mock("obsidian", async (importOriginal) => {
 	const original = await importOriginal<Record<string, unknown>>();
 	return {
 		...original,
 		setIcon: (): void => {},
+		Menu: class {
+			addItem(build: (item: {
+				setTitle(title: string): unknown;
+				setChecked(checked: boolean): unknown;
+				onClick(run: () => void): unknown;
+			}) => void): this {
+				const choice = { title: "", checked: false, run: undefined as (() => void) | undefined };
+				const item = {
+					setTitle(title: string) { choice.title = title; return item; },
+					setChecked(checked: boolean) { choice.checked = checked; return item; },
+					onClick(run: () => void) { choice.run = run; return item; },
+				};
+				build(item);
+				menuChoices.push(choice);
+				return this;
+			}
+			addSeparator(): this { return this; }
+			showAtPosition(): void {}
+		},
 		Scope: class {
 			register(_modifiers: string[], key: string, callback: (event: KeyboardEvent) => unknown): void {
 				scopeHandlers.set(key, callback);
@@ -39,6 +59,7 @@ beforeEach(() => {
 	settings = { keyboard: "obsidian", matching: "all-words", highlights: "always" };
 	play = vi.fn();
 	scopeHandlers.clear();
+	menuChoices.length = 0;
 	HTMLElement.prototype.createDiv = function (opts) { return this.createEl("div", opts); };
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
 	HTMLElement.prototype.isShown = function () {
@@ -47,7 +68,7 @@ beforeEach(() => {
 	HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
-async function panel(doc = document): Promise<TranscriptView> {
+async function panel(doc = document, host: Partial<TranscriptViewHost> = {}): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
 		vault: {
@@ -67,6 +88,7 @@ async function panel(doc = document): Promise<TranscriptView> {
 		getHeadingName: () => "Transcript",
 		getSearchSettings: () => settings,
 		playAt: play,
+		...host,
 	});
 	view.contentEl = doc.createElement("div");
 	doc.body.appendChild(view.contentEl);
@@ -76,7 +98,7 @@ async function panel(doc = document): Promise<TranscriptView> {
 
 function search(view: TranscriptView, query = "target"): HTMLInputElement {
 	const input = view.contentEl.querySelector("input")!;
-	input.focus();
+	view.focusSearch();
 	input.value = query;
 	input.dispatchEvent(new Event("input"));
 	return input;
@@ -91,6 +113,112 @@ function rows(view: TranscriptView): HTMLElement[] {
 }
 
 describe("accepting transcript search", () => {
+	it("exposes the same orientation toggle in the labeled Layout menu", async () => {
+		const toggleOrientation = vi.fn(async () => {});
+		const view = await panel(document, { movePanel: vi.fn(async () => {}), toggleOrientation });
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!.click();
+		expect(menuChoices.map((item) => item.title)).toEqual([
+			"Show pane tabs and navigation",
+			"Toggle transcript below / beside video",
+		]);
+		menuChoices[1].run!();
+		expect(toggleOrientation).toHaveBeenCalledWith("note.md");
+	});
+
+	it("restores native pane chrome from the layout menu and closes using the host", async () => {
+		const closePanel = vi.fn(async () => {});
+		const view = await panel(document, { toggleOrientation: vi.fn(async () => {}), closePanel });
+		const layout = view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!;
+		expect(layout.textContent).toContain("Layout");
+		layout.click();
+		const choice = menuChoices.find((item) => item.title === "Show pane tabs and navigation")!;
+		expect(choice.checked).toBe(false);
+		choice.run!();
+		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(true);
+		view.refreshSearchSettings();
+		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(true);
+		menuChoices.length = 0;
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!.click();
+		expect(menuChoices[0].checked).toBe(true);
+		menuChoices[0].run!();
+		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(false);
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Close transcript pane"]')!.click();
+		expect(closePanel).toHaveBeenCalledWith(view.leaf);
+	});
+
+	it("keeps search and help out of the browsing layout and reveals search on demand", async () => {
+		const view = await panel();
+		const bar = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!;
+		expect(bar.hidden).toBe(true);
+		view.focusSearch();
+		expect(bar.hidden).toBe(false);
+		key(search(view), "Tab");
+		expect(bar.hidden).toBe(true);
+		expect(document.activeElement).toBe(rows(view)[1]);
+		expect(view.contentEl.classList.contains("show-help")).toBe(false);
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript keyboard help"]')!.click();
+		expect(view.contentEl.classList.contains("show-help")).toBe(true);
+	});
+
+	it("cancels search on leaving the panel without stealing the new focus, retaining recall", async () => {
+		settings.keyboard = "emacs";
+		const view = await panel();
+		search(view);
+		const outside = document.body.createEl("button");
+		outside.focus();
+		await Promise.resolve();
+		expect(document.activeElement).toBe(outside);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(true);
+		expect(view.contentEl.querySelector("input")!.value).toBe("");
+		expect(rows(view).some((row) => row.classList.contains("is-search-current"))).toBe(false);
+		view.focusSearch();
+		dispatchSearchNavigation(view.contentEl.querySelector("input"), "forward", false);
+		expect(view.contentEl.querySelector("input")!.value).toBe("target");
+	});
+
+	it("keeps search open while clicking its controls or browsing filtered rows", async () => {
+		const view = await panel();
+		search(view);
+		const filter = view.contentEl.querySelector<HTMLElement>('button[aria-label="Show only matching lines"]')!;
+		filter.focus();
+		filter.click();
+		rows(view)[1].focus();
+		await Promise.resolve();
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(false);
+		expect(view.contentEl.querySelector("input")!.value).toBe("target");
+	});
+
+	it("dismisses pop-out search using its own document without focusing either window", async () => {
+		const doc = document.implementation.createHTMLDocument();
+		let active: Element | null = null;
+		Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const input = view.contentEl.querySelector("input")!;
+		input.focus = () => { active = input; };
+		rows(view)[0].focus = vi.fn();
+		search(view);
+		active = doc.body.createEl("button");
+		input.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: active }));
+		await Promise.resolve();
+		expect(doc.activeElement).toBe(active);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(true);
+		expect(input.value).toBe("");
+		expect(rows(view)[0].focus).not.toHaveBeenCalled();
+	});
+
+	it("keeps search visibility through rerenders and cleans up window listeners on close", async () => {
+		const remove = vi.spyOn(window, "removeEventListener");
+		const view = await panel();
+		search(view);
+		view.refreshSearchSettings();
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(false);
+		key(view.contentEl.querySelector("input")!, "Tab");
+		view.refreshSearchSettings();
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(true);
+		await view.onClose();
+		expect(remove).toHaveBeenCalledWith("blur", expect.any(Function));
+	});
+
 	it.each([false, true])("recalls accepted or cancelled Emacs queries only on repeat, in either direction (popout=%s)", async (popout) => {
 		settings.keyboard = "emacs";
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
@@ -186,7 +314,8 @@ describe("accepting transcript search", () => {
 		};
 		for (const source of [rows(view)[2], input, button]) {
 			for (const name of ["Home", "End"]) {
-				source.focus();
+				if (source === input) view.focusSearch();
+				else source.focus();
 				const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, bubbles: true, cancelable: true });
 				source.dispatchEvent(event);
 				expect(event.defaultPrevented).toBe(true);

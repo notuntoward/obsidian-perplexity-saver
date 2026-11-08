@@ -151,12 +151,22 @@
 
 
 /* YouTube transcript side panel */
+/* Keep top-window controls and stacked/multi-tab navigation accessible. */
+.workspace-tabs:not(.mod-top):not(.mod-stacked):has(> .workspace-tab-container > .workspace-leaf:only-child > .workspace-leaf-content > .perplexity-saver-transcript-view:not(.show-pane-chrome)) {
+	--perplexity-saver-transcript-focus-top: 0px;
+}
+
+.workspace-tabs:not(.mod-top):not(.mod-stacked):has(> .workspace-tab-container > .workspace-leaf:only-child > .workspace-leaf-content > .perplexity-saver-transcript-view:not(.show-pane-chrome)) > .workspace-tab-header-container,
+.workspace-tabs:not(.mod-top):not(.mod-stacked):has(> .workspace-tab-container > .workspace-leaf:only-child > .workspace-leaf-content > .perplexity-saver-transcript-view:not(.show-pane-chrome)) > .workspace-tab-container > .workspace-leaf > .workspace-leaf-content > .view-header {
+	display: none;
+}
+
 .perplexity-saver-transcript-header {
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-4-2);
-	padding-bottom: var(--size-4-2);
-	margin-bottom: var(--size-4-2);
+	gap: var(--size-4-1);
+	padding-bottom: var(--size-4-1);
+	margin-bottom: var(--size-4-1);
 	border-bottom: 1px solid var(--background-modifier-border);
 	position: sticky;
 	top: calc(-1 * var(--size-4-3));
@@ -180,6 +190,10 @@
 .perplexity-saver-transcript-search .search-input-container {
 	flex: 1 1 160px;
 	min-width: 0;
+}
+
+.perplexity-saver-transcript-search[hidden] {
+	display: none;
 }
 
 .perplexity-saver-transcript-matches {
@@ -210,15 +224,19 @@
 	-webkit-box-decoration-break: clone;
 }
 
-/* Key hints: shown only while the search box or a transcript line has keyboard focus. */
+/* Keyboard help is opt-in and follows the active search/browsing mode. */
+.perplexity-saver-transcript-view:not(.show-help) .perplexity-saver-transcript-hints {
+	display: none;
+}
+
 .perplexity-saver-transcript-hints > div {
 	display: none;
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
 }
 
-.perplexity-saver-transcript-view:has(.perplexity-saver-transcript-search input:focus) .perplexity-saver-transcript-hints > .is-search,
-.perplexity-saver-transcript-view:has(.perplexity-saver-transcript-row:focus) .perplexity-saver-transcript-hints > .is-rows {
+.perplexity-saver-transcript-view.show-help:has(.perplexity-saver-transcript-search:not([hidden])) .perplexity-saver-transcript-hints > .is-search,
+.perplexity-saver-transcript-view.show-help:not(:has(.perplexity-saver-transcript-search:not([hidden]))) .perplexity-saver-transcript-hints > .is-rows {
 	display: block;
 }
 
@@ -268,6 +286,11 @@
 }
 
 .perplexity-saver-transcript-title {
+	flex: 1 1 100px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-weight: var(--font-semibold);
 	color: var(--text-normal);
 	cursor: pointer;
@@ -277,7 +300,17 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: var(--size-4-2);
+	gap: var(--size-4-1);
+	flex-wrap: wrap;
+}
+
+.perplexity-saver-transcript-controls > :not(.perplexity-saver-transcript-title) {
+	flex: none;
+}
+
+.perplexity-saver-transcript-format {
+	font-size: var(--font-ui-smaller);
+	padding: var(--size-2-1) var(--size-4-1);
 }
 
 .perplexity-saver-transcript-count,
@@ -323,11 +356,12 @@
 }
 
 /* YouTube video viewer */
-.perplexity-saver-video-view {
+.perplexity-saver-video-view,
+.workspace-leaf-content > .view-content.perplexity-saver-video-view {
 	display: flex;
 	flex-direction: column;
-	gap: var(--size-4-2);
-	padding: var(--size-4-2);
+	gap: var(--size-4-1);
+	padding: var(--size-4-1) var(--size-4-2);
 	outline: none;
 }
 
@@ -347,6 +381,7 @@
 	position: relative;
 	flex: 0 0 auto;
 	width: 100%;
+	align-self: center;
 	aspect-ratio: 16 / 9;
 	min-height: 0;
 	overflow: hidden;
@@ -393,24 +428,38 @@
 	box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
 }
 
-.workspace-leaf.perplexity-saver-focused-pane:not(:has(.perplexity-saver-transcript-view)) > .workspace-leaf-content > .view-header {
+.workspace-leaf-content:has(> .perplexity-saver-video-view) > .view-header {
+	display: none;
+}
+
+/* Compact-tab snippets must leave room for the overlaid native window buttons. */
+.is-hidden-frameless:not(.is-fullscreen) .workspace-tabs.mod-top.mod-top-right-space:has(.perplexity-saver-video-view) > .workspace-tab-header-container {
+	min-height: var(--header-height);
+}
+
+.workspace-leaf.perplexity-saver-focused-pane:not(:has(.perplexity-saver-transcript-view, .perplexity-saver-video-view)) > .workspace-leaf-content > .view-header {
 	box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 
-.workspace-leaf-content:has(> .perplexity-saver-transcript-view) {
+.workspace-leaf-content:has(> .perplexity-saver-transcript-view, > .perplexity-saver-video-view) {
 	position: relative;
 }
 
-.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-transcript-view)::after {
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-transcript-view)::after,
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-video-view)::after {
 	content: "";
 	position: absolute;
-	top: calc(var(--header-height) - 2px);
+	top: var(--perplexity-saver-transcript-focus-top, calc(var(--header-height) - 2px));
 	left: 0;
 	right: 0;
 	height: 2px;
 	background-color: var(--interactive-accent);
 	pointer-events: none;
 	z-index: 2;
+}
+
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-video-view)::after {
+	top: 0;
 }
 
 .perplexity-saver-video-controls button:focus-visible,
@@ -421,7 +470,8 @@
 }
 
 .perplexity-saver-video-timeline {
-	padding: var(--size-4-2) 0;
+	padding: var(--size-4-1) 0;
+	flex: none;
 	cursor: pointer;
 }
 
@@ -474,6 +524,7 @@
 
 .perplexity-saver-video-controls {
 	display: flex;
+	flex: none;
 	align-items: center;
 	gap: var(--size-4-1);
 	flex-wrap: wrap;
