@@ -1892,7 +1892,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Video note focus indicator")
-			.setDesc("Show a theme-accent line beneath the focused note, video or transcript header.")
+			.setDesc("Mark the focused video or transcript pane, or its literature note while the player or transcript is visible. Unrelated notes are not marked.")
 			.addToggle((toggle) => {
 				toggle
 					.setValue(this.plugin.settings.videoNoteFocusIndicator)

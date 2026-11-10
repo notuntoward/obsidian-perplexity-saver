@@ -344,6 +344,9 @@ test("the focus header follows real note, embedded-player and transcript clicks 
 		<div class="workspace-leaf" id="note"><div class="workspace-leaf-content">
 			<div class="view-header">Note</div><div class="markdown-source-view"><textarea></textarea></div>
 		</div></div>
+		<div class="workspace-leaf" id="unrelated"><div class="workspace-leaf-content">
+			<div class="view-header">Unrelated note</div><div class="markdown-source-view"><textarea></textarea></div>
+		</div></div>
 		<div class="workspace-leaf" id="video"><div class="workspace-leaf-content">
 			<div class="view-header">Video</div>
 			<div class="perplexity-saver-video-view"><iframe srcdoc="<button>Play</button>"></iframe><button>Pause</button></div>
@@ -360,8 +363,24 @@ test("the focus header follows real note, embedded-player and transcript clicks 
 	await page.addScriptTag({ content: `
 		let indicatorEnabled = true;
 		let cleanup;
+		const events = {};
+		const leaves = ["note", "unrelated", "video", "transcript"].map(id => ({
+			view: {
+				containerEl: document.getElementById(id),
+				getViewType: () => id === "note" || id === "unrelated" ? "markdown" : "perplexity-saver-" + id
+			},
+			getViewState: () => ({ state: { file: id === "unrelated" ? "unrelated.md" : "video-note.md" } })
+		}));
+		for (const { view } of leaves) view.containerEl.isShown = () => view.containerEl.checkVisibility();
 		const refreshIndicator = focusIndicator.registerVideoNoteFocusIndicator(
-			{ register: (callback) => { cleanup = callback; } }, () => indicatorEnabled
+			{
+				register: (callback) => { cleanup = callback; },
+				registerEvent: () => {},
+				app: { workspace: {
+					getLeavesOfType: type => leaves.filter(leaf => leaf.view.getViewType() === type),
+					on: (name, callback) => { events[name] = callback; }
+				} }
+			}, () => indicatorEnabled
 		);
 	` });
 	for (const target of ["note", "video", "transcript", "video", "note"]) {
@@ -375,6 +394,18 @@ test("the focus header follows real note, embedded-player and transcript clicks 
 			expect(await header.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("rgb(100, 80, 220) 0px -2px 0px 0px inset");
 		}
 	}
+	await page.locator("#unrelated textarea").click();
+	await expect(page.locator(".perplexity-saver-focused-pane")).toHaveCount(0);
+	expect(await page.locator("#unrelated .view-header").evaluate(el => getComputedStyle(el).boxShadow)).toBe("none");
+	await page.locator("#note textarea").click();
+	await page.evaluate(() => {
+		for (const id of ["video", "transcript"]) document.getElementById(id)!.style.display = "none";
+	});
+	await page.addScriptTag({ content: 'events["layout-change"]();' });
+	await expect(page.locator(".perplexity-saver-focused-pane")).toHaveCount(0);
+	await page.locator("#transcript").evaluate(el => { el.style.display = ""; });
+	await page.addScriptTag({ content: 'events["layout-change"]();' });
+	await expect(page.locator(".perplexity-saver-focused-pane")).toHaveAttribute("id", "note");
 	await page.addScriptTag({ content: "indicatorEnabled = false; refreshIndicator();" });
 	await expect(page.locator(".perplexity-saver-focused-pane")).toHaveCount(0);
 	await page.addScriptTag({ content: "indicatorEnabled = true; refreshIndicator();" });

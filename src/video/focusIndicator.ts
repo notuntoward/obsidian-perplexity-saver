@@ -1,5 +1,6 @@
 import type { Plugin } from "obsidian";
 import { forEachWindow } from "commons/windows";
+import { getLeafFileKey, isInCollapsedSidebar } from "commons/workspace";
 
 const FOCUSED_PANE = "perplexity-saver-focused-pane";
 const CONTENT = ".markdown-source-view, .markdown-preview-view, .perplexity-saver-video-view, .perplexity-saver-transcript-view";
@@ -7,6 +8,17 @@ const CONTENT = ".markdown-source-view, .markdown-preview-view, .perplexity-save
 export function registerVideoNoteFocusIndicator(plugin: Plugin, enabled: () => boolean): () => void {
 	let focused: HTMLElement | null = null;
 	const refreshers = new Set<() => void>();
+	const isVideoNote = (element: HTMLElement): boolean => {
+		const { app } = plugin;
+		const note = app.workspace.getLeavesOfType("markdown").find((leaf) => element.contains(leaf.view.containerEl));
+		const file = note && getLeafFileKey(note);
+		if (!file) return false;
+		return ["perplexity-saver-video", "perplexity-saver-transcript"].some((type) =>
+			app.workspace.getLeavesOfType(type).some((leaf) =>
+				getLeafFileKey(leaf) === file && leaf.view.containerEl.isShown() && !isInCollapsedSidebar(app, leaf)
+			)
+		);
+	};
 	const clear = (): void => {
 		focused?.classList.remove(FOCUSED_PANE);
 		focused = null;
@@ -18,6 +30,7 @@ export function registerVideoNoteFocusIndicator(plugin: Plugin, enabled: () => b
 			if (!enabled() || !element) return;
 			const leaf = element.closest<HTMLElement>(".workspace-leaf");
 			if (!leaf || !leaf.querySelector(CONTENT)) return;
+			if (!leaf.querySelector(".perplexity-saver-video-view, .perplexity-saver-transcript-view") && !isVideoNote(leaf)) return;
 			focused = leaf;
 			leaf.classList.add(FOCUSED_PANE);
 		};
@@ -50,8 +63,11 @@ export function registerVideoNoteFocusIndicator(plugin: Plugin, enabled: () => b
 			onBlur();
 		};
 	});
-	return () => {
+	const refreshAll = (): void => {
 		clear();
 		for (const refresh of refreshers) refresh();
 	};
+	plugin.registerEvent(plugin.app.workspace.on("layout-change", refreshAll));
+	plugin.registerEvent(plugin.app.workspace.on("active-leaf-change", refreshAll));
+	return refreshAll;
 }
