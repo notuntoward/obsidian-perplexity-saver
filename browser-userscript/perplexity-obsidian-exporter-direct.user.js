@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.14
+// @version      8.15
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1304,7 +1304,32 @@
     // Native export also resolves named references such as [Publisher] into
     // footnotes. Those additional references are valid if their URLs were checked.
     if ([...expectedCitations].some((citation) => !actualCitations.has(citation))) return null;
-    return { prompt: turn.prompt, response, sources };
+    return { prompt: turn.prompt, response: cleanSessionCitationLabels(response, turn.response), sources };
+  }
+
+  function cleanSessionCitationLabels(response, original) {
+    let fence = null;
+    let inlineCode = null;
+    return response.split("\n").map((line) => {
+      const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (marker) {
+        if (!fence) fence = marker[1];
+        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+        return line;
+      }
+      if (fence || /^(?: {4}|\t)/.test(line)) return line;
+      return line.replace(
+        /`+|(?<![!\\])\[([^[\]\n]+)\]([.,;:]?[ \t]*)(?=\[\^\d+_\d+\])/g,
+        (match, label, punctuation) => {
+          if (match[0] === "`") {
+            if (!inlineCode) inlineCode = match;
+            else if (inlineCode === match) inlineCode = null;
+            return match;
+          }
+          return inlineCode || /^\d+$/.test(label) || !original.includes(`[${label}]`) ? match : label + punctuation;
+        }
+      );
+    }).join("\n");
   }
 
   function annotateSessionConversation(fullText, turns) {

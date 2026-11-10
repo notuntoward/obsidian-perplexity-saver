@@ -30,6 +30,7 @@ import { HeadlineMethod, HeadlineOptions } from "./normalize/headlines";
 import { detectAndParse } from "./parsers/detect";
 import { resolveSourceTitles } from "./scraper";
 import { stripLeadingFrontmatterIfPresent } from "./normalize/frontmatter";
+import { registerFootnoteNavigation } from "./normalize/footnoteNavigation";
 import { DialogFile } from "./parsers/types";
 import { ZoteroClient } from "./zotero/zoteroClient";
 import { deduplicateDialogCitations } from "./normalize/turns";
@@ -240,6 +241,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.loadSettings();
 		this.refreshVideoNoteFocusIndicator = registerVideoNoteFocusIndicator(this, () => this.settings.videoNoteFocusIndicator);
 		this.registerEditorExtension(noteInsertionAnchors);
+		registerFootnoteNavigation(this);
 		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 

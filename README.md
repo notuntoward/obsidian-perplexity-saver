@@ -229,6 +229,7 @@ When the plugin imports a dialog, it constructs a highly structured Obsidian not
   - **Prompts** are rendered as Obsidian callouts (e.g. `> [!Prompt]+`) to distinguish them visually from AI text. They are prefixed with a summary heading containing a block reference anchor (e.g. `### Summary of prompt ^t1`).
   - **AI Responses** follow immediately as standard Markdown, with their inline citation markers (e.g. `[1]`) rewritten to point cleanly to the aggregated sources at the bottom.
 - **`# Sources` Section**: An aggregated list of all citations used in the conversation, formatted as Obsidian footnotes/links. These can be automatically relinked to Zotero literature notes using the plugin's commands.
+- **Footnote navigation**: Ctrl/Cmd-click a footnote marker in the editor to jump to its definition in the same pane, rather than following the source URL. The destination source line is highlighted for two seconds with an accent-tinted background and an accent edge, making it easy to identify among adjacent sources even when the theme's normal text highlight is transparent. Another jump restarts the highlight; editing clears it. In Live Preview, plain clicks also jump when the citation is outside the line being edited. Plain clicks on the editing line and in Source mode remain editing actions; Reading view keeps Obsidian's native behavior. Relinking a definition to a literature note or Zotero does not change this navigation.
 
 ---
 
@@ -279,6 +280,12 @@ wraps in multiline `$$` math delimiters. It restores the original bracketed
 label only when confirmed by the structured answer and followed by a native
 footnote reference, preventing broken tables and swallowed footnotes while
 preserving actual math and code.
+Version 8.15 removes redundant square brackets around confirmed named citation
+labels immediately beside footnotes (for example, `[Publisher].[^1_1]` becomes
+`Publisher.[^1_1]`). It retains the label text, footnote IDs and source definitions,
+and leaves ordinary links and code alone. This cleanup applies to verified
+`/session/` exports; the plugin's navigation fix also works with existing notes,
+without reimporting them.
 
 If a session is still generating, Perplexity changes its internal data shape,
 or the export cannot be matched completely, the script reports an error, leaves

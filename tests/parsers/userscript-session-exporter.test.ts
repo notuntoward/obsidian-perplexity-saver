@@ -28,7 +28,7 @@ function load() {
   const names = [
     "buildComparableWithMap", "sessionComparable", "sessionMarkdownMarkers",
     "sessionTurnsFromResults", "readSessionTurns", "matchSessionChunk",
-    "annotateSessionConversation",
+    "cleanSessionCitationLabels", "annotateSessionConversation",
   ];
   const api: {
     sessionTurnsFromResults: (results: unknown) => SessionTurn[];
@@ -119,7 +119,7 @@ describe("native session exports", () => {
   it("accepts native footnotes added for named references while retaining numbered citations", () => {
     const data = [{ ...turns()[0], response: "An answer.[1] Another fact [Publisher]." }];
     const native = nativeExport(data).replace("[Publisher]", "[Publisher][^1_2]");
-    expect(load().annotateSessionConversation(native, data).text).toContain("[Publisher][^1_2]");
+    expect(load().annotateSessionConversation(native, data).text).toContain("Another fact Publisher[^1_2].");
   });
 
   it("restores a named citation that native export turns into multiline math inside a table", () => {
@@ -130,7 +130,7 @@ describe("native session exports", () => {
     }];
     const native = nativeExport(data).replace(`[${label}]`, () => `$$   \n${label}\n$$[^1_1]`);
     const output = load().annotateSessionConversation(native, data).text;
-    expect(output).toContain(`| Tax | See [${label}][^1_1]. More text. |`);
+    expect(output).toContain(`| Tax | See ${label}[^1_1]. More text. |`);
     expect(output).not.toContain("$$");
     expect(output).toContain("## Suggested edits\n\nKeep these edits.");
     expect(parsePerplexityDialog(output).turns[1].citations[0].url).toBe(data[0].sources[0].url);
@@ -146,6 +146,22 @@ describe("native session exports", () => {
     expect(output).toContain("$$\nx^2\n$$[^1_1]");
     expect(output).toContain("```md\n$$\nPublisher\n$$\n```");
     expect(output).toContain("A [Publisher] label.");
+  });
+
+  it("unwraps only confirmed labels beside native footnotes, preserving links, code and other brackets", () => {
+    const data = [{
+      ...turns()[0],
+      response: "A fact [Publisher]. Another [unrelated] label.\n\n[Real link](https://example.com/link)\n\n`[Publisher][^1_1]`\n\n``multi-line code\n[Publisher][^1_1]\nend``\n\n```md\n[Publisher][^1_1]\n```",
+    }];
+    const native = nativeExport(data).replace("A fact [Publisher].", "A fact [Publisher].[^1_1]");
+    const output = load().annotateSessionConversation(native, data).text;
+    expect(output).toContain("A fact Publisher.[^1_1]");
+    expect(output).toContain("Another [unrelated] label.");
+    expect(output).toContain("[Real link](https://example.com/link)");
+    expect(output).toContain("`[Publisher][^1_1]`");
+    expect(output).toContain("``multi-line code\n[Publisher][^1_1]\nend``");
+    expect(output).toContain("```md\n[Publisher][^1_1]\n```");
+    expect(output).toContain("[^1_1]: https://example.com/first");
   });
 
   it("imports the assembled output as three complete prompt/answer pairs with sources", () => {

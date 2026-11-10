@@ -2,6 +2,11 @@
 	width: 100%;
 }
 
+.cm-editor .cm-line.perplexity-saver-footnote-target {
+	background-color: color-mix(in srgb, var(--interactive-accent) 24%, var(--background-primary)) !important;
+	box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+
 .perplexity-saver-modal-buttons {
 	display: flex;
 	justify-content: flex-end;
