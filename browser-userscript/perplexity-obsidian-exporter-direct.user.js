@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.10
-// @description  Robustly exports Perplexity conversations to Obsidian Markdown format by intercepting native markdown downloads and aligning prompt-response boundaries via text-mapping.
+// @version      8.13
+// @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
 // @grant        GM_setClipboard
@@ -12,7 +12,10 @@
 
 (function () {
   "use strict";
-  console.log("[PPLX Obsidian Exporter Direct] Userscript active. Click '...' -> 'Export as Markdown' to copy.");
+  console.log("[PPLX Obsidian Exporter Direct] Userscript active. Click 'Copy for Obsidian' or use 'Export as Markdown'.");
+
+  let pendingExport = null;
+  let toolbarStarted = false;
 
   // Keep track of blobs created for download interception
   const blobRegistry = new Map();
@@ -46,24 +49,23 @@
       const el = document.createElement("div");
       el.id = "pplx-clip-toast";
       el.style.cssText = `
-        position: fixed; bottom: 40px; left: 50%; transform: translateX(-50%);
-        z-index: 999999; padding: 20px 32px; border-radius: 12px;
-        font: 18px/1.4 sans-serif; font-weight: 600; color: #fff; transition: opacity 0.3s;
+        position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+        z-index: 999999; padding: 12px 24px; border-radius: 24px;
+        font: 14px/1.4 sans-serif; font-weight: 500; transition: opacity 0.3s;
         pointer-events: none; max-width: 80vw; text-align: center;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
-        border: 2px solid rgba(255, 255, 255, 0.25);
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        border: 1px solid transparent;
       `;
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
       document.body.appendChild(el);
       return el;
     })();
 
-    const colors = {
-      progress: "#1565c0", // blue — work is actively happening, do not navigate away
-      success: "#2e7d32", // green — done, safe to leave the page
-      error: "#c0392b",
-    };
+    const colors = { progress: "#1565c0", success: "#2e7d32", error: "#c0392b" };
     const icons = { progress: "⏳", success: "✅", error: "⚠️" };
-    t.style.background = colors[kind] || colors.error;
+    applyNativeThemeStyles(t);
+    t.style.borderLeft = `4px solid ${colors[kind] || colors.error}`;
     t.textContent = `${icons[kind] || icons.error} ${msg}`;
     t.style.opacity = "1";
     clearTimeout(t._hideTimer);
@@ -304,24 +306,26 @@
   }
 
 
-  function buildComparableWithMap(text) {
+  function buildComparableWithMap(text, literal = false) {
     let stripped = "";
     const map = [];
+    const characterPattern = literal ? /[\p{L}\p{N}\p{M}]/u : /[a-zA-Z0-9]/;
     let i = 0;
     while (i < text.length) {
-      if (text[i] === '<') {
+      if (!literal && text[i] === '<') {
         const closeIdx = text.indexOf('>', i);
         if (closeIdx !== -1) {
           i = closeIdx + 1;
           continue;
         }
       }
-      const c = text[i];
-      if (/[a-zA-Z0-9]/.test(c)) {
-        stripped += c.toLowerCase();
-        map.push(i);
+      const c = String.fromCodePoint(text.codePointAt(i));
+      if (characterPattern.test(c)) {
+        const lower = c.toLowerCase();
+        stripped += lower;
+        for (let j = 0; j < lower.length; j++) map.push(i);
       }
-      i++;
+      i += c.length;
     }
     return { stripped, map };
   }
@@ -1188,6 +1192,146 @@
     return { text: out.join("\n\n"), warnings };
   }
 
+  function sessionTurnsFromResults(results) {
+    if (!Array.isArray(results) || results.length === 0 || results.length > 1000) {
+      throw new Error("Session conversation data is unavailable or unsupported.");
+    }
+    const ids = new Set();
+    return results.map((entry) => {
+      const workflow = entry.blocks?.find((b) => b.workflow_block)?.workflow_block;
+      const sources = entry.blocks?.find((b) => b.web_result_block)?.web_result_block?.web_results;
+      const answers = workflow?.steps?.flatMap((step) => step.items || []).filter(
+        (item) => item.type === "WORKFLOW_ITEM_TEXT" && item.variant === "answer"
+      );
+      if (typeof entry.uuid !== "string" || ids.has(entry.uuid) ||
+          typeof entry.query_str !== "string" || !entry.query_str.trim() ||
+          entry.status !== "COMPLETED" || workflow?.status !== "WORKFLOW_COMPLETED" ||
+          !answers?.length || answers.some((item) =>
+            typeof item.payload?.text_payload?.text !== "string" ||
+            item.payload.text_payload.is_streaming) ||
+          !Array.isArray(sources) || sources.some((s) => typeof s.url !== "string")) {
+        throw new Error("Session conversation data is incomplete or unsupported.");
+      }
+      ids.add(entry.uuid);
+      const response = answers.map((item) => item.payload.text_payload.text).join("\n\n");
+      if (!response.trim()) throw new Error("Session answer is empty.");
+      return { id: entry.uuid, prompt: entry.query_str, response, sources: sources.map((s) => ({ url: s.url })) };
+    });
+  }
+
+  function readSessionTurns() {
+    // Earlier turns may not be mounted. The session component above a visible
+    // bubble holds all results; inspect only this known prop, never hooks/DOM graphs.
+    const seed = document.querySelector('main [data-message-bubble="right"], main [data-workflow-entry]');
+    const key = seed && Object.keys(seed).find((k) => k.startsWith("__reactFiber$"));
+    let fiber = key ? seed[key] : null;
+    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
+      const results = fiber.memoizedProps?.placeholderResults;
+      if (Array.isArray(results)) return sessionTurnsFromResults(results);
+    }
+    throw new Error("Cannot read the full session conversation. Reload the page and retry.");
+  }
+
+  function sessionComparable(text) {
+    // Keep offsets into the original Markdown while ignoring citation syntax.
+    return buildComparableWithMap(text.replace(
+      /\[\^\d+_\d+\]|\[\d+\]/g, (match) => " ".repeat(match.length)
+    ), true);
+  }
+
+  function sessionMarkdownMarkers(text) {
+    const separators = [];
+    const definitions = [];
+    let fence = null;
+    for (const match of text.matchAll(/[^\n]+(?:\n|$)|\n/g)) {
+      const line = match[0].trimEnd();
+      const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+      if (marker) {
+        if (!fence) fence = marker[1];
+        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+        continue;
+      }
+      if (fence) continue;
+      if (/^ {0,3}---[ \t]*$/.test(line)) {
+        separators.push({ start: match.index, end: match.index + match[0].length });
+      }
+      const definition = line.match(/^\[\^(\d+)_(\d+)\]:[ \t]+(https?:\/\/\S+)[ \t]*$/);
+      if (definition) definitions.push({
+        start: match.index, end: match.index + match[0].length,
+        turn: Number(definition[1]), number: Number(definition[2]), url: definition[3],
+      });
+    }
+    return { separators, definitions };
+  }
+
+  function matchSessionChunk(chunk, turn, number) {
+    const { definitions } = sessionMarkdownMarkers(chunk);
+    if (definitions.length !== turn.sources.length || definitions.some((d, i) =>
+      d.turn !== number || d.number !== i + 1 || d.url !== turn.sources[i].url
+    )) return null;
+
+    const sourceStart = definitions[0]?.start ?? chunk.length;
+    const sources = chunk.slice(sourceStart).trim();
+    let remainder = chunk.slice(sourceStart);
+    for (const d of definitions.slice().reverse()) {
+      const start = d.start - sourceStart;
+      remainder = remainder.slice(0, start) + remainder.slice(d.end - sourceStart);
+    }
+    if (remainder.trim()) return null;
+
+    const body = chunk.slice(0, sourceStart)
+      .replace(/<span style="display:none">[\s\S]*?<\/span>/g, "")
+      .replace(/<div align="center">\s*⁂\s*<\/div>/g, "").trim();
+    const actual = sessionComparable(body);
+    const expected = sessionComparable(turn.response).stripped;
+    const start = actual.stripped.indexOf(expected);
+    if (!expected || start < 0 || start + expected.length !== actual.stripped.length ||
+        actual.stripped.indexOf(expected, start + 1) !== -1) return null;
+    const responseStart = body.lastIndexOf("\n", actual.map[start] - 1) + 1;
+    const response = body.slice(responseStart).trim();
+    if (sessionComparable(response).stripped !== expected) return null;
+
+    const references = [...response.matchAll(/\[\^(\d+)_(\d+)\]/g)];
+    if (references.some((ref) => Number(ref[1]) !== number ||
+      !definitions.some((d) => d.number === Number(ref[2])))) return null;
+    const expectedCitations = new Set([...turn.response.matchAll(/\[(\d+)\]/g)].map((ref) => Number(ref[1])));
+    const actualCitations = new Set(references.map((ref) => Number(ref[2])));
+    // Native export also resolves named references such as [Publisher] into
+    // footnotes. Those additional references are valid if their URLs were checked.
+    if ([...expectedCitations].some((citation) => !actualCitations.has(citation))) return null;
+    return { prompt: turn.prompt, response, sources };
+  }
+
+  function annotateSessionConversation(fullText, turns) {
+    const text = fullText.replace(/\r\n/g, "\n").trim();
+    const { separators } = sessionMarkdownMarkers(text);
+    if (!turns.length || separators.length > 2000) throw new Error("Cannot verify session export structure.");
+    const boundaries = [...separators, { start: text.length, end: text.length }];
+    const output = [];
+    let offset = 0;
+    for (const [index, turn] of turns.entries()) {
+      let verified = null;
+      for (const boundary of boundaries) {
+        if (boundary.start < offset) continue;
+        const split = matchSessionChunk(text.slice(offset, boundary.start), turn, index + 1);
+        if (split) {
+          verified = split;
+          offset = boundary.end;
+          break;
+        }
+      }
+      if (!verified) throw new Error(`Could not verify session export turn ${index + 1}.`);
+      output.push(
+        `<!-- PPLX-TURN ${index + 1} -->\n` +
+        `<!-- PPLX-ROLE: prompt -->\n${verified.prompt}\n\n` +
+        `<!-- PPLX-ROLE: ai -->\n${verified.response}\n\n` +
+        `<!-- PPLX-ROLE: sources -->\n${verified.sources || "(none)"}`
+      );
+    }
+    if (text.slice(offset).trim()) throw new Error("Could not verify all session export turns.");
+    return { text: output.join("\n\n"), warnings: [] };
+  }
+
   // Attempt the clipboard write with a layered fallback, since no single
   // method is reliable in every environment:
   //   1. GM_setClipboard (Tampermonkey's own bridge, granted via
@@ -1222,7 +1366,7 @@
     }
   }
 
-  async function copyText(text) {
+  async function copyText(text, run = null) {
     // Fallback progress feedback: if the earlier click-detection on the
     // "Export as Markdown" menu item missed (e.g. the menu is rendered in
     // a shadow DOM or uses an unexpected structure), at least show the
@@ -1230,13 +1374,22 @@
     // we begin the real work.
     showToast("Preparing export — please wait, don't leave this page yet...", "progress");
 
-    const toggles = await expandAllPrompts();
-
     const { result: logoStripped } = stripLogo(text);
-
-    const { text: annotated, warnings } = annotateConversation(logoStripped, toggles);
-
-    collapseAllPrompts();
+    let assembled;
+    if (/^\/session\//.test(location.pathname)) {
+      try {
+        assembled = annotateSessionConversation(logoStripped, readSessionTurns());
+      } catch (err) {
+        console.error("[PPLX Obsidian Exporter] Session verification failed:", err);
+        showToast("Session export could not be verified - clipboard unchanged; saving native file instead. See Console.", "error");
+        return false;
+      }
+    } else {
+      const toggles = await expandAllPrompts();
+      assembled = annotateConversation(logoStripped, toggles);
+      collapseAllPrompts();
+    }
+    const { text: annotated, warnings } = assembled;
 
     const full = buildHeader() + annotated;
 
@@ -1251,6 +1404,10 @@
       return false;
     }
 
+    if (run && (run.cancelled || location.href !== run.url)) {
+      showToast("Conversation changed or export timed out - clipboard unchanged; saving native file instead.", "error");
+      return false;
+    }
     const result = await writeToClipboard(full);
     if (!result.success) {
       showToast("Clipboard write failed — saving file instead", "error");
@@ -1267,6 +1424,187 @@
   function isExportDownload(href, download) {
     return (download && /\.(md|markdown|txt)$/i.test(download)) ||
            (href && (href.startsWith("blob:") || href.startsWith("data:")));
+  }
+
+  function applyNativeThemeStyles(el) {
+    const isDark = document.documentElement.classList.contains("dark") ||
+      document.body.classList.contains("dark") ||
+      window.matchMedia("(prefers-color-scheme: dark)").matches;
+    el.style.background = isDark ? "rgba(30, 30, 30, 0.75)" : "rgba(255, 255, 255, 0.85)";
+    el.style.borderColor = isDark ? "rgba(255, 255, 255, 0.12)" : "rgba(0, 0, 0, 0.08)";
+    el.style.color = isDark ? "rgba(255, 255, 255, 0.9)" : "rgba(0, 0, 0, 0.8)";
+    el.style.boxShadow = isDark ? "0 4px 14px rgba(0, 0, 0, 0.4)" : "0 4px 14px rgba(0, 0, 0, 0.08)";
+  }
+
+  function updateButtonPosition() {
+    const btn = document.getElementById("pplx-obsidian-export-btn");
+    if (!btn) return;
+    btn.hidden = !/^\/(?:session|search)\//.test(location.pathname);
+    btn.style.display = btn.hidden ? "none" : "flex";
+    if (pendingExport && pendingExport.url !== location.href) {
+      pendingExport.cancelled = true;
+      finishExport(pendingExport);
+      showToast("Conversation changed - export cancelled; clipboard unchanged.", "error");
+    }
+    const input = document.getElementById("ask-input") ||
+      document.querySelector('main [contenteditable="true"][role="textbox"], main textarea');
+    const reference = input?.closest('form, [data-appearance="framed"]') || input?.parentElement?.parentElement;
+    const rect = reference?.getBoundingClientRect();
+    const maxLeft = Math.max(12, window.innerWidth - 44 - 12);
+    if (!rect?.width || !rect.height) {
+      btn.style.left = `${Math.max(12, window.innerWidth - 44 - 24)}px`;
+      btn.style.bottom = "120px";
+    } else {
+      const fitsBeside = rect.right + 12 <= maxLeft;
+      btn.style.left = `${Math.max(12, Math.min(fitsBeside ? rect.right + 12 : rect.right - 44, maxLeft))}px`;
+      btn.style.bottom = `${Math.max(12, Math.min(window.innerHeight - 56,
+        fitsBeside ? window.innerHeight - rect.bottom + (rect.height - 44) / 2 : window.innerHeight - rect.top + 12))}px`;
+    }
+  }
+
+  function injectButton() {
+    let btn = document.getElementById("pplx-obsidian-export-btn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "pplx-obsidian-export-btn";
+      btn.type = "button";
+      btn.title = "Export Thread to Obsidian (Markdown)";
+      btn.setAttribute("aria-label", "Copy for Obsidian");
+      btn.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="5 6 90 90" width="30" height="30" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M34 38 L22 63 L41 84 L60 88 L72 61 L64 39 L53 25 C51 22, 47 22, 45 25 Z" />
+          <path d="M49 23 C42 41, 44 51, 64 64" />
+          <path d="M34 38 C34 47, 40 54, 38 68" />
+          <path d="M38 68 C44 63, 54 62, 64 64" />
+        </svg>`;
+      btn.style.cssText = `
+        position: fixed; bottom: 120px; z-index: 99999; width: 44px; height: 44px;
+        display: flex; align-items: center; justify-content: center; padding: 0;
+        border: 1px solid transparent; border-radius: 50%; cursor: pointer;
+        backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+      `;
+      btn.onmouseenter = () => {
+        btn.dataset.hovered = "true";
+        btn.style.background = "#7F6DF2";
+        btn.style.color = "#FFFFFF";
+        btn.style.borderColor = "#6D5BD0";
+        btn.style.transform = "translateY(-2px)";
+        btn.style.boxShadow = "0 6px 16px rgba(127, 109, 242, 0.4)";
+      };
+      btn.onmouseleave = () => {
+        delete btn.dataset.hovered;
+        btn.style.transform = "translateY(0)";
+        applyNativeThemeStyles(btn);
+      };
+      btn.onclick = exportFullThread;
+      document.body.appendChild(btn);
+    }
+    if (!btn.dataset.hovered) applyNativeThemeStyles(btn);
+    btn.disabled = !!pendingExport;
+    btn.setAttribute("aria-busy", String(!!pendingExport));
+    btn.style.cursor = pendingExport ? "wait" : "pointer";
+    updateButtonPosition();
+  }
+
+  function beginExport() {
+    if (pendingExport) return pendingExport;
+    const run = { url: location.href, cancelled: false, menuSelected: false, processing: false, timer: null };
+    pendingExport = run;
+    run.timer = setTimeout(() => {
+      run.cancelled = true;
+      finishExport(run);
+      showToast("Export timed out - clipboard unchanged. Try again or use the native Export as Markdown menu.", "error");
+    }, 60000);
+    injectButton();
+    showToast("Preparing export — please wait, don't leave this page yet...", "progress");
+    return run;
+  }
+
+  function finishExport(run) {
+    clearTimeout(run.timer);
+    if (pendingExport !== run) return;
+    pendingExport = null;
+    injectButton();
+  }
+
+  function findNativeMarkdownItem() {
+    return [...document.querySelectorAll('[role="menu"] [role="menuitem"], [role="menu"] button')].find(
+      (el) => /^(?:export as markdown|export markdown|download markdown)$/i.test(el.textContent.trim()) &&
+        el.getBoundingClientRect().width > 0 && el.getAttribute("aria-disabled") !== "true" && !el.disabled
+    );
+  }
+
+  function findNativeMenuTrigger() {
+    return document.querySelector('main button[aria-label="Session options"], main button[aria-label="Thread options"]');
+  }
+
+  async function waitForNativeMarkdownItem(run) {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && !run.cancelled && location.href === run.url) {
+      const item = findNativeMarkdownItem();
+      if (item) return item;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Native Export as Markdown menu item was not found. Use Perplexity's menu or reload and retry.");
+  }
+
+  async function exportFullThread() {
+    if (pendingExport) return;
+    const run = beginExport();
+    let trigger = null;
+    try {
+      let item = findNativeMarkdownItem();
+      if (!item) {
+        trigger = findNativeMenuTrigger();
+        if (!trigger || trigger.disabled) throw new Error("Could not open Perplexity's native export menu. Reload and retry or use its menu manually.");
+        if (trigger.getAttribute("aria-expanded") !== "true") {
+          // Radix menus open on pointerdown rather than HTMLElement.click().
+          const options = { bubbles: true, cancelable: true, button: 0, pointerType: "mouse" };
+          const EventType = typeof PointerEvent === "undefined" ? MouseEvent : PointerEvent;
+          trigger.dispatchEvent(new EventType("pointerdown", options));
+          if (trigger.getAttribute("aria-expanded") !== "true") trigger.click();
+        }
+        item = await waitForNativeMarkdownItem(run);
+      }
+      if (!run.cancelled && location.href === run.url) item.click();
+    } catch (err) {
+      console.error("[PPLX Obsidian Exporter] One-click export failed:", err);
+      if (trigger?.getAttribute("aria-expanded") === "true") {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+      }
+      finishExport(run);
+      showToast(err instanceof Error ? err.message : "Could not start native export. See Console.", "error");
+    }
+  }
+
+  function start() {
+    if (toolbarStarted) return;
+    toolbarStarted = true;
+    let frame = null;
+    const schedule = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        injectButton();
+        const toast = document.getElementById("pplx-clip-toast");
+        if (toast) {
+          const edge = toast.style.borderLeft;
+          applyNativeThemeStyles(toast);
+          toast.style.borderLeft = edge;
+        }
+      });
+    };
+    new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+    const theme = new MutationObserver(schedule);
+    theme.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    theme.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+    new ResizeObserver(schedule).observe(document.body);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("popstate", schedule);
+    window.addEventListener("scroll", schedule, true);
+    window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", schedule);
+    injectButton();
   }
 
   function dismissPerplexityToasts() {
@@ -1395,6 +1733,8 @@
   }
 
   async function handleCandidateHref(href, anchorEl) {
+    const run = pendingExport || beginExport();
+    run.processing = true;
     let text = null;
     try {
       if (href.startsWith("blob:") && blobRegistry.has(href)) {
@@ -1408,23 +1748,20 @@
         const raw = href.slice(commaIdx + 1);
         text = meta.includes("base64") ? atob(raw) : decodeURIComponent(raw);
       }
+      if (run.cancelled || run.url !== location.href) throw new Error("Conversation changed or export timed out.");
+      const success = text !== null && await copyText(text, run);
+      if (!success) {
+        OrigAnchorClick.call(anchorEl);
+      } else {
+        dismissPerplexityToasts();
+      }
     } catch (err) {
-      console.error("[PPLX Obsidian Exporter] Failed to read blob/data URL:", err);
-      showToast("Could not read export content — saving file instead", "error");
+      console.error("[PPLX Obsidian Exporter] Could not process export:", err);
+      showToast("Could not process export - clipboard unchanged; saving native file instead. See Console.", "error");
       OrigAnchorClick.call(anchorEl);
-      return;
-    }
-
-    if (text === null) {
-      OrigAnchorClick.call(anchorEl);
-      return;
-    }
-
-    const success = await copyText(text);
-    if (!success) {
-      OrigAnchorClick.call(anchorEl);
-    } else {
-      dismissPerplexityToasts();
+    } finally {
+      blobRegistry.delete(href);
+      finishExport(run);
     }
   }
 
@@ -1454,13 +1791,15 @@
     document.addEventListener("click", (e) => {
       let node = e.target;
       while (node && node !== document.body && node !== document.documentElement) {
-        const text = ((node.textContent || "")).toLowerCase();
-        if (
-          text.includes("export as markdown") ||
-          text.includes("export markdown") ||
-          text.includes("download markdown")
-        ) {
-          showToast("Preparing export — please wait, don't leave this page yet...", "progress");
+        const text = (node.textContent || "").trim();
+        if (/^(?:export as markdown|export markdown|download markdown)$/i.test(text)) {
+          const run = pendingExport || beginExport();
+          if (run.menuSelected || run.processing) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          } else {
+            run.menuSelected = true;
+          }
           break;
         }
         node = node.parentElement;
@@ -1488,8 +1827,7 @@
     dismissPerplexityToasts();
   } catch (_) {}
 
+  if (document.body) start();
+  else window.addEventListener("DOMContentLoaded", start, { once: true });
+
 })();
-
-
-
-

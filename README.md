@@ -246,11 +246,40 @@ When the plugin imports a dialog, it constructs a highly structured Obsidian not
 To set up the automated boundary-aligning "Direct" exporter:
 1. Install the [Tampermonkey](https://www.tampermonkey.net/) browser extension.
 2. Open Tampermonkey's dashboard, click "Create a new script," and replace the default code with the contents of [`browser-userscript/perplexity-obsidian-exporter-direct.user.js`](./browser-userscript/perplexity-obsidian-exporter-direct.user.js) from this repository. Save it.
+   - If the older **via Complexity** exporter is installed, disable it so only one exporter handles the page. The Direct exporter does not require the Complexity extension.
 3. In your browser's extension settings (e.g. `chrome://extensions` -> **Tampermonkey** -> **Details**):
    - Confirm Tampermonkey is enabled.
    - Set **Site access** to **On all sites** (or explicitly permit `https://www.perplexity.ai`).
    - Turn on **Allow access to file URLs** and/or **Allow user scripts** depending on your browser.
-4. Reload your Perplexity tab. When you click **Export as Markdown** inside Perplexity, the UserScript will run and process the export automatically.
+4. Reload your Perplexity tab. Click the floating **Copy for Obsidian** icon beside the composer. It opens Perplexity's native menu and selects **Export as Markdown** for you. You can also select **Export as Markdown** manually; both routes use the same capture pipeline.
+
+Version 8.12 brings back the circular Obsidian icon, purple hover feedback and
+light/dark glass styling from the older Complexity script, without its extension
+dependency. The button follows the composer when the page resizes, moves above
+it on narrow screens, and is hidden outside conversation pages. Compact,
+theme-aware status messages retain progress/success/error indicators.
+Repeated clicks are blocked while an export is pending. Missing menus and
+failed exports restore the button for retry; a 60-second timeout prevents a
+stuck busy state. Navigating away cancels the pending capture before clipboard
+writing. Native menu selection and download interception still work separately.
+Use version 8.13 or later: it fixes a missing download-blob registry in 8.12
+that caused the "Could not process export" error and prevented busy-state cleanup.
+
+On `/session/` pages, version 8.11 and later restore full prompts that Perplexity omits
+from its native Markdown, including long collapsed prompts and quoted context.
+It reads the session's structured conversation data through a bounded React
+ancestor lookup, so earlier prompts need not be visible and **Read more** need
+not be clicked. Responses and source URL footnotes come from the native export.
+Before copying, it checks response text (ignoring formatting/citation syntax),
+cited source numbers, every source URL and the conversation's turn order.
+It preserves native response formatting; it does not add source-card snippets
+or titles that the native export omits.
+
+If a session is still generating, Perplexity changes its internal data shape,
+or the export cannot be matched completely, the script reports an error, leaves
+the clipboard unchanged and saves the unmodified native file instead. That file
+may still lack prompts; it is not a verified complete conversation. Existing
+`/search/` exports retain their previous processing.
 
 ### C. Gemini Web Clipper Setup
 1. Install the official **Obsidian Web Clipper** from your browser's extension store.
