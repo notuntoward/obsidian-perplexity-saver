@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.13
+// @version      8.14
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1281,7 +1281,12 @@
 
     const body = chunk.slice(0, sourceStart)
       .replace(/<span style="display:none">[\s\S]*?<\/span>/g, "")
-      .replace(/<div align="center">\s*⁂\s*<\/div>/g, "").trim();
+      .replace(/<div align="center">\s*⁂\s*<\/div>/g, "")
+      // Native export sometimes turns a named citation into display math,
+      // breaking its containing table. Restore only labels confirmed in the answer.
+      .replace(/\$\$[ \t]*\n([^\n]+)\n\$\$(?=\[\^\d+_\d+\])/g, (block, label) =>
+        turn.response.includes(`[${label}]`) && !turn.response.includes(block) ? `[${label}]` : block
+      ).trim();
     const actual = sessionComparable(body);
     const expected = sessionComparable(turn.response).stripped;
     const start = actual.stripped.indexOf(expected);

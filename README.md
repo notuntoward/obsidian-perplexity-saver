@@ -274,6 +274,11 @@ Before copying, it checks response text (ignoring formatting/citation syntax),
 cited source numbers, every source URL and the conversation's turn order.
 It preserves native response formatting; it does not add source-card snippets
 or titles that the native export omits.
+Version 8.14 also repairs named citation labels that native export incorrectly
+wraps in multiline `$$` math delimiters. It restores the original bracketed
+label only when confirmed by the structured answer and followed by a native
+footnote reference, preventing broken tables and swallowed footnotes while
+preserving actual math and code.
 
 If a session is still generating, Perplexity changes its internal data shape,
 or the export cannot be matched completely, the script reports an error, leaves

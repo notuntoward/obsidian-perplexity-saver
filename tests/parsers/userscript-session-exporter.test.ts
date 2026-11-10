@@ -122,6 +122,32 @@ describe("native session exports", () => {
     expect(load().annotateSessionConversation(native, data).text).toContain("[Publisher][^1_2]");
   });
 
+  it("restores a named citation that native export turns into multiline math inside a table", () => {
+    const label = "ITEP *Washington: Who Pays? 7th Edition*";
+    const data = [{
+      ...turns()[0],
+      response: `| Claim | Note |\n| :-- | :-- |\n| Tax | See [${label}]. More text. |\n\n## Suggested edits\n\nKeep these edits.`,
+    }];
+    const native = nativeExport(data).replace(`[${label}]`, () => `$$   \n${label}\n$$[^1_1]`);
+    const output = load().annotateSessionConversation(native, data).text;
+    expect(output).toContain(`| Tax | See [${label}][^1_1]. More text. |`);
+    expect(output).not.toContain("$$");
+    expect(output).toContain("## Suggested edits\n\nKeep these edits.");
+    expect(parsePerplexityDialog(output).turns[1].citations[0].url).toBe(data[0].sources[0].url);
+  });
+
+  it("preserves actual math and code instead of treating every dollar block as a citation", () => {
+    const data = [{
+      ...turns()[0],
+      response: "A [Publisher] label.\n\n$$\nx^2\n$$[1]\n\n```md\n$$\nPublisher\n$$\n```\n\nEnd.",
+    }];
+    const native = nativeExport(data);
+    const output = load().annotateSessionConversation(native, data).text;
+    expect(output).toContain("$$\nx^2\n$$[^1_1]");
+    expect(output).toContain("```md\n$$\nPublisher\n$$\n```");
+    expect(output).toContain("A [Publisher] label.");
+  });
+
   it("imports the assembled output as three complete prompt/answer pairs with sources", () => {
     const output = load().annotateSessionConversation(nativeExport(), turns());
     const dialog = parsePerplexityDialog(output.text);
