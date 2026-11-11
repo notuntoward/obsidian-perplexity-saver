@@ -31,6 +31,7 @@ import {
 import { buildTranscriptParagraphs } from "./transcriptParagraphs";
 import { formatShortTimestamp } from "./youtubeTranscript";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
+import type { BackgroundPlayback } from "../video/backgroundPlayback";
 
 export const TRANSCRIPT_VIEW_TYPE = "perplexity-saver-transcript";
 
@@ -64,6 +65,7 @@ interface TranscriptViewState {
 	file?: string | null;
 	mode?: TranscriptViewMode;
 	filter?: boolean;
+	pinned?: boolean;
 }
 
 interface TranscriptRow {
@@ -206,7 +208,22 @@ interface RenderedRow {
 
 /** Side panel listing a literature note's stored YouTube transcript, with search and playback following. */
 export class TranscriptView extends ItemView {
+	private backgroundPlayback: BackgroundPlayback | null = null;
+
+	getBackgroundPlayback(): BackgroundPlayback | null { return this.backgroundPlayback; }
+
+	setBackgroundPlayback(playback: BackgroundPlayback): void {
+		this.stopBackgroundPlayback();
+		this.backgroundPlayback = playback;
+	}
+
+	stopBackgroundPlayback(remember = true): void {
+		this.backgroundPlayback?.destroy(remember);
+		this.backgroundPlayback = null;
+	}
+
 	private filePath: string | null = null;
+	private pinned = false;
 	private mode: TranscriptViewMode = "lines";
 	private lines: StoredTranscriptLine[] | null = null;
 	private loadToken = 0;
@@ -293,6 +310,7 @@ export class TranscriptView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				if (oldPath === this.filePath) {
+					this.backgroundPlayback?.renameFile(file.path);
 					this.filePath = file.path;
 					this.render();
 				}
@@ -301,6 +319,7 @@ export class TranscriptView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				if (file.path === this.filePath) {
+					this.stopBackgroundPlayback(false);
 					this.filePath = null;
 					this.lines = null;
 					this.render();
@@ -325,15 +344,25 @@ export class TranscriptView extends ItemView {
 
 	async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		const s = (state ?? {}) as TranscriptViewState;
-		if (typeof s.file === "string") this.filePath = s.file;
+		if (typeof s.file === "string") {
+			if (s.file !== this.filePath) this.stopBackgroundPlayback();
+			this.filePath = s.file;
+		}
 		if (s.mode === "lines" || s.mode === "paragraphs") this.mode = s.mode;
 		if (typeof s.filter === "boolean") this.filter = s.filter;
+		if (typeof s.pinned === "boolean") this.pinned = s.pinned;
 		await super.setState(state, result);
 		await this.reload();
 	}
 
 	getState(): Record<string, unknown> {
-		return { ...super.getState(), file: this.filePath, mode: this.mode, filter: this.filter };
+		return { ...super.getState(), file: this.filePath, mode: this.mode, filter: this.filter, pinned: this.pinned };
+	}
+
+	/** Workspace panels belong to one note rather than following unrelated file opens. */
+	pinToNote(): void {
+		this.pinned = true;
+		this.loadToken++;
 	}
 
 	/** Path of the note whose transcript is shown. */
@@ -351,6 +380,7 @@ export class TranscriptView extends ItemView {
 	/** Show the transcript of the note at `path`. */
 	async showFile(path: string): Promise<void> {
 		if (path !== this.filePath) {
+			this.stopBackgroundPlayback();
 			this.setSearchOpen(false);
 			this.playbackSec = null;
 			this.focusRow = -1;
@@ -415,10 +445,11 @@ export class TranscriptView extends ItemView {
 	}
 
 	private async followFile(file: TFile): Promise<void> {
-		if (file.extension !== "md") return;
+		if (this.pinned || file.extension !== "md") return;
 		const token = ++this.loadToken;
 		const lines = await loadTranscriptLines(this.app, file, this.host.getHeadingName());
 		if (token !== this.loadToken || !lines?.length) return;
+		this.stopBackgroundPlayback();
 		this.playbackSec = null;
 		this.focusRow = -1;
 		this.query = "";
@@ -715,6 +746,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		this.stopBackgroundPlayback();
 		this.searchNavigationCleanup?.();
 		this.searchVisibilityCleanup?.();
 		this.searchVisibilityCleanup = null;
@@ -789,10 +821,16 @@ export class TranscriptView extends ItemView {
 
 	/** Preserve display preferences and search recall when native placement requires a new leaf. */
 	copySessionFrom(source: TranscriptView): void {
+		this.pinned = source.pinned;
 		this.mode = source.mode;
 		this.filter = source.filter;
 		this.previousQuery = source.query || source.previousQuery;
 		this.render();
+		const playback = source.backgroundPlayback;
+		if (playback) {
+			source.backgroundPlayback = null;
+			this.setBackgroundPlayback(playback.transferTo(this.containerEl));
+		}
 	}
 
 	private finishSearch(accept: boolean, refocus = true): void {
@@ -1049,7 +1087,8 @@ export async function showTranscriptPanel(
 	file: TFile,
 	headingName: string,
 	placement?: TranscriptPlacement | null,
-	replaceLeaf?: WorkspaceLeaf | null
+	replaceLeaf?: WorkspaceLeaf | null,
+	associatedOnly = false
 ): Promise<WorkspaceLeaf | null> {
 	const lines = await loadTranscriptLines(app, file, headingName);
 	if (!lines?.length) {
@@ -1064,7 +1103,8 @@ export async function showTranscriptPanel(
 			const win = getWindowForLeaf(placement.nextTo);
 			const existing = replaceLeaf ? undefined : app.workspace
 				.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
-				.find((l) => !isSidebarLeaf(app, l) && getWindowForLeaf(l) === win);
+				.find((l) => !isSidebarLeaf(app, l) && getWindowForLeaf(l) === win &&
+					(!associatedOnly || (l.view instanceof TranscriptView && l.view.getFilePath() === file.path)));
 			leaf = existing ?? app.workspace.createLeafBySplit(placement.nextTo, placement.direction);
 			if (!existing) {
 				createdLeaf = leaf;
@@ -1072,8 +1112,9 @@ export async function showTranscriptPanel(
 			}
 		} else {
 			const existing = app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
-				.find((l) => isSidebarLeaf(app, l, "right"));
-			const sideLeaf = existing ?? app.workspace.getRightLeaf(false);
+				.find((l) => isSidebarLeaf(app, l, "right") &&
+					(!associatedOnly || (l.view instanceof TranscriptView && l.view.getFilePath() === file.path)));
+			const sideLeaf = existing ?? app.workspace.getRightLeaf(associatedOnly);
 			if (!sideLeaf) throw new Error("Right sidebar is unavailable.");
 			leaf = sideLeaf;
 			if (!existing) {

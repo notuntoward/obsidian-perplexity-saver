@@ -1,6 +1,6 @@
 import { StateEffect, StateField, type Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
-import type { WorkspaceLeaf } from "obsidian";
+import { Notice, type WorkspaceLeaf } from "obsidian";
 import { timestampLink } from "./youtubeLinks";
 
 interface InsertionAnchors {
@@ -36,6 +36,26 @@ export interface NoteInsertionTarget {
 	filePath: string;
 	anchor: NoteInsertionAnchor;
 	isValid(): boolean;
+}
+
+export function insertPlaybackTimestamp(target: NoteInsertionTarget, videoId: string | null, seconds: number, pause: () => void): boolean {
+	if (!videoId || !target.isValid()) {
+		releaseNoteInsertionAnchor(target.anchor);
+		new Notice("The literature note or insertion point is no longer available.");
+		return false;
+	}
+	pause();
+	const position = getNoteInsertionPosition(target.anchor);
+	if (position === null) {
+		new Notice("The literature note insertion point is no longer available.");
+		return false;
+	}
+	const insertion = timestampBulletInsertion(target.anchor.view.state.doc, position, videoId, seconds);
+	if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset)) {
+		new Notice("Could not insert a timestamp into the literature note.");
+		return false;
+	}
+	return true;
 }
 
 /** Track the editor cursor through edits while an asynchronous capture is running. */

@@ -5,7 +5,7 @@ import type { EditorView } from "@codemirror/view";
 import PerplexitySaverPlugin from "../../src/main";
 import { TranscriptView } from "../../src/litNote/transcriptView";
 import { VideoView } from "../../src/video/videoView";
-import { nextPart } from "../../src/video/switchParts";
+import { VideoWorkspaceModal } from "../../src/video/workspaceLayout";
 import { createdNotices } from "../__mocks__/obsidian";
 import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
 import "commons/testing";
@@ -42,6 +42,7 @@ vi.mock("commons/workspace", async (original) => ({
 }));
 
 beforeEach(() => {
+	vi.restoreAllMocks();
 	document.body.empty();
 	vi.spyOn(window, "focus").mockImplementation(() => {});
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
@@ -100,6 +101,16 @@ async function harness() {
 	const viewerLeaf = { view: viewer } as unknown as WorkspaceLeaf;
 	leaves.push(viewerLeaf);
 	return { plugin, app, file, leaves, transcript, transcriptLeaf, viewerLeaf };
+}
+
+function addNote(h: Awaited<ReturnType<typeof harness>>) {
+	const note = new MarkdownView(h.viewerLeaf);
+	note.file = h.file as TFile;
+	note.containerEl = document.body.createDiv();
+	const leaf = { view: note, getViewState: () => ({ type: "markdown", state: { file: h.file.path } }) } as unknown as WorkspaceLeaf;
+	h.leaves.push(leaf);
+	h.app.workspace.activeLeaf = leaf;
+	return leaf;
 }
 
 describe("transcript activation commands", () => {
@@ -369,15 +380,432 @@ describe("transcript activation commands", () => {
 		expect(h.plugin.settings.videoNoteFocusIndicator).toBe(false);
 	});
 
-	it.each(["show", "toggle", "go-to", "cycle", "search"] as const)("%s opens a missing panel and assigns keyboard focus", async (action) => {
+	it.each(["show", "toggle", "go-to", "search"] as const)("%s opens a missing panel and assigns keyboard focus", async (action) => {
 		const h = await harness();
 		const search = vi.spyOn(h.transcript, "focusSearch").mockImplementation(() => {});
 		if (action === "show") await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf);
 		else if (action === "toggle") await h.plugin.toggleTranscript(h.file as TFile, h.viewerLeaf);
 		else if (action === "search") await h.plugin["focusTranscriptSearch"](null, h.file as TFile);
-		else await h.plugin["goToPart"](action === "cycle" ? nextPart("video") : "transcript", h.file as TFile, { note: null, video: h.viewerLeaf, transcript: null });
+		else await h.plugin["goToPart"]("transcript", h.file as TFile, { note: null, video: h.viewerLeaf, transcript: null });
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.transcriptLeaf, { focus: true });
 		expect(action === "search" ? search : h.transcript.focusLines).toHaveBeenCalled();
+	});
+
+	it.each(["video", "transcript", "both", "note"] as const)("applies the %s workspace without opening unwanted parts", async (layout) => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const transcript = vi.spyOn(h.plugin, "showTranscript");
+		Object.assign(h.viewerLeaf, { detach: vi.fn() });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, layout);
+		expect(transcript).not.toHaveBeenCalled();
+		expect(h.viewerLeaf.detach).toHaveBeenCalledTimes(layout === "note" || layout === "transcript" ? 1 : 0);
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledTimes(layout === "note" || layout === "video" ? 1 : 0);
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenCalled();
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe(layout === "note" ? "video" : layout);
+		expect(h.plugin.settings.videoPlayback[h.file.path]).toMatchObject({ videoId: "abc", seconds: 25.75 });
+	});
+
+	it.each([1, -1] as const)("cycles only visible panes in direction %s without opening anything", async (direction) => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.transcript.containerEl.isShown = () => false;
+		const show = vi.spyOn(h.plugin, "showTranscript");
+		await h.plugin["cycleVisibleParts"](h.file as TFile, "note", direction);
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.viewerLeaf, { focus: true });
+		expect(show).not.toHaveBeenCalled();
+	});
+
+	it.each(["sidebar", "viewer", "beside"] as const)("opens a transcript-only workspace at %s without creating a player", async (location) => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.plugin.settings.transcriptPanelLocation = location;
+		const split = vi.fn(() => {
+			h.leaves.push(h.transcriptLeaf);
+			return h.transcriptLeaf;
+		});
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "transcript");
+		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		expect(h.transcriptLeaf.setViewState).toHaveBeenCalledWith(expect.objectContaining({ type: "perplexity-saver-transcript" }));
+		if (location !== "sidebar") expect(split).toHaveBeenCalledWith(note, location === "viewer" ? "horizontal" : "vertical");
+		else expect(h.app.workspace.getRightLeaf).toHaveBeenCalledWith(true);
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("transcript");
+	});
+
+	it("opens a missing player at its saved position without repurposing an unrelated viewer", async () => {
+		const h = await harness();
+		addNote(h);
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md" });
+		vi.spyOn(h.app.vault, "cachedRead").mockResolvedValue("https://youtu.be/dQw4w9WgXcQ");
+		h.plugin.settings.videoPlayback[h.file.path] = { videoId: "dQw4w9WgXcQ", seconds: 123.75 };
+		const next = { setViewState: vi.fn(async () => {}), detach: vi.fn() } as unknown as WorkspaceLeaf;
+		const split = vi.fn(() => next);
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "video");
+		expect(next.setViewState).toHaveBeenCalledWith(expect.objectContaining({
+			state: { videoId: "dQw4w9WgXcQ", time: 123.75, file: h.file.path, autoplay: false },
+		}));
+		expect(h.viewerLeaf.view.getState().file).toBe("other.md");
+	});
+
+	it("opens both missing panes and leaves the note ready for typing", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		vi.spyOn(h.app.vault, "cachedRead").mockResolvedValue("# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start");
+		Object.assign(h.viewerLeaf, {
+			setViewState: vi.fn(async () => { h.leaves.push(h.viewerLeaf); }),
+		});
+		Object.assign(h.app.workspace, { createLeafBySplit: vi.fn(() => h.viewerLeaf) });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "both");
+		expect(h.viewerLeaf.setViewState).toHaveBeenCalledOnce();
+		expect(h.app.workspace.getRightLeaf).toHaveBeenCalledWith(true);
+		expect(h.transcriptLeaf.setViewState).toHaveBeenCalledOnce();
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(note, { focus: true });
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("both");
+	});
+
+	it("cleans up a failed new player without closing an existing transcript or changing preference", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		vi.spyOn(h.app.vault, "cachedRead").mockResolvedValue("https://youtu.be/dQw4w9WgXcQ");
+		const failure = new Error("Cannot initialize player");
+		const next = { setViewState: vi.fn().mockRejectedValue(failure), detach: vi.fn() } as unknown as WorkspaceLeaf;
+		Object.assign(h.app.workspace, { createLeafBySplit: vi.fn(() => next) });
+		await expect(h.plugin["applyVideoWorkspace"](h.file as TFile, "both")).rejects.toThrow(failure);
+		expect(next.detach).toHaveBeenCalledOnce();
+		expect(h.transcriptLeaf.detach).not.toHaveBeenCalled();
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
+	});
+
+	it("keeps the previous layout and preference when a requested transcript is missing", async () => {
+		const h = await harness();
+		addNote(h);
+		Object.assign(h.viewerLeaf, { detach: vi.fn() });
+		const save = vi.spyOn(h.plugin, "saveData");
+		vi.spyOn(h.app.vault, "cachedRead").mockResolvedValue("# Transcript\nno timestamps");
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "transcript");
+		expect(h.viewerLeaf.detach).not.toHaveBeenCalled();
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("persists preferences and playback across reload without sharing fresh-default records", async () => {
+		const h = await harness();
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
+		vi.spyOn(h.plugin, "loadData").mockResolvedValue({
+			preferredVideoWorkspace: "both",
+			videoPlayback: { "note.md": { videoId: "abc", seconds: 55 } },
+		});
+		await h.plugin.loadSettings();
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("both");
+		expect(h.plugin.settings.videoPlayback["note.md"].seconds).toBe(55);
+		const fresh = await harness();
+		expect(fresh.plugin.settings.videoPlayback).toEqual({});
+	});
+
+	it("registers the combined picker and preserves existing cycle command IDs", async () => {
+		const h = await harness();
+		addNote(h);
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		const open = vi.spyOn(VideoWorkspaceModal.prototype, "open");
+		Object.assign(h.app.workspace, { on: vi.fn() });
+		h.plugin["registerVideoWorkspaceCommands"]();
+		expect(commands.map((command) => command.id)).toEqual([
+			"video-workspace", "cycle-note-video-transcript", "cycle-note-video-transcript-back",
+		]);
+		expect(commands[1].name).toBe("Cycle visible literature-note panes");
+		commands[0].checkCallback!(true);
+		expect(open).not.toHaveBeenCalled();
+		commands[0].checkCallback!(false);
+		await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
+		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
+	});
+
+	it.each([1, -1] as const)("cycles between a pop-out note and its main-window transcript (%s)", async (direction) => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		const doc = document.implementation.createHTMLDocument();
+		const win = { document: doc, closed: false, focus: vi.fn() } as unknown as Window;
+		Object.defineProperty(doc, "defaultView", { value: win });
+		note.view.containerEl = doc.createElement("div");
+		Object.defineProperty(doc, "activeElement", { value: note.view.containerEl, configurable: true });
+		h.leaves.push(h.transcriptLeaf);
+		await h.plugin["cycleVisibleParts"](h.file as TFile, "note", direction);
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.transcriptLeaf, { focus: true });
+		await h.plugin["cycleVisibleParts"](h.file as TFile, "transcript", direction);
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(note, { focus: true });
+		expect(win.focus).toHaveBeenCalled();
+	});
+
+	it("stays in a lone note and skips a collapsed transcript sidebar", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		vi.spyOn(workspaceApi, "isInCollapsedSidebar").mockImplementation((_app, leaf) => leaf === h.transcriptLeaf);
+		await h.plugin["cycleVisibleParts"](h.file as TFile, "note", 1);
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(note, { focus: true });
+		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
+	});
+
+	it("enables playback commands for a transcript-only workspace without opening a video pane", async () => {
+		const h = await harness();
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.plugin["registerVideoCommands"]();
+		const toggle = commands.find((command) => command.id === "video-viewer-play-pause")!;
+		expect(toggle.checkCallback!(true)).toBe(true);
+		expect(h.transcript.getBackgroundPlayback()).toBeNull();
+		toggle.checkCallback!(false);
+		await vi.waitFor(() => expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(true));
+		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		expect(h.app.workspace.activeLeaf).toBe(note);
+		toggle.checkCallback!(false);
+		await vi.waitFor(() => expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(false));
+		await h.transcript.onClose();
+	});
+
+	it("transcript row playback seeks in the background without opening a third pane", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ?t=25", 25, true);
+		expect(h.transcript.getBackgroundPlayback()?.getPlaybackSeconds()).toBe(25);
+		expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(true);
+		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		await h.transcript.onClose();
+		expect(h.transcript.getBackgroundPlayback()).toBeNull();
+	});
+
+	it("routes seek and speed commands from the focused transcript and gates picture-only commands", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.workspace.activeLeaf = h.transcriptLeaf;
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 25, true);
+		const playback = h.transcript.getBackgroundPlayback()!;
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.plugin["registerVideoCommands"]();
+		for (const suffix of ["forward-10", "faster"]) {
+			const command = commands.find((c) => c.id === `video-viewer-${suffix}`)!;
+			expect(command.checkCallback!(true)).toBe(true);
+			command.checkCallback!(false);
+		}
+		await vi.waitFor(() => {
+			expect(playback.getPlaybackSeconds()).toBe(35);
+			expect(playback.getPlaybackRate()).toBe(1.25);
+		});
+		for (const id of ["video-viewer-zoom-in", "video-viewer-screenshot", "video-viewer-insert-screenshot"]) {
+			expect(commands.find((c) => c.id === id)!.checkCallback!(true)).toBe(false);
+		}
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		await h.transcript.onClose();
+	});
+
+	it.each(["note", "unload", "close"] as const)("stops audio and remembers position on %s", async (action) => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.plugin.settings.preferredVideoWorkspace = "transcript";
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 51, true);
+		const destroy = vi.spyOn(h.transcript.getBackgroundPlayback()!, "destroy");
+		if (action === "note") await h.plugin["applyVideoWorkspace"](h.file as TFile, "note");
+		else if (action === "unload") h.plugin.onunload();
+		else await h.transcript.onClose();
+		expect(destroy).toHaveBeenCalledOnce();
+		expect(h.transcript.getBackgroundPlayback()).toBeNull();
+		expect(h.plugin.settings.videoPlayback[h.file.path]).toEqual({ videoId: "dQw4w9WgXcQ", seconds: 51 });
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("transcript");
+	});
+
+	it("hands background audio to a visible player at the same time and speed, without duplicate audio", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 64, true);
+		h.transcript.getBackgroundPlayback()!.setRate(1.5);
+		const stop = vi.spyOn(h.transcript.getBackgroundPlayback()!, "destroy");
+		const setRate = vi.spyOn(h.viewerLeaf.view as VideoView, "setRate").mockImplementation(() => {});
+		Object.assign(h.viewerLeaf, { setViewState: vi.fn(async () => {
+			expect(stop).toHaveBeenCalledOnce();
+			h.leaves.push(h.viewerLeaf);
+		}) });
+		Object.assign(h.app.workspace, { createLeafBySplit: vi.fn(() => h.viewerLeaf) });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "both");
+		expect(h.viewerLeaf.setViewState).toHaveBeenCalledWith(expect.objectContaining({
+			state: { videoId: "dQw4w9WgXcQ", time: 64, file: h.file.path, autoplay: true },
+		}));
+		expect(setRate).toHaveBeenCalledWith(1.5);
+		expect(h.transcript.getBackgroundPlayback()).toBeNull();
+	});
+
+	it("hands playing video to transcript-only audio without showing a third pane", async () => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const viewer = h.viewerLeaf.view as VideoView;
+		vi.spyOn(viewer, "isPlaying").mockReturnValue(true);
+		vi.spyOn(viewer, "pausePlayback").mockImplementation(() => {});
+		vi.spyOn(viewer, "getPlaybackRate").mockReturnValue(1.5);
+		Object.assign(h.viewerLeaf, { detach: vi.fn(() => {
+			h.leaves.splice(h.leaves.indexOf(h.viewerLeaf), 1);
+		}) });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "transcript");
+		expect(viewer.pausePlayback).toHaveBeenCalledOnce();
+		const playback = h.transcript.getBackgroundPlayback()!;
+		expect(playback.getPlaybackSeconds()).toBe(25.75);
+		expect(playback.getPlaybackRate()).toBe(1.5);
+		expect(playback.isPlaying()).toBe(true);
+		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		await h.transcript.onClose();
+	});
+
+	it("propagates background time to transcript highlighting and visible-pane cycling", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const highlight = vi.spyOn(h.transcript, "showPlayback");
+		const focus = vi.spyOn(h.transcript, "focusPlayback").mockImplementation(() => {});
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 28, true);
+		expect(highlight).toHaveBeenLastCalledWith(28, true);
+		await h.plugin["cycleVisibleParts"](h.file as TFile, "note", 1);
+		expect(focus).toHaveBeenCalledWith(28, true);
+		await h.transcript.onClose();
+	});
+
+	it("does not control an unrelated note's video or create duplicate background sessions", async () => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md" });
+		const toggleOther = vi.spyOn(h.viewerLeaf.view as VideoView, "togglePlay").mockImplementation(() => {});
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		const [first, second] = await Promise.all([
+			h.plugin["backgroundPlaybackFor"](h.file as TFile),
+			h.plugin["backgroundPlaybackFor"](h.file as TFile),
+		]);
+		expect(first).not.toBeNull();
+		expect(first).toBe(second);
+		expect(h.transcript.containerEl.querySelectorAll("iframe")).toHaveLength(1);
+		first!.togglePlay();
+		expect(toggleOther).not.toHaveBeenCalled();
+		await h.transcript.onClose();
+	});
+
+	it("timestamp clicks seek the transcript's audio session without opening a player", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const target = note.view.containerEl.createEl("a");
+		await h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target });
+		expect(h.transcript.getBackgroundPlayback()?.getPlaybackSeconds()).toBe(73);
+		expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(true);
+		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		await h.transcript.onClose();
+	});
+
+	it("restores remembered audio paused, and seek-only transcript actions never start it", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		h.plugin.settings.videoPlayback[h.file.path] = { videoId: "dQw4w9WgXcQ", seconds: 123 };
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile);
+		expect(playback?.getPlaybackSeconds()).toBe(123);
+		expect(playback?.isPlaying()).toBe(false);
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 52, false);
+		expect(playback?.getPlaybackSeconds()).toBe(52);
+		expect(playback?.isPlaying()).toBe(false);
+		playback?.play();
+		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 64, false);
+		expect(playback?.getPlaybackSeconds()).toBe(64);
+		expect(playback?.isPlaying()).toBe(true);
+		await h.transcript.onClose();
+	});
+
+	it("does not start orphaned audio if the transcript closes during metadata loading", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		let resolveRead!: (value: string) => void;
+		h.app.vault.cachedRead = vi.fn(() => new Promise<string>((resolve) => { resolveRead = resolve; }));
+		const pending = h.plugin["backgroundPlaybackFor"](h.file as TFile);
+		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
+		resolveRead("https://youtu.be/dQw4w9WgXcQ");
+		expect(await pending).toBeNull();
+		expect(h.transcript.containerEl.querySelector("iframe")).toBeNull();
+		expect(createdNotices.at(-1)?.message).toContain("workspace changed");
+	});
+
+	it("splits a background media tab out of the note's tab group while preserving playback", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		const group = {
+			group: {} as import("obsidian").WorkspaceParent, window,
+			leaves: [note, h.viewerLeaf], representative: note,
+			lastActive: 0, isCurrent: true, direction: null,
+		};
+		vi.spyOn(workspaceApi, "getGroupForLeaf").mockImplementation((_model, leaf) => leaf === note || leaf === h.viewerLeaf ? group : null);
+		Object.assign(h.viewerLeaf, { detach: vi.fn() });
+		const next = { view: h.viewerLeaf.view, setViewState: vi.fn(async () => {}), detach: vi.fn() } as unknown as WorkspaceLeaf;
+		const split = vi.fn(() => next);
+		Object.assign(h.app.workspace, { createLeafBySplit: split });
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "video");
+		expect(split).toHaveBeenCalledWith(note, "vertical");
+		expect(next.setViewState).toHaveBeenCalledWith(expect.objectContaining({
+			state: expect.objectContaining({ file: h.file.path, time: 25.75, autoplay: false }),
+		}));
+		expect(h.viewerLeaf.detach).toHaveBeenCalledOnce();
+		expect(next.detach).not.toHaveBeenCalled();
+	});
+
+	it("keeps a workspace transcript associated with its note when another file opens", async () => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "both");
+		const read = vi.spyOn(h.app.vault, "cachedRead");
+		await h.transcript["followFile"]({ path: "other.md", extension: "md" } as TFile);
+		expect(read).not.toHaveBeenCalled();
+		expect(h.transcript.getState().pinned).toBe(true);
+		expect(h.transcript.getFilePath()).toBe(h.file.path);
+	});
+
+	it("does not close unrelated media when choosing note only", async () => {
+		const h = await harness();
+		addNote(h);
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md" });
+		Object.assign(h.viewerLeaf, { detach: vi.fn() });
+		Object.assign(h.transcript, { filePath: "other.md" });
+		vi.mocked(h.transcript.getFilePath).mockReturnValue("other.md");
+		h.leaves.push(h.transcriptLeaf);
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "note");
+		expect(h.viewerLeaf.detach).not.toHaveBeenCalled();
+		expect(h.transcriptLeaf.detach).not.toHaveBeenCalled();
 	});
 
 	it("hiding the panel restores viewer keyboard focus without seeking", async () => {

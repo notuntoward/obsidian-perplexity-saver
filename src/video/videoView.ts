@@ -9,7 +9,7 @@ import {
 	getNoteInsertionPosition,
 	insertAtNoteInsertionAnchor,
 	releaseNoteInsertionAnchor,
-	timestampBulletInsertion,
+	insertPlaybackTimestamp,
 	timestampedScreenshotBlock,
 	type NoteInsertionTarget,
 } from "./noteInsertion";
@@ -36,6 +36,15 @@ export type VideoViewerLocation = "split" | "window";
 export type VideoToolbarCaptureAction = "copy" | "insert";
 
 export const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
+export async function loadNoteVideoMarks(app: App, filePath: string, videoId: string, heading: string): Promise<number[]> {
+	const file = app.vault.getFileByPath(filePath);
+	if (!file) return [];
+	const content = await app.vault.cachedRead(file);
+	const headings = app.metadataCache.getFileCache(file)?.headings;
+	return collectNoteTimestamps(content, videoId, findTranscriptRange(content, headings, heading));
+}
+
 const SKIP_SECONDS = 10;
 const ARROW_SECONDS = 5;
 const ZOOM_STEP = 1.25;
@@ -61,6 +70,7 @@ export interface VideoViewHost {
 	toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf): Promise<void>;
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
 	onPlayback(videoId: string, filePath: string | null, seconds: number): void;
+	rememberPlayback?(videoId: string, filePath: string | null, seconds: number): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
 }
 
@@ -126,6 +136,7 @@ export class VideoView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		if (this.videoId) this.host.rememberPlayback?.(this.videoId, this.filePath, this.getPlaybackSeconds());
 		this.player?.destroy();
 		this.player = null;
 	}
@@ -178,6 +189,13 @@ export class VideoView extends ItemView {
 	/** Exact current position, including paused playback and restored viewers. */
 	getPlaybackSeconds(): number {
 		return this.player?.info.currentTime ?? this.startTime;
+	}
+
+	getPlaybackRate(): number { return this.rate; }
+
+	isPlaying(): boolean {
+		const state = this.player?.info.playerState;
+		return state === PLAYER_STATE.playing || state === PLAYER_STATE.buffering;
 	}
 
 	/** Give the viewer keyboard focus, so its keys (Space, arrows, …) work. */
@@ -309,28 +327,9 @@ export class VideoView extends ItemView {
 
 	/** Insert a paused timestamp bullet into the note's tracked editor position. */
 	async insertTimestampBullet(target: NoteInsertionTarget): Promise<void> {
-		if (!this.videoId || !target.isValid()) {
-			releaseNoteInsertionAnchor(target.anchor);
-			new Notice("The literature note or insertion point is no longer available.");
-			return;
+		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback())) {
+			await this.focusNoteAfterInsertion(target, "Timestamp inserted.");
 		}
-		this.pausePlayback();
-		const position = getNoteInsertionPosition(target.anchor);
-		if (position === null) {
-			new Notice("The literature note insertion point is no longer available.");
-			return;
-		}
-		const insertion = timestampBulletInsertion(
-			target.anchor.view.state.doc,
-			position,
-			this.videoId,
-			this.getPlaybackSeconds()
-		);
-		if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset)) {
-			new Notice("Could not insert a timestamp into the literature note.");
-			return;
-		}
-		await this.focusNoteAfterInsertion(target, "Timestamp inserted.");
 	}
 
 	/** Capture a paused frame and insert it into the note; `whole` skips region selection. */
@@ -510,14 +509,8 @@ export class VideoView extends ItemView {
 	/** Re-read the user's own timestamp links (outside the transcript) for the timeline. */
 	private async refreshMarks(): Promise<void> {
 		const token = ++this.marksToken;
-		const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
-		let marks: number[] = [];
-		if (file && this.videoId) {
-			const content = await this.app.vault.cachedRead(file);
-			const headings = this.app.metadataCache.getFileCache(file)?.headings;
-			const transcript = findTranscriptRange(content, headings, this.host.getTranscriptHeading());
-			marks = collectNoteTimestamps(content, this.videoId, transcript);
-		}
+		const marks = this.filePath && this.videoId
+			? await loadNoteVideoMarks(this.app, this.filePath, this.videoId, this.host.getTranscriptHeading()) : [];
 		if (token !== this.marksToken) return;
 		this.marks = marks;
 		delete this.marksEl.dataset.key;
@@ -901,12 +894,15 @@ export function getVideoLeaf(app: App, preferWindow?: Window | null): WorkspaceL
  */
 export async function openVideoViewer(
 	app: App,
-	request: { videoId: string; seconds: number; sourcePath: string | null; autoplay?: boolean },
+	request: { videoId: string; seconds: number; sourcePath: string | null; autoplay?: boolean; associatedOnly?: boolean },
 	location: VideoViewerLocation
 ): Promise<WorkspaceLeaf> {
 	const autoplay = request.autoplay ?? false;
 	const noteLeaf = request.sourcePath ? findLeafForFile(app, request.sourcePath) : null;
-	const existing = getVideoLeaf(app, noteLeaf ? getWindowForLeaf(noteLeaf) : null);
+	const existing = request.associatedOnly
+		? app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).find((leaf) =>
+			leaf.view instanceof VideoView && leaf.view.getFilePath() === request.sourcePath)
+		: getVideoLeaf(app, noteLeaf ? getWindowForLeaf(noteLeaf) : null);
 	if (existing) {
 		await loadLeafIfDeferred(existing);
 		await app.workspace.revealLeaf(existing);
@@ -926,10 +922,15 @@ export async function openVideoViewer(
 	} else {
 		leaf = noteLeaf ? app.workspace.createLeafBySplit(noteLeaf, "vertical") : app.workspace.getLeaf("split", "vertical");
 	}
-	await leaf.setViewState({
-		type: VIDEO_VIEW_TYPE,
-		active: false,
-		state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay },
-	});
+	try {
+		await leaf.setViewState({
+			type: VIDEO_VIEW_TYPE,
+			active: false,
+			state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay },
+		});
+	} catch (error) {
+		leaf.detach();
+		throw error;
+	}
 	return leaf;
 }

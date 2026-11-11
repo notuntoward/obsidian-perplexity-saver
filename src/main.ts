@@ -47,6 +47,7 @@ import {
 	showTranscriptPanel,
 	TRANSCRIPT_LOCATIONS,
 	visibleTranscriptLeaves,
+	loadTranscriptLines,
 	transcriptSearchCommands,
 	type TranscriptPanelLocation,
 	type TranscriptPlacement,
@@ -68,10 +69,12 @@ import {
 	type NoteInsertionTarget,
 } from "./video/noteInsertion";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
-import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
-import { nextPart, type NotePart } from "./video/switchParts";
+import { parseYouTubeUrl, watchUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
+import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
+import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
+import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
-import { buildNavigationModel, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
+import { buildNavigationModel, closePopoutWindowIfEmpty, getGroupForLeaf, isInCollapsedSidebar, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { getCommandHotkeyLabel } from "commons/modal";
@@ -169,6 +172,8 @@ export interface PerplexitySaverSettings {
 	videoToolbarCaptureAction: VideoToolbarCaptureAction;
 	showYoutubeCaptions: boolean;
 	videoNoteFocusIndicator: boolean;
+	preferredVideoWorkspace: PreferredVideoWorkspace;
+	videoPlayback: Record<string, VideoPlaybackPosition>;
 	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
 	transcriptPanelLocation: TranscriptPanelLocation;
 	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
@@ -206,6 +211,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	videoToolbarCaptureAction: "insert",
 	showYoutubeCaptions: false,
 	videoNoteFocusIndicator: true,
+	preferredVideoWorkspace: "video",
+	videoPlayback: {},
 	transcriptPanelLocation: "sidebar",
 	followTranscript: true,
 	transcriptSearchBehavior: "obsidian",
@@ -259,12 +266,18 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.viewTracker.rename(oldPath, file.path);
+				const playback = this.settings.videoPlayback[oldPath];
+				if (playback) {
+					this.settings.videoPlayback[file.path] = playback;
+					delete this.settings.videoPlayback[oldPath];
+				}
 				this.persistViews();
 			})
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				this.viewTracker.remove(file.path);
+				delete this.settings.videoPlayback[file.path];
 				this.persistViews();
 			})
 		);
@@ -307,6 +320,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				})
 		);
 		this.registerTranscriptCommands();
+		this.registerVideoWorkspaceCommands();
 
 		this.registerView(
 			VIDEO_VIEW_TYPE,
@@ -321,7 +335,18 @@ export default class PerplexitySaverPlugin extends Plugin {
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
-					onPlayback: (videoId, filePath, seconds) => this.showPlayback(videoId, filePath, seconds),
+					onPlayback: (videoId, filePath, seconds) => {
+						if (filePath) this.stopBackgroundPlayback(filePath);
+						this.showPlayback(videoId, filePath, seconds);
+					},
+					rememberPlayback: (videoId, filePath, seconds) => {
+						if (!filePath || !Number.isFinite(seconds) || seconds < 0) return;
+						this.settings.videoPlayback[filePath] = { videoId, seconds };
+						void this.saveData(this.settings).catch((error: unknown) => {
+							console.error("Perplexity Saver: could not save video position", error);
+							new Notice("Could not save video playback position.");
+						});
+					},
 					focusNote: (target) => this.focusNoteInsertionTarget(target),
 				})
 		);
@@ -339,23 +364,21 @@ export default class PerplexitySaverPlugin extends Plugin {
 			},
 		});
 		// Keyboard switching between a literature note, its video and its transcript panel, across windows and sidebars.
-		const switchCommands: [id: string, name: string, target: (current: NotePart | null) => NotePart][] = [
-			["go-to-literature-note", "Go to literature note (from its video or transcript)", () => "note"],
-			["go-to-video-viewer", "Go to YouTube video viewer", () => "video"],
-			["go-to-transcript-panel", "Go to YouTube transcript panel", () => "transcript"],
-			["cycle-note-video-transcript", "Cycle literature note, video and transcript", (c) => nextPart(c, 1)],
-			["cycle-note-video-transcript-back", "Cycle literature note, video and transcript backwards", (c) => nextPart(c, -1)],
+		const switchCommands: [id: string, name: string, target: NotePart][] = [
+			["go-to-literature-note", "Go to literature note (from its video or transcript)", "note"],
+			["go-to-video-viewer", "Go to YouTube video viewer", "video"],
+			["go-to-transcript-panel", "Go to YouTube transcript panel", "transcript"],
 		];
 		for (const [id, name, target] of switchCommands) {
 			this.addCommand({
 				id,
 				name,
 				checkCallback: (checking: boolean) => {
-					const { part, file } = this.activePart();
+					const { file } = this.activePart();
 					if (!file) return false;
 					if (!checking) {
 						const leaves = this.partLeaves(file);
-						void this.goToPart(target(part), file, leaves).catch((error: unknown) => {
+						void this.goToPart(target, file, leaves).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not navigate note parts", error);
 							new Notice("Could not navigate literature note, video or transcript.");
 						});
@@ -364,46 +387,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				},
 			});
 		}
-		// Every viewer control as a command, so each can get a hotkey (Settings → Hotkeys).
-		const viewerCommands: [id: string, name: string, run: (view: VideoView) => unknown][] = [
-			["video-viewer-play-pause", "Video viewer: play or pause", (v) => v.togglePlay()],
-			["video-viewer-back-10", "Video viewer: back 10 seconds", (v) => v.skip(-10)],
-			["video-viewer-forward-10", "Video viewer: forward 10 seconds", (v) => v.skip(10)],
-			["video-viewer-back-5", "Video viewer: back 5 seconds", (v) => v.skip(-5)],
-			["video-viewer-forward-5", "Video viewer: forward 5 seconds", (v) => v.skip(5)],
-			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
-			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
-			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
-			["video-viewer-next-note-timestamp", "Video viewer: next timestamp from the note", (v) => v.jumpToMark(1)],
-			["video-viewer-previous-note-timestamp", "Video viewer: previous timestamp from the note", (v) => v.jumpToMark(-1)],
-			["video-viewer-zoom-in", "Video viewer: zoom in", (v) => v.zoomBy(1.25)],
-			["video-viewer-zoom-out", "Video viewer: zoom out", (v) => v.zoomBy(1 / 1.25)],
-			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
-			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
-			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
-			["video-viewer-insert-screenshot", "Video viewer: insert screenshot (drag an area)", (v) => this.insertScreenshotIntoNote(v, false)],
-			["video-viewer-insert-screenshot-whole", "Video viewer: insert screenshot of the whole picture", (v) => this.insertScreenshotIntoNote(v, true)],
-			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
-			["video-viewer-insert-timestamp", "Video viewer: insert timestamp bullet into literature note", (v) => this.insertTimestampIntoNote(v)],
-			["video-viewer-toggle-transcript", "Toggle YouTube transcript panel (legacy viewer shortcut)", (v) => v.toggleTranscript()],
-			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
-		];
-		for (const [id, name, run] of viewerCommands) {
-			const register = id === "video-viewer-toggle-transcript" ? this.addBoundAlias.bind(this) : this.addCommand.bind(this);
-			register({
-				id,
-				name,
-				checkCallback: (checking: boolean) => {
-					const view = this.videoViewForActivePart();
-					if (!view?.getVideoId() || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
-					if (!checking) void Promise.resolve().then(() => run(view)).catch((error: unknown) => {
-						console.error(`Perplexity Saver: could not run ${id}`, error);
-						new Notice(`Could not run "${name}".`);
-					});
-					return true;
-				},
-			});
-		}
+		this.registerVideoCommands();
 		registerTimestampLinks(
 			this,
 			() => this.settings.timestampClickAction,
@@ -446,8 +430,266 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
+	private registerVideoCommands(): void {
+		const audioCommands: [id: string, name: string, run: (view: NotePlayback) => unknown][] = [
+			["video-viewer-play-pause", "Video viewer: play or pause", (v) => v.togglePlay()],
+			["video-viewer-back-10", "Video viewer: back 10 seconds", (v) => v.skip(-10)],
+			["video-viewer-forward-10", "Video viewer: forward 10 seconds", (v) => v.skip(10)],
+			["video-viewer-back-5", "Video viewer: back 5 seconds", (v) => v.skip(-5)],
+			["video-viewer-forward-5", "Video viewer: forward 5 seconds", (v) => v.skip(5)],
+			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
+			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
+			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
+			["video-viewer-next-note-timestamp", "Video viewer: next timestamp from the note", (v) => v.jumpToMark(1)],
+			["video-viewer-previous-note-timestamp", "Video viewer: previous timestamp from the note", (v) => v.jumpToMark(-1)],
+			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
+			["video-viewer-insert-timestamp", "Video viewer: insert timestamp bullet into literature note", (v) => this.insertTimestampIntoNote(v)],
+			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
+		];
+		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
+		const viewerCommands: [id: string, name: string, run: (view: VideoView) => unknown][] = [
+			...audioCommands,
+			["video-viewer-zoom-in", "Video viewer: zoom in", (v) => v.zoomBy(1.25)],
+			["video-viewer-zoom-out", "Video viewer: zoom out", (v) => v.zoomBy(1 / 1.25)],
+			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
+			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
+			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
+			["video-viewer-insert-screenshot", "Video viewer: insert screenshot (drag an area)", (v) => this.insertScreenshotIntoNote(v, false)],
+			["video-viewer-insert-screenshot-whole", "Video viewer: insert screenshot of the whole picture", (v) => this.insertScreenshotIntoNote(v, true)],
+			["video-viewer-toggle-transcript", "Toggle YouTube transcript panel (legacy viewer shortcut)", (v) => v.toggleTranscript()],
+		];
+		for (const [id, name, run] of viewerCommands) {
+			const register = id === "video-viewer-toggle-transcript" ? this.addBoundAlias.bind(this) : this.addCommand.bind(this);
+			register({
+				id,
+				name,
+				checkCallback: (checking: boolean) => {
+					const view = this.videoViewForActivePart();
+					const file = this.activePart().file;
+					const background = backgroundCommands.get(id);
+					const transcript = file && !view ? this.visiblePartLeaves(file).transcript : null;
+					if ((!view?.getVideoId() && !(background && transcript)) || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
+					if (!checking) void Promise.resolve().then(async () => {
+						if (view) return run(view);
+						if (file && background) {
+							const playback = await this.backgroundPlaybackFor(file);
+							if (playback) return background(playback);
+						}
+					}).catch((error: unknown) => {
+						console.error(`Perplexity Saver: could not run ${id}`, error);
+						new Notice(`Could not run "${name}".`);
+					});
+					return true;
+				},
+			});
+		}
+	}
+
 	private addBoundAlias(command: import("obsidian").Command): void {
 		if (getCommandHotkeyLabel(this.app, `${this.manifest.id}:${command.id}`)) this.addCommand(command);
+	}
+
+	private registerVideoWorkspaceCommands(): void {
+		const choose = (file: TFile): void => {
+			void this.chooseVideoWorkspace(file).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not open video workspace picker", error);
+				new Notice("Could not open video workspace picker.");
+			});
+		};
+		this.addCommand({
+			id: "video-workspace",
+			name: "Video workspace...",
+			checkCallback: (checking) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				if (!checking) choose(file);
+				return true;
+			},
+		});
+		for (const direction of [1, -1] as const) {
+			this.addCommand({
+				id: direction === 1 ? "cycle-note-video-transcript" : "cycle-note-video-transcript-back",
+				name: direction === 1 ? "Cycle visible literature-note panes" : "Cycle visible literature-note panes backwards",
+				checkCallback: (checking) => {
+					const { file, part } = this.activePart();
+					if (!file || file.extension !== "md") return false;
+					if (!checking) void this.cycleVisibleParts(file, part, direction).catch((error: unknown) => {
+						console.error("Perplexity Saver: could not cycle visible note panes", error);
+						new Notice("Could not cycle visible literature-note panes.");
+					});
+					return true;
+				},
+			});
+		}
+		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
+			if (file instanceof TFile && file.extension === "md") {
+				menu.addItem((item) => item.setTitle("Video workspace...").setIcon("youtube").onClick(() => choose(file)));
+			}
+		}));
+	}
+
+	private isPartVisible(leaf: WorkspaceLeaf | null): leaf is WorkspaceLeaf {
+		return !!leaf && leaf.view.containerEl.isShown() && !isInCollapsedSidebar(this.app, leaf);
+	}
+
+	private visiblePartLeaves(file: TFile): Record<NotePart, WorkspaceLeaf | null> {
+		const leaves: Record<NotePart, WorkspaceLeaf | null> = { note: null, video: null, transcript: null };
+		// Prefer a visible duplicate over a hidden tab for the same file.
+		for (const part of PART_ORDER) {
+			const type = part === "note" ? "markdown" : part === "video" ? VIDEO_VIEW_TYPE : TRANSCRIPT_VIEW_TYPE;
+			leaves[part] = this.app.workspace.getLeavesOfType(type).find((leaf) =>
+				this.partFileKey(leaf) === file.path && this.isPartVisible(leaf)) ?? null;
+		}
+		return leaves;
+	}
+
+	private async cycleVisibleParts(file: TFile, current: NotePart | null, direction: 1 | -1): Promise<void> {
+		const leaves = this.visiblePartLeaves(file);
+		const part = nextPart(current, direction, PART_ORDER.filter((key) => leaves[key]));
+		const leaf = part ? leaves[part] : null;
+		if (leaf) await this.activatePartLeaf(leaf, leaves.video);
+	}
+
+	private async chooseVideoWorkspace(file: TFile): Promise<void> {
+		const parts = this.partLeaves(file);
+		if (!parts.video && !parts.transcript && !await noteVideoId(this.app, file)) {
+			new Notice(`No YouTube link in ${file.basename}.`);
+			return;
+		}
+		const visible = this.visiblePartLeaves(file);
+		const current = visible.video ? (visible.transcript ? "both" : "video") : visible.transcript ? "transcript" : "note";
+		new VideoWorkspaceModal(this.app, current, this.settings.preferredVideoWorkspace, (layout) => {
+			void this.applyVideoWorkspace(file, layout).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not apply video workspace", error);
+				new Notice("Could not apply video workspace.");
+			});
+		}).open();
+	}
+
+	private changingVideoWorkspace = false;
+
+	private async applyVideoWorkspace(file: TFile, layout: VideoWorkspaceLayout): Promise<void> {
+		if (this.changingVideoWorkspace) {
+			new Notice("A video workspace change is already in progress.");
+			return;
+		}
+		this.changingVideoWorkspace = true;
+		try {
+			const wantsVideo = layout === "video" || layout === "both";
+			const wantsTranscript = layout === "transcript" || layout === "both";
+			const leaves = this.partLeaves(file);
+			// Validate missing content before closing any existing panes.
+			if (wantsVideo && !leaves.video && !await noteVideoId(this.app, file)) {
+				new Notice(`No YouTube link in ${file.basename}.`);
+				return;
+			}
+			if (wantsTranscript && !leaves.transcript && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
+				new Notice(`No timestamped transcript under a "${this.settings.transcriptHeading}" heading in ${file.basename}.`);
+				return;
+			}
+			if (!leaves.note) {
+				await openFileInLeaf(this.app, file, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
+				leaves.note = this.partLeaves(file).note;
+			}
+			if (!leaves.note) throw new Error("Could not open the literature note.");
+			if (wantsVideo) {
+				if (!leaves.video) leaves.video = await this.openViewerForNote(file, false, true);
+				if (!leaves.video) throw new Error("Could not open the video player.");
+				await this.app.workspace.revealLeaf(leaves.video);
+			}
+			if (wantsTranscript) {
+				if (!leaves.transcript) {
+					await this.showTranscript(file, wantsVideo ? leaves.video : null, undefined, true);
+					leaves.transcript = this.partLeaves(file).transcript;
+				}
+				if (!leaves.transcript) throw new Error("Could not open the transcript.");
+				if (leaves.transcript.view instanceof TranscriptView) leaves.transcript.view.pinToNote();
+				await this.app.workspace.revealLeaf(leaves.transcript);
+			}
+			await this.separateWorkspaceTabs(leaves, layout);
+			const videos = this.app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
+			const playingView = videos.find((leaf) => leaf.view instanceof VideoView && leaf.view.isPlaying())?.view;
+			const audioView = !wantsVideo && wantsTranscript ? playingView ?? leaves.video?.view : null;
+			const audioId = audioView instanceof VideoView ? audioView.getVideoId() : null;
+			const audio = audioView instanceof VideoView && audioId ? {
+				videoId: audioId,
+				seconds: audioView.getPlaybackSeconds(),
+				autoplay: audioView.isPlaying(),
+				playbackRate: audioView.getPlaybackRate(),
+			} : null;
+			if (audioView instanceof VideoView && audioView.isPlaying()) audioView.pausePlayback();
+			for (const leaf of videos) this.rememberVideoPlayback(leaf);
+			if (layout !== "note") this.settings.preferredVideoWorkspace = layout;
+			await this.saveData(this.settings);
+			const closedWindows = new Set<Window>();
+			const rememberWindow = (leaf: WorkspaceLeaf): void => {
+				const win = getWindowForLeaf(leaf);
+				if (win) closedWindows.add(win);
+			};
+			if (!wantsTranscript) {
+				this.stopBackgroundPlayback(file.path);
+				const panels = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
+				const visible = new Set(visibleTranscriptLeaves(this.app, null, file.path));
+				panels.forEach(rememberWindow);
+				hideTranscriptPanels(this.app, null, file.path);
+				for (const leaf of panels) if (!visible.has(leaf)) leaf.detach();
+			}
+			if (!wantsVideo) for (const leaf of videos) {
+				rememberWindow(leaf);
+				leaf.detach();
+			}
+			if (audio) await this.backgroundPlaybackFor(file, audio);
+			// Layout changes leave the user in the note, ready to take notes.
+			await this.activatePartLeaf(leaves.note, wantsVideo ? leaves.video : null);
+			for (const win of closedWindows) closePopoutWindowIfEmpty(this.app, win);
+		} finally {
+			this.changingVideoWorkspace = false;
+		}
+	}
+
+	private async separateWorkspaceTabs(leaves: Record<NotePart, WorkspaceLeaf | null>, layout: VideoWorkspaceLayout): Promise<void> {
+		const model = buildNavigationModel(this.app, leaves.note);
+		const retained: WorkspaceLeaf[] = leaves.note ? [leaves.note] : [];
+		for (const part of ["video", "transcript"] as const) {
+			if (layout !== part && layout !== "both") continue;
+			const leaf = leaves[part];
+			if (!leaf) continue;
+			const group = getGroupForLeaf(model, leaf);
+			if (group && retained.some((other) => getGroupForLeaf(model, other) === group)) {
+				const anchor = part === "transcript" && leaves.video && layout === "both" ? leaves.video : leaves.note;
+				if (!anchor) throw new Error("Cannot split workspace panes without a note.");
+				const direction = part === "transcript" && (this.transcriptLocations.get(this.partFileKey(leaf) ?? "") ??
+					this.settings.transcriptPanelLocation) === "viewer" ? "horizontal" : "vertical";
+				const replacement = this.app.workspace.createLeafBySplit(anchor, direction);
+				const view = leaf.view;
+				const state = view instanceof VideoView
+					? { ...view.getState(), time: view.getPlaybackSeconds(), autoplay: view.isPlaying() }
+					: view.getState();
+				try {
+					await replacement.setViewState({ type: view.getViewType(), active: false, state });
+					if (replacement.view instanceof TranscriptView && view instanceof TranscriptView) replacement.view.copySessionFrom(view);
+					await this.app.workspace.revealLeaf(replacement);
+				} catch (error) {
+					replacement.detach();
+					throw error;
+				}
+				leaf.detach();
+				leaves[part] = replacement;
+			}
+			const kept = leaves[part];
+			if (kept) retained.push(kept);
+		}
+	}
+
+	private rememberVideoPlayback(leaf: WorkspaceLeaf): void {
+		const view = leaf.view;
+		if (!(view instanceof VideoView)) return;
+		const file = view.getFilePath();
+		const videoId = view.getVideoId();
+		const seconds = view.getPlaybackSeconds();
+		if (file && videoId && Number.isFinite(seconds) && seconds >= 0) {
+			this.settings.videoPlayback[file] = { videoId, seconds };
+		}
 	}
 
 	private registerTranscriptCommands(): void {
@@ -509,6 +751,14 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (leaf.view instanceof TranscriptView) leaf.view.stopBackgroundPlayback();
+		}
+		for (const leaf of this.app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE)) this.rememberVideoPlayback(leaf);
+		void this.saveData(this.settings).catch((error: unknown) => {
+			console.error("Perplexity Saver: could not save video positions on unload", error);
+			new Notice("Could not save video playback positions.");
+		});
 		if (this.litNoteServer) {
 			stopLitNoteServer(this.litNoteServer);
 			this.litNoteServer = null;
@@ -551,6 +801,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 			new Notice("No YouTube link for this transcript.");
 			return;
 		}
+		const file = this.app.vault.getFileByPath(filePath);
+		if (file && !this.partLeaves(file).video && this.visiblePartLeaves(file).transcript) {
+			const background = await this.backgroundPlaybackFor(file, { videoId, seconds });
+			if (background) {
+				background.seekTo(seconds);
+				if (play) background.play();
+			}
+			return;
+		}
 		await openVideoViewer(this.app, { videoId, seconds, sourcePath: filePath, autoplay: play }, this.settings.videoViewerLocation);
 	}
 
@@ -579,6 +838,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	private async openTimestamp(request: TimestampRequest): Promise<void> {
+		const filePath = this.sourcePathFor(request.target);
+		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+		if (file && !this.partLeaves(file).video && this.visiblePartLeaves(file).transcript) {
+			await this.playTranscriptAt(file.path, watchUrl(request.videoId, request.seconds), request.seconds, true);
+			return;
+		}
 		await openVideoViewer(
 			this.app,
 			{ videoId: request.videoId, seconds: request.seconds, sourcePath: this.sourcePathFor(request.target), autoplay: true },
@@ -603,21 +868,21 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return { part: null, file: ws.getActiveFile() };
 	}
 
+	private partFileKey(leaf: WorkspaceLeaf): string | null {
+		const view = leaf.view;
+		return view instanceof VideoView || view instanceof TranscriptView ? view.getFilePath() : getLeafFileKey(leaf);
+	}
+
 	/** The open note, video viewer and transcript panel for `file` (in any window or sidebar). */
 	private partLeaves(file: TFile): Record<NotePart, WorkspaceLeaf | null> {
 		const ws = this.app.workspace;
-		const fileOf = (leaf: WorkspaceLeaf): unknown => {
-			const view = leaf.view;
-			if (view instanceof VideoView || view instanceof TranscriptView) return view.getFilePath();
-			return getLeafFileKey(leaf);
-		};
 		const note = findLeafForFile(this.app, file);
 		const noteWin = note ? getWindowForLeaf(note) : null;
-		const videos = ws.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => fileOf(leaf) === file.path);
+		const videos = ws.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
 		const activeWin = getWindowForLeaf(getActiveLeafInFocusedWindow(this.app, { includeSidebars: true }) ?? note);
 		const video = videos.find((leaf) => getWindowForLeaf(leaf) === activeWin)
 			?? videos.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? videos[0] ?? null;
-		const transcripts = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => fileOf(leaf) === file.path);
+		const transcripts = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
 		const transcript = transcripts.find((leaf) => getWindowForLeaf(leaf) === activeWin) ?? transcripts[0] ?? null;
 		return { note, video, transcript };
 	}
@@ -631,6 +896,58 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 		const fallback = getVideoLeaf(this.app)?.view;
 		return fallback instanceof VideoView ? fallback : null;
+	}
+
+	private async backgroundPlaybackFor(file: TFile, request?: { videoId: string; seconds: number; autoplay?: boolean; playbackRate?: number }): Promise<BackgroundPlayback | null> {
+		const leaf = this.visiblePartLeaves(file).transcript;
+		if (!(leaf?.view instanceof TranscriptView)) {
+			new Notice("Open the transcript before playing audio in the background.");
+			return null;
+		}
+		const transcript = leaf.view;
+		const videoId = request?.videoId ?? transcript.getBackgroundPlayback()?.getVideoId() ?? await noteVideoId(this.app, file);
+		if (!videoId) {
+			new Notice(`No YouTube link in ${file.basename}.`);
+			return null;
+		}
+		// Metadata reads may finish after a layout change or another command.
+		if (!this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).includes(leaf) ||
+			transcript.getFilePath() !== file.path || !this.isPartVisible(leaf)) {
+			new Notice("The transcript workspace changed before playback could start.");
+			return null;
+		}
+		if (this.partLeaves(file).video) {
+			new Notice("A video pane is open; use its playback controls.");
+			return null;
+		}
+		const existing = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
+			.map((panel) => panel.view instanceof TranscriptView ? panel.view.getBackgroundPlayback() : null)
+			.find((playback) => playback?.getFilePath() === file.path);
+		if (existing?.getVideoId() === videoId) return existing;
+		if (existing) this.stopBackgroundPlayback(file.path);
+		const saved = this.settings.videoPlayback[file.path];
+		const playback = new BackgroundPlayback(this.app, transcript.containerEl, file.path, videoId,
+			request?.seconds ?? (saved?.videoId === videoId ? saved.seconds : 0), {
+				getTranscriptHeading: () => this.settings.transcriptHeading,
+				getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
+				onPlayback: (id, path, seconds) => this.showPlayback(id, path, seconds),
+				remember: (id, path, seconds) => {
+					this.settings.videoPlayback[path] = { videoId: id, seconds };
+					void this.saveData(this.settings).catch((error: unknown) => {
+						console.error("Perplexity Saver: could not save background playback position", error);
+						new Notice("Could not save video playback position.");
+					});
+				},
+				focusNote: (target) => this.focusNoteInsertionTarget(target),
+			}, request);
+		transcript.setBackgroundPlayback(playback);
+		return playback;
+	}
+
+	private stopBackgroundPlayback(filePath: string): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === filePath) leaf.view.stopBackgroundPlayback();
+		}
 	}
 
 	/** Reveal (opening it if needed) and focus one part, raising its window and giving it keyboard focus. */
@@ -651,7 +968,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.activatePartLeaf(leaf, leaves.video);
 	}
 
-	private createNoteInsertionTarget(view: VideoView): NoteInsertionTarget | null {
+	private createNoteInsertionTarget(view: Pick<NotePlayback, "getFilePath">): NoteInsertionTarget | null {
 		const filePath = view.getFilePath();
 		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
 		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true });
@@ -684,7 +1001,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		};
 	}
 
-	private async insertTimestampIntoNote(view: VideoView): Promise<void> {
+	private async insertTimestampIntoNote(view: NotePlayback): Promise<void> {
 		const target = this.createNoteInsertionTarget(view);
 		if (!target) return;
 		try {
@@ -730,7 +1047,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					const video = viewer?.view;
 					const videoId = video instanceof VideoView ? video.getVideoId() : null;
 					const sameVideo = video instanceof VideoView && videoId && view.showsVideo(video.getFilePath(), videoId);
-					const seconds = sameVideo ? video.getPlaybackSeconds() : null;
+					const seconds = sameVideo ? video.getPlaybackSeconds() : view.getBackgroundPlayback()?.getPlaybackSeconds() ?? null;
 					if (search) {
 						view.showPlayback(seconds, this.settings.followTranscript);
 						view.focusSearch();
@@ -741,17 +1058,27 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/** Open the viewer on the video a note links to (the first YouTube link in it). */
-	private async openViewerForNote(file: TFile, autoplay = false): Promise<WorkspaceLeaf | null> {
+	private async openViewerForNote(file: TFile, autoplay = false, associatedOnly = false): Promise<WorkspaceLeaf | null> {
 		const videoId = await noteVideoId(this.app, file);
 		if (!videoId) {
 			new Notice(`No YouTube link in ${file.basename}.`);
 			return null;
 		}
-		return openVideoViewer(
+		const saved = this.settings.videoPlayback[file.path];
+		const background = this.partLeaves(file).transcript?.view;
+		const playback = background instanceof TranscriptView ? background.getBackgroundPlayback() : null;
+		const sameVideo = playback?.getVideoId() === videoId;
+		const seconds = sameVideo ? playback.getPlaybackSeconds() : saved?.videoId === videoId ? saved.seconds : 0;
+		const playing = sameVideo ? playback.isPlaying() : autoplay;
+		const rate = sameVideo ? playback.getPlaybackRate() : null;
+		this.stopBackgroundPlayback(file.path);
+		const leaf = await openVideoViewer(
 			this.app,
-			{ videoId, seconds: 0, sourcePath: file.path, autoplay },
+			{ videoId, seconds, sourcePath: file.path, autoplay: playing, associatedOnly },
 			this.settings.videoViewerLocation
 		);
+		if (rate !== null && leaf.view instanceof VideoView) leaf.view.setRate(rate);
+		return leaf;
 	}
 
 	/**
@@ -759,7 +1086,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	 * The sidebar default maps to beside a pop-out viewer; explicit moves can use
 	 * the main sidebar, below or beside without changing the saved default.
 	 */
-	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null, location?: TranscriptPanelLocation): Promise<void> {
+	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null, location?: TranscriptPanelLocation, workspaceOnly = false): Promise<void> {
 		let viewer = preferredViewer ?? getVideoLeaf(this.app);
 		if (!(viewer?.view instanceof VideoView) || viewer.view.getFilePath() !== file.path) viewer = this.partLeaves(file).video;
 		let placement: TranscriptPlacement | null = null;
@@ -767,12 +1094,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 		if (!location && !this.transcriptLocations.has(file.path) && selected === "sidebar" && viewer && this.viewerInPopout(viewer)) {
 			placement = { nextTo: viewer, direction: "vertical" };
 		} else if (selected !== "sidebar") {
-			const nextTo = viewer ?? (await this.openViewerForNote(file, false));
+			const nextTo = viewer ?? (workspaceOnly ? this.partLeaves(file).note : await this.openViewerForNote(file, false));
 			if (!nextTo) return;
 			placement = { nextTo, direction: selected === "viewer" ? "horizontal" : "vertical" };
 		}
 		const replaceLeaf = location ? this.partLeaves(file).transcript : null;
-		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement, replaceLeaf);
+		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement, replaceLeaf, workspaceOnly);
 		if (leaf) {
 			if (location) this.transcriptLocations.set(file.path, location);
 			await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
@@ -900,6 +1227,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings.videoPlayback = { ...this.settings.videoPlayback };
 	}
 
 	async saveSettings(): Promise<void> {
@@ -1889,6 +2217,18 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl).setName("YouTube transcripts").setHeading();
+
+		new Setting(containerEl)
+			.setName("Preferred video workspace")
+			.setDesc("First choice in the workspace picker when media is closed. Choosing a media layout updates this preference; closing media does not.")
+			.addDropdown((dropdown) => {
+				for (const layout of ["video", "transcript", "both"] as const) dropdown.addOption(layout, VIDEO_WORKSPACE_LABELS[layout]);
+				dropdown.setValue(this.plugin.settings.preferredVideoWorkspace).onChange(async (value) => {
+					if (value !== "video" && value !== "transcript" && value !== "both") return;
+					this.plugin.settings.preferredVideoWorkspace = value;
+					await this.plugin.saveSettings();
+				});
+			});
 
 		new Setting(containerEl)
 			.setName("Video note focus indicator")

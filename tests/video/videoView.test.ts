@@ -24,10 +24,27 @@ describe("video timestamp copy", () => {
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => {}, onPlayback: () => {}, focusNote: async () => {},
 		});
+
 		Object.assign(view, { startTime: 27.25 });
 		expect(view.getPlaybackSeconds()).toBe(27.25);
 		Object.assign(view, { player: { info: { currentTime: 55.75, playerState } } });
 		expect(view.getPlaybackSeconds()).toBe(55.75);
+	});
+
+	it("remembers position before destroying a manually closed player", async () => {
+		const rememberPlayback = vi.fn();
+		const destroy = vi.fn();
+		const view = new VideoView({} as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getShowYoutubeCaptions: () => false, getToolbarCaptureAction: () => "insert",
+			insertTimestamp: async () => {}, insertScreenshot: async () => {},
+			isTranscriptShown: () => false, toggleTranscript: async () => {},
+			onPlayback: () => {}, focusNote: async () => {}, rememberPlayback,
+		});
+		Object.assign(view, { videoId: "abc", filePath: "note.md", player: { info: { currentTime: 123.75 }, destroy } });
+		await view.onClose();
+		expect(rememberPlayback).toHaveBeenCalledWith("abc", "note.md", 123.75);
+		expect(rememberPlayback.mock.invocationCallOrder[0]).toBeLessThan(destroy.mock.invocationCallOrder[0]);
 	});
 
 	it("surfaces transcript activation failures from the viewer button/command", async () => {

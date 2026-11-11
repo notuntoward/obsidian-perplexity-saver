@@ -2,6 +2,41 @@ import { expect, test } from "@playwright/test";
 import path from "node:path";
 import { build } from "esbuild";
 
+test("background audio occupies no pane space and cannot intercept note/transcript input", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			body { margin: 0; }
+			.workspace-leaf-content { position: relative; width: 600px; height: 240px; overflow: auto; }
+			textarea { width: 100%; height: 100%; box-sizing: border-box; }
+		</style>
+		<div class="workspace-leaf"><textarea id="note">Note</textarea></div>
+		<div class="workspace-leaf"><div class="workspace-leaf-content" id="transcript">
+			<button id="line">Transcript line</button>
+		</div></div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const before = await page.locator("#transcript").boundingBox();
+	await page.locator("#transcript").evaluate((el) => {
+		const audio = el.ownerDocument.createElement("div");
+		audio.className = "perplexity-saver-background-playback";
+		audio.setAttribute("aria-hidden", "true");
+		const iframe = el.ownerDocument.createElement("iframe");
+		iframe.tabIndex = -1;
+		audio.appendChild(iframe);
+		el.appendChild(audio);
+	});
+	expect(await page.locator("#transcript").boundingBox()).toEqual(before);
+	expect(await page.locator(".workspace-leaf").count()).toBe(2);
+	expect(await page.locator(".perplexity-saver-background-playback").evaluate((el) => {
+		const win = el.ownerDocument.defaultView!;
+		const css = win.getComputedStyle(el);
+		return { pointerEvents: css.pointerEvents, clip: css.clipPath, width: el.clientWidth, height: el.clientHeight };
+	})).toEqual({ pointerEvents: "none", clip: "inset(50%)", width: 1, height: 1 });
+	await page.locator("#note").focus();
+	await page.keyboard.press("Tab");
+	await expect(page.locator("#line")).toBeFocused();
+});
+
 test("compact tabs do not let native window buttons cover the video corner", async ({ page }) => {
 	await page.setContent(`
 		<style>
