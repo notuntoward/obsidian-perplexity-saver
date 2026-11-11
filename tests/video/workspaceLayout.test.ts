@@ -3,17 +3,17 @@ import { workspaceChoices, VideoWorkspaceModal } from "../../src/video/workspace
 import type { App } from "obsidian";
 
 describe("video workspace choices", () => {
-	it("offers the preferred layout first when only the note is visible", () => {
+	it("offers the saved default first when only the note is visible", () => {
 		const choices = workspaceChoices("note", "transcript");
 		expect(choices.map((choice) => choice.layout)).toEqual(["transcript", "video", "both"]);
-		expect(choices[0].title).toBe("Open preferred: Note + transcript");
+		expect(choices[0].title).toBe("Note + transcript");
 	});
 
 	it("offers all layouts, current first, when media is visible", () => {
 		const choices = workspaceChoices("both", "video");
 		expect(choices).toHaveLength(4);
-		expect(choices[0]).toMatchObject({ layout: "both", badge: "Current" });
-		expect(choices.find((choice) => choice.layout === "video")?.badge).toBe("Preferred");
+		expect(choices[0].layout).toBe("both");
+		expect(choices.find((choice) => choice.layout === "video")?.title).toBe("Note + video");
 		expect(choices.find((choice) => choice.layout === "note")?.title).toBe("Note only");
 	});
 

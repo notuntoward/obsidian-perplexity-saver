@@ -619,7 +619,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 			} : null;
 			if (audioView instanceof VideoView && audioView.isPlaying()) audioView.pausePlayback();
 			for (const leaf of videos) this.rememberVideoPlayback(leaf);
-			if (layout !== "note") this.settings.preferredVideoWorkspace = layout;
 			await this.saveData(this.settings);
 			const closedWindows = new Set<Window>();
 			const rememberWindow = (leaf: WorkspaceLeaf): void => {
@@ -1747,6 +1746,27 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				heading: "YouTube transcripts",
 				items: [
 					{
+						name: "Video workspace default",
+						desc: "The layout the video workspace command opens when no video or transcript pane is visible. Choosing a layout in the picker does not change this default.",
+						control: {
+							type: "dropdown",
+							key: "preferredVideoWorkspace",
+							options: {
+								video: VIDEO_WORKSPACE_LABELS.video,
+								transcript: VIDEO_WORKSPACE_LABELS.transcript,
+								both: VIDEO_WORKSPACE_LABELS.both,
+							},
+						},
+					},
+					{
+						name: "Video note focus indicator",
+						desc: "Mark the focused video or transcript pane, or its literature note while the player or transcript is visible. Unrelated notes are not marked.",
+						control: {
+							type: "toggle",
+							key: "videoNoteFocusIndicator",
+						},
+					},
+					{
 						name: "Collapse transcript on open",
 						desc: "Start each note with its transcript heading folded, in editing and reading view. Click the heading arrow to expand it; it stays open while you work.",
 						control: {
@@ -2219,8 +2239,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("YouTube transcripts").setHeading();
 
 		new Setting(containerEl)
-			.setName("Preferred video workspace")
-			.setDesc("First choice in the workspace picker when media is closed. Choosing a media layout updates this preference; closing media does not.")
+			.setName("Video workspace default")
+			.setDesc("The layout the video workspace command opens when no video or transcript pane is visible. Choosing a layout in the picker does not change this default.")
 			.addDropdown((dropdown) => {
 				for (const layout of ["video", "transcript", "both"] as const) dropdown.addOption(layout, VIDEO_WORKSPACE_LABELS[layout]);
 				dropdown.setValue(this.plugin.settings.preferredVideoWorkspace).onChange(async (value) => {

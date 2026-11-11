@@ -120,12 +120,34 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			authorFormatStyle: "last-first",
 			authorDropVon: false,
 			downloadYoutubeTranscripts: true,
+			preferredVideoWorkspace: "video",
+			videoNoteFocusIndicator: true,
 		},
 		zoteroClient: {
 			clearCache: vi.fn(),
 		},
 		litNoteServerSettings: null as any,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
+	});
+
+	it("exposes the video workspace default and focus indicator settings", async () => {
+		const plugin = createMockPlugin();
+		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Video workspace default",
+			control: expect.objectContaining({ type: "dropdown", key: "preferredVideoWorkspace" }),
+		}));
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Video note focus indicator",
+			control: { type: "toggle", key: "videoNoteFocusIndicator" },
+		}));
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("preferredVideoWorkspace", "both");
+		expect((plugin.settings as any).preferredVideoWorkspace).toBe("both");
+		expect((plugin.settings as any).videoNoteFocusIndicator).toBe(true);
+		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
 	it("getSettingDefinitions returns all expected top-level settings and groups", () => {

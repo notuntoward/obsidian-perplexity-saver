@@ -18,19 +18,13 @@ export const VIDEO_WORKSPACE_LABELS: Record<VideoWorkspaceLayout, string> = {
 interface WorkspaceChoice {
 	layout: VideoWorkspaceLayout;
 	title: string;
-	badge?: string;
 }
 
 export function workspaceChoices(current: VideoWorkspaceLayout, preferred: PreferredVideoWorkspace): WorkspaceChoice[] {
 	const first = current === "note" ? preferred : current;
 	const layouts: VideoWorkspaceLayout[] = [first, ...(["note", "video", "transcript", "both"] as const)
 		.filter((layout) => layout !== first && (current !== "note" || layout !== "note"))];
-	return layouts.map((layout) => ({
-		layout,
-		title: current === "note" && layout === preferred
-			? `Open preferred: ${VIDEO_WORKSPACE_LABELS[layout]}` : VIDEO_WORKSPACE_LABELS[layout],
-		badge: layout === current ? "Current" : layout === preferred ? "Preferred" : undefined,
-	}));
+	return layouts.map((layout) => ({ layout, title: VIDEO_WORKSPACE_LABELS[layout] }));
 }
 
 export class VideoWorkspaceModal extends ItemSuggestModal<WorkspaceChoice> {
@@ -39,7 +33,6 @@ export class VideoWorkspaceModal extends ItemSuggestModal<WorkspaceChoice> {
 		super(app, choices, (choice) => choose(choice.layout), {
 			placeholder: "Video workspace...",
 			getTitle: (choice) => choice.title,
-			getBadge: (choice) => choice.badge,
 			sort: (a, b) => choices.indexOf(a.item) - choices.indexOf(b.item),
 		});
 	}

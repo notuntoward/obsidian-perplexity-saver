@@ -402,7 +402,7 @@ describe("transcript activation commands", () => {
 		expect(h.viewerLeaf.detach).toHaveBeenCalledTimes(layout === "note" || layout === "transcript" ? 1 : 0);
 		expect(h.transcriptLeaf.detach).toHaveBeenCalledTimes(layout === "note" || layout === "video" ? 1 : 0);
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenCalled();
-		expect(h.plugin.settings.preferredVideoWorkspace).toBe(layout === "note" ? "video" : layout);
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
 		expect(h.plugin.settings.videoPlayback[h.file.path]).toMatchObject({ videoId: "abc", seconds: 25.75 });
 	});
 
@@ -432,7 +432,7 @@ describe("transcript activation commands", () => {
 		expect(h.transcriptLeaf.setViewState).toHaveBeenCalledWith(expect.objectContaining({ type: "perplexity-saver-transcript" }));
 		if (location !== "sidebar") expect(split).toHaveBeenCalledWith(note, location === "viewer" ? "horizontal" : "vertical");
 		else expect(h.app.workspace.getRightLeaf).toHaveBeenCalledWith(true);
-		expect(h.plugin.settings.preferredVideoWorkspace).toBe("transcript");
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
 	});
 
 	it("opens a missing player at its saved position without repurposing an unrelated viewer", async () => {
@@ -465,7 +465,7 @@ describe("transcript activation commands", () => {
 		expect(h.app.workspace.getRightLeaf).toHaveBeenCalledWith(true);
 		expect(h.transcriptLeaf.setViewState).toHaveBeenCalledOnce();
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(note, { focus: true });
-		expect(h.plugin.settings.preferredVideoWorkspace).toBe("both");
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
 	});
 
 	it("cleans up a failed new player without closing an existing transcript or changing preference", async () => {
