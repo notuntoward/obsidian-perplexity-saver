@@ -57,6 +57,9 @@ export default [
       'obsidianmd/prefer-active-doc': 'error',
       'obsidianmd/settings-tab/no-manual-html-headings': 'error',
       'obsidianmd/settings-tab/no-problematic-settings-headings': 'error',
+      'obsidianmd/settings-tab/no-deprecated-display': 'error',
+      'obsidianmd/settings-tab/prefer-setting-definitions': 'error',
+      'obsidianmd/settings-tab/prefer-update-over-display': 'error',
       'obsidianmd/ui/sentence-case': 'error',
       'obsidianmd/vault/iterate': 'error'
     }
