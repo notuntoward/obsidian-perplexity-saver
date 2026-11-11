@@ -8,19 +8,14 @@ describe("nextPart", () => {
 		expect(nextPart("transcript")).toBe("note");
 	});
 
-	it("cycles backwards", () => {
-		expect(nextPart("note", -1)).toBe("transcript");
-		expect(nextPart("video", -1)).toBe("note");
-	});
-
-	it.each([1, -1] as const)("skips absent panes in direction %s", (direction) => {
-		expect(nextPart("note", direction, ["note", "video"])).toBe("video");
-		expect(nextPart("video", direction, ["note", "video"])).toBe("note");
-		expect(nextPart("note", direction, ["note", "transcript"])).toBe("transcript");
-		expect(nextPart("transcript", direction, ["note", "transcript"])).toBe("note");
-		expect(nextPart("note", direction, ["note"])).toBe("note");
-		expect(nextPart("video", direction, ["video"])).toBe("video");
-		expect(nextPart(null, direction, [])).toBeNull();
+	it("skips absent panes", () => {
+		expect(nextPart("note", ["note", "video"])).toBe("video");
+		expect(nextPart("video", ["note", "video"])).toBe("note");
+		expect(nextPart("note", ["note", "transcript"])).toBe("transcript");
+		expect(nextPart("transcript", ["note", "transcript"])).toBe("note");
+		expect(nextPart("note", ["note"])).toBe("note");
+		expect(nextPart("video", ["video"])).toBe("video");
+		expect(nextPart(null, [])).toBeNull();
 	});
 
 	it("starts at the note from elsewhere", () => {

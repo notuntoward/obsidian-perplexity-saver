@@ -7,7 +7,7 @@ import { insertPlaybackTimestamp, type NoteInsertionTarget } from "./noteInserti
 
 export type NotePlayback = Pick<VideoView,
 	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "isPlaying" | "togglePlay" | "pausePlayback" |
-	"skip" | "stepRate" | "setRate" | "jumpToMark" | "copyTimestampLink" | "openInBrowser" | "insertTimestampBullet">;
+	"stepRate" | "setRate" | "jumpToMark" | "copyTimestampLink" | "openInBrowser" | "insertTimestampBullet">;
 
 interface BackgroundPlaybackHost {
 	getTranscriptHeading(): string;
@@ -52,7 +52,6 @@ export class BackgroundPlayback implements NotePlayback {
 	pausePlayback(): void { this.player.pause(); }
 	seekTo(seconds: number): void { this.player.seekTo(seconds); }
 	play(): void { this.player.play(); }
-	skip(delta: number): void { this.player.seekTo(this.getPlaybackSeconds() + delta); }
 	setRate(rate: number): void {
 		this.rate = rate;
 		this.player.setPlaybackRate(rate);

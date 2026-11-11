@@ -41,7 +41,7 @@ describe("transcript background playback", () => {
 		embeds.instances.length = 0;
 	});
 
-	it("runs play, seek and speed without a workspace leaf and saves position on cleanup", () => {
+	it("runs play and speed without a workspace leaf and saves position on cleanup", () => {
 		const parent = document.body.createDiv();
 		const remember = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
@@ -54,8 +54,6 @@ describe("transcript background playback", () => {
 		const player = embeds.instances[0];
 		playback.togglePlay();
 		expect(player.playing).toBe(true);
-		playback.skip(10);
-		expect(player.seekTo).toHaveBeenLastCalledWith(52);
 		playback.stepRate(1);
 		expect(player.setPlaybackRate).toHaveBeenLastCalledWith(1.25);
 		playback.setRate(1);
@@ -63,7 +61,7 @@ describe("transcript background playback", () => {
 		expect(parent.querySelector(".workspace-leaf")).toBeNull();
 		expect(parent.querySelector("[aria-hidden='true']")).not.toBeNull();
 		playback.destroy();
-		expect(remember).toHaveBeenCalledWith("dQw4w9WgXcQ", "note.md", 52);
+		expect(remember).toHaveBeenCalledWith("dQw4w9WgXcQ", "note.md", 42);
 		expect(player.destroy).toHaveBeenCalledOnce();
 		expect(parent.children).toHaveLength(0);
 		playback.destroy();

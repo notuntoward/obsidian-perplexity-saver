@@ -350,43 +350,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 					focusNote: (target) => this.focusNoteInsertionTarget(target),
 				})
 		);
-		this.addBoundAlias({
-			id: "open-youtube-video-viewer",
-			name: "Go to YouTube video viewer (legacy shortcut)",
-			checkCallback: (checking: boolean) => {
-				const file = this.activePart().file;
-				if (!file || file.extension !== "md") return false;
-				if (!checking) void this.goToPart("video", file, this.partLeaves(file)).catch((error: unknown) => {
-					console.error("Perplexity Saver: could not open video viewer", error);
-					new Notice("Could not open video viewer.");
-				});
-				return true;
-			},
-		});
-		// Keyboard switching between a literature note, its video and its transcript panel, across windows and sidebars.
-		const switchCommands: [id: string, name: string, target: NotePart][] = [
-			["go-to-literature-note", "Go to literature note (from its video or transcript)", "note"],
-			["go-to-video-viewer", "Go to YouTube video viewer", "video"],
-			["go-to-transcript-panel", "Go to YouTube transcript panel", "transcript"],
-		];
-		for (const [id, name, target] of switchCommands) {
-			this.addCommand({
-				id,
-				name,
-				checkCallback: (checking: boolean) => {
-					const { file } = this.activePart();
-					if (!file) return false;
-					if (!checking) {
-						const leaves = this.partLeaves(file);
-						void this.goToPart(target, file, leaves).catch((error: unknown) => {
-							console.error("Perplexity Saver: could not navigate note parts", error);
-							new Notice("Could not navigate literature note, video or transcript.");
-						});
-					}
-					return true;
-				},
-			});
-		}
 		this.registerVideoCommands();
 		registerTimestampLinks(
 			this,
@@ -433,10 +396,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private registerVideoCommands(): void {
 		const audioCommands: [id: string, name: string, run: (view: NotePlayback) => unknown][] = [
 			["video-viewer-play-pause", "Video viewer: play or pause", (v) => v.togglePlay()],
-			["video-viewer-back-10", "Video viewer: back 10 seconds", (v) => v.skip(-10)],
-			["video-viewer-forward-10", "Video viewer: forward 10 seconds", (v) => v.skip(10)],
-			["video-viewer-back-5", "Video viewer: back 5 seconds", (v) => v.skip(-5)],
-			["video-viewer-forward-5", "Video viewer: forward 5 seconds", (v) => v.skip(5)],
 			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
 			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
 			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
@@ -449,9 +408,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
 		const viewerCommands: [id: string, name: string, run: (view: VideoView) => unknown][] = [
 			...audioCommands,
-			["video-viewer-zoom-in", "Video viewer: zoom in", (v) => v.zoomBy(1.25)],
-			["video-viewer-zoom-out", "Video viewer: zoom out", (v) => v.zoomBy(1 / 1.25)],
-			["video-viewer-zoom-reset", "Video viewer: reset zoom", (v) => v.resetZoom()],
 			["video-viewer-screenshot", "Video viewer: screenshot (drag an area)", (v) => v.screenshot()],
 			["video-viewer-screenshot-whole", "Video viewer: screenshot of the whole picture", (v) => v.screenshot(true)],
 			["video-viewer-insert-screenshot", "Video viewer: insert screenshot (drag an area)", (v) => this.insertScreenshotIntoNote(v, false)],
@@ -506,21 +462,19 @@ export default class PerplexitySaverPlugin extends Plugin {
 				return true;
 			},
 		});
-		for (const direction of [1, -1] as const) {
-			this.addCommand({
-				id: direction === 1 ? "cycle-note-video-transcript" : "cycle-note-video-transcript-back",
-				name: direction === 1 ? "Cycle visible literature-note panes" : "Cycle visible literature-note panes backwards",
-				checkCallback: (checking) => {
-					const { file, part } = this.activePart();
-					if (!file || file.extension !== "md") return false;
-					if (!checking) void this.cycleVisibleParts(file, part, direction).catch((error: unknown) => {
-						console.error("Perplexity Saver: could not cycle visible note panes", error);
-						new Notice("Could not cycle visible literature-note panes.");
-					});
-					return true;
-				},
-			});
-		}
+		this.addCommand({
+			id: "cycle-note-video-transcript",
+			name: "Cycle visible literature-note panes",
+			checkCallback: (checking) => {
+				const { file, part } = this.activePart();
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.cycleVisibleParts(file, part).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not cycle visible note panes", error);
+					new Notice("Could not cycle visible literature-note panes.");
+				});
+				return true;
+			},
+		});
 		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
 			if (file instanceof TFile && file.extension === "md") {
 				menu.addItem((item) => item.setTitle("Video workspace...").setIcon("youtube").onClick(() => choose(file)));
@@ -543,9 +497,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return leaves;
 	}
 
-	private async cycleVisibleParts(file: TFile, current: NotePart | null, direction: 1 | -1): Promise<void> {
+	private async cycleVisibleParts(file: TFile, current: NotePart | null): Promise<void> {
 		const leaves = this.visiblePartLeaves(file);
-		const part = nextPart(current, direction, PART_ORDER.filter((key) => leaves[key]));
+		const part = nextPart(current, PART_ORDER.filter((key) => leaves[key]));
 		const leaf = part ? leaves[part] : null;
 		if (leaf) await this.activatePartLeaf(leaf, leaves.video);
 	}
@@ -947,24 +901,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === filePath) leaf.view.stopBackgroundPlayback();
 		}
-	}
-
-	/** Reveal (opening it if needed) and focus one part, raising its window and giving it keyboard focus. */
-	private async goToPart(part: NotePart, file: TFile, leaves: Record<NotePart, WorkspaceLeaf | null>): Promise<void> {
-		let leaf = leaves[part];
-		if (!leaf) {
-			if (part === "note") {
-				await openFileInLeaf(this.app, file, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
-				return;
-			} else if (part === "video") {
-				leaf = await this.openViewerForNote(file);
-			} else {
-				await this.showTranscript(file, leaves.video);
-				return;
-			}
-		}
-		if (!leaf) return;
-		await this.activatePartLeaf(leaf, leaves.video);
 	}
 
 	private createNoteInsertionTarget(view: Pick<NotePlayback, "getFilePath">): NoteInsertionTarget | null {

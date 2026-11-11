@@ -226,7 +226,7 @@ export class VideoView extends ItemView {
 
 		this.emptyEl = el.createDiv({
 			cls: "perplexity-saver-video-empty",
-			text: "Click a timestamp link to a YouTube video, or run \"Go to YouTube video viewer\" in a literature note.",
+			text: "Click a timestamp link to a YouTube video, or run \"Video workspace...\" from a literature note.",
 		});
 
 		this.stageEl = el.createDiv({ cls: "perplexity-saver-video-stage" });
