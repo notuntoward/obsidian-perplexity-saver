@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MarkdownView, type App, type TFile, type WorkspaceLeaf } from "obsidian";
+import { MarkdownView, Platform, type App, type TFile, type WorkspaceLeaf } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import PerplexitySaverPlugin from "../../src/main";
 import { TranscriptView } from "../../src/litNote/transcriptView";
 import { VideoView } from "../../src/video/videoView";
+import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "../../src/video/youtubePlayer";
 import { VideoWorkspaceModal } from "../../src/video/workspaceLayout";
 import { createdNotices } from "../__mocks__/obsidian";
 import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
@@ -16,7 +17,7 @@ vi.mock("obsidian", async (original) => ({
 	debounce: (callback: () => void) => callback,
 	Scope: class { register(): void {} },
 	Platform: { isDesktopApp: false },
-	setIcon: () => {},
+	setIcon: (el: HTMLElement, icon: string) => { el.dataset.icon = icon; },
 	SearchComponent: class {
 		inputEl: HTMLInputElement;
 		constructor(parent: HTMLElement) { this.inputEl = parent.createEl("input"); }
@@ -43,6 +44,7 @@ vi.mock("commons/workspace", async (original) => ({
 
 beforeEach(() => {
 	vi.restoreAllMocks();
+	Object.assign(Platform, { isDesktopApp: false });
 	document.body.empty();
 	vi.spyOn(window, "focus").mockImplementation(() => {});
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
@@ -114,6 +116,345 @@ function addNote(h: Awaited<ReturnType<typeof harness>>) {
 	h.app.workspace.activeLeaf = leaf;
 	return leaf;
 }
+
+async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = document) {
+	const events = new Map<string, () => void>();
+	Object.assign(h.app.workspace, {
+		on: (name: string, callback: () => void) => { events.set(name, callback); return {}; },
+		onLayoutReady: vi.fn(),
+		getLastOpenFiles: () => [],
+	});
+	Object.assign(h.app.vault, { on: vi.fn() });
+	Object.assign(h.app.metadataCache, { on: vi.fn() });
+	Object.assign(h.app, { hotkeyManager: { printHotkeyForCommand: () => "" } });
+	vi.spyOn(h.plugin, "loadSettings").mockResolvedValue();
+	Object.assign(h.plugin, { registerView: vi.fn() });
+	const register = vi.mocked(h.plugin.registerView);
+	const commands: import("obsidian").Command[] = [];
+	vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+	await h.plugin.onload();
+	const transcriptFactory = register.mock.calls.find(([type]) => type === h.transcript.getViewType())?.[1];
+	const videoFactory = register.mock.calls.find(([type]) => type === h.viewerLeaf.view.getViewType())?.[1];
+	if (!transcriptFactory || !videoFactory) throw new Error("Missing view registration");
+	Object.assign(h.transcriptLeaf, { app: h.app });
+	const panel = transcriptFactory(h.transcriptLeaf) as TranscriptView;
+	Object.assign(h.transcriptLeaf, { view: panel });
+	panel.contentEl = doc.createElement("div");
+	panel.containerEl = panel.contentEl;
+	Object.assign(panel, { registerDomEvent: vi.fn() });
+	doc.body.appendChild(panel.contentEl);
+	h.leaves.push(h.transcriptLeaf);
+	await panel.setState({ file: h.file.path }, { history: false });
+	await panel.onOpen();
+	const button = panel.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+	return { panel, button, commands, events, videoFactory };
+}
+
+describe("transcript playback state", () => {
+	it("tracks toolbar, commands, transcript rows and background updates without moving focus", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start\n[0:25](https://youtu.be/dQw4w9WgXcQ?t=25) current");
+		const { panel, button, commands } = await playbackPanel(h);
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(button.dataset.icon).toBe("play");
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Pause"));
+		const background = panel.getBackgroundPlayback()!;
+		expect(background.isPlaying()).toBe(true);
+		expect(button.dataset.icon).toBe("pause");
+		const command = commands.find((c) => c.id === "video-viewer-play-pause")!;
+		command.checkCallback!(false);
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Play"));
+		expect(background.isPlaying()).toBe(false);
+		const row = panel.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-row")!;
+		row.focus();
+		row.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Pause"));
+		background.pausePlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		background.play();
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		Object.assign(background["player"], { ready: true });
+		window.dispatchEvent(new MessageEvent("message", {
+			source: background["player"].iframe.contentWindow,
+			data: { info: { playerState: PLAYER_STATE.paused } },
+		}));
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		background.play();
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		panel.stopBackgroundPlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		await panel.onClose();
+	});
+
+	it("does not traverse the workspace for unchanged background time updates", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start\n[0:25](https://youtu.be/dQw4w9WgXcQ?t=25) current");
+		const { panel, button } = await playbackPanel(h);
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Pause"));
+		const background = panel.getBackgroundPlayback()!;
+		const iterate = vi.spyOn(h.app.workspace, "iterateAllLeaves");
+		background.seekTo(1);
+		background.seekTo(2);
+		expect(iterate).not.toHaveBeenCalled();
+		background.pausePlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(iterate).toHaveBeenCalled();
+		await panel.onClose();
+	});
+
+	it("does not traverse the workspace for unchanged viewer time updates", async () => {
+		const h = await harness();
+		addNote(h);
+		const { panel, button, videoFactory } = await playbackPanel(h);
+		Object.assign(h.viewerLeaf, { app: h.app });
+		const viewer = videoFactory(h.viewerLeaf) as VideoView;
+		viewer.contentEl = document.createElement("div");
+		viewer.containerEl = viewer.contentEl;
+		Object.assign(h.viewerLeaf, { view: viewer });
+		const playBtn = document.createElement("button");
+		Object.assign(playBtn, { setAttr: (name: string, value: string) => playBtn.setAttribute(name, value) });
+		const info: PlayerInfo = { currentTime: 1, duration: 120, playbackRate: 1, playerState: PLAYER_STATE.playing };
+		Object.assign(viewer, {
+			videoId: "dQw4w9WgXcQ", filePath: h.file.path, player: { info },
+			timeEl: { setText: vi.fn(), getText: () => "0:00" },
+			trackEl: { setCssProps: vi.fn(), setAttribute: vi.fn() },
+			playBtn, renderMarks: vi.fn(),
+		});
+		viewer["update"](info);
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		const iterate = vi.spyOn(h.app.workspace, "iterateAllLeaves");
+		info.currentTime = 2;
+		viewer["update"](info);
+		info.currentTime = 3;
+		viewer["update"](info);
+		expect(iterate).not.toHaveBeenCalled();
+		info.playerState = PLAYER_STATE.paused;
+		viewer["update"](info);
+		expect(iterate).toHaveBeenCalled();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		await panel.onClose();
+	});
+
+	it("updates real background controls in the transcript owner document", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start");
+		const doc = document.implementation.createHTMLDocument();
+		const { panel, button } = await playbackPanel(h, doc);
+		expect(button.ownerDocument).toBe(doc);
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Pause"));
+		expect(button.dataset.icon).toBe("pause");
+		panel.getBackgroundPlayback()!.pausePlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(button.dataset.icon).toBe("play");
+		await panel.onClose();
+	});
+
+	it("reflects a playing viewer handed off to background audio by a layout change", async () => {
+		const h = await harness();
+		addNote(h);
+		const viewer = h.viewerLeaf.view as VideoView;
+		Object.assign(viewer, { player: { info: { currentTime: 25.75, playerState: PLAYER_STATE.playing } } });
+		vi.spyOn(viewer, "pausePlayback").mockImplementation(() => { viewer["player"]!.info.playerState = PLAYER_STATE.paused; });
+		Object.assign(h.viewerLeaf, { detach: () => { h.leaves.splice(h.leaves.indexOf(h.viewerLeaf), 1); } });
+		vi.spyOn(h.plugin as unknown as { separateWorkspaceTabs(): Promise<void> }, "separateWorkspaceTabs").mockResolvedValue();
+		vi.spyOn(h.plugin as unknown as { activatePartLeaf(): Promise<void> }, "activatePartLeaf").mockResolvedValue();
+		vi.spyOn(h.plugin, "saveData").mockResolvedValue();
+		const { panel, button, events } = await playbackPanel(h);
+		const other = new TranscriptView({ app: h.app } as unknown as WorkspaceLeaf, panel["host"]);
+		other.contentEl = document.createElement("div");
+		other.containerEl = other.contentEl;
+		document.body.appendChild(other.contentEl);
+		const otherLeaf = { view: other } as unknown as WorkspaceLeaf;
+		h.leaves.push(otherLeaf);
+		await other.setState({ file: h.file.path }, { history: false });
+		const otherButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+		await h.plugin["applyVideoWorkspace"](h.file as TFile, "transcript");
+		events.get("layout-change")!();
+		expect(panel.getBackgroundPlayback()?.isPlaying()).toBe(true);
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(button.dataset.icon).toBe("pause");
+		expect(otherButton.getAttribute("aria-label")).toBe("Pause");
+		expect(otherButton.dataset.icon).toBe("pause");
+		other.copySessionFrom(panel);
+		const movedButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+		expect(panel.getBackgroundPlayback()).toBeNull();
+		expect(other.getBackgroundPlayback()?.isPlaying()).toBe(true);
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(movedButton.getAttribute("aria-label")).toBe("Pause");
+		other.stopBackgroundPlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(movedButton.getAttribute("aria-label")).toBe("Play");
+		await panel.onClose();
+		await other.onClose();
+	});
+
+	it("does not use a different note's playing viewer as transcript state", async () => {
+		const h = await harness();
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md", player: { info: { playerState: PLAYER_STATE.playing } } });
+		addNote(h);
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start");
+		const { panel, button } = await playbackPanel(h);
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		button.click();
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Pause"));
+		panel.getBackgroundPlayback()!.pausePlayback();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		await panel.onClose();
+	});
+
+	it("initializes from an already-playing hidden matching viewer", async () => {
+		const h = await harness();
+		addNote(h);
+		h.viewerLeaf.view.containerEl.isShown = () => false;
+		Object.assign(h.viewerLeaf.view, { player: { info: { currentTime: 0, playerState: PLAYER_STATE.playing } } });
+		const { panel, button } = await playbackPanel(h);
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(button.dataset.icon).toBe("pause");
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		await panel.onClose();
+	});
+
+	it("tracks the hidden matching player, including external player updates", async () => {
+		const h = await harness();
+		addNote(h);
+		h.viewerLeaf.view.containerEl.isShown = () => false;
+		const { panel, button, commands, events, videoFactory } = await playbackPanel(h);
+		Object.assign(h.viewerLeaf, { app: h.app });
+		const registered = videoFactory(h.viewerLeaf) as VideoView;
+		const viewer = h.viewerLeaf.view as VideoView;
+		Object.assign(viewer, { host: registered["host"] });
+		const player = new YouTubeEmbed(viewer.containerEl, "abc", 0,
+			(info) => registered["host"].onPlayback("abc", h.file.path, info.currentTime));
+		Object.assign(viewer, { player });
+		events.get("layout-change")!();
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		viewer.togglePlay();
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(button.dataset.icon).toBe("pause");
+		commands.find((c) => c.id === "video-viewer-play-pause")!.checkCallback!(false);
+		await vi.waitFor(() => expect(button.getAttribute("aria-label")).toBe("Play"));
+		Object.assign(player, { ready: true });
+		window.dispatchEvent(new MessageEvent("message", { source: player.iframe.contentWindow, data: { info: { playerState: PLAYER_STATE.playing } } }));
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		player.destroy();
+		await panel.onClose();
+	});
+});
+
+describe("hidden player screenshots", () => {
+	it.each([
+		["video-viewer-screenshot", false, false],
+		["video-viewer-screenshot-whole", false, true],
+		["video-viewer-insert-screenshot", true, false],
+		["video-viewer-insert-screenshot-whole", true, true],
+	] as const)("reveals the player before %s in one invocation", async (id, insert, whole) => {
+		const h = await harness();
+		addNote(h);
+		Object.assign(h.viewerLeaf.view, { leaf: h.viewerLeaf });
+		h.viewerLeaf.view.containerEl.isShown = () => false;
+		const capture = vi.spyOn(h.viewerLeaf.view as VideoView, "screenshot").mockResolvedValue();
+		const insertion = vi.spyOn(h.plugin as unknown as { insertScreenshotIntoNote(): Promise<void> }, "insertScreenshotIntoNote").mockResolvedValue();
+		const activate = vi.spyOn(h.plugin as unknown as { activatePartLeaf(): Promise<void> }, "activatePartLeaf").mockResolvedValue();
+		Object.assign(Platform, { isDesktopApp: true });
+		const { commands } = navigationCommands(h);
+		expect(commands.find((c) => c.id === id)!.checkCallback!(false)).toBe(true);
+		await vi.waitFor(() => expect(insert ? insertion : capture).toHaveBeenCalledOnce());
+		if (!insert) expect(activate).toHaveBeenCalledWith(h.viewerLeaf, null);
+		if (insert) expect(insertion).toHaveBeenCalledWith(h.viewerLeaf.view, whole);
+		else if (whole) expect(capture).toHaveBeenCalledWith(true);
+		else expect(capture).toHaveBeenCalledWith();
+	});
+});
+
+describe("ten second playback commands", () => {
+	it.each([
+		["note", false], ["note", true],
+		["video", false], ["video", true],
+		["transcript", false], ["transcript", true],
+	] as const)("seeks the matching player from %s while playing=%s without changing focus", async (context, playing) => {
+		const h = await harness();
+		const player = navigationPlayer(h, playing);
+		navigationContext(h, context);
+		const { commands } = navigationCommands(h);
+		const back = commands.find((c) => c.id === "video-seek-backward-10-seconds")!;
+		const forward = commands.find((c) => c.id === "video-seek-forward-10-seconds")!;
+		expect(back.name).toBe("Video: back 10 seconds");
+		expect(forward.name).toBe("Video: forward 10 seconds");
+		expect(back.hotkeys).toBeUndefined();
+		expect(forward.hotkeys).toBeUndefined();
+		expect(back.checkCallback!(true)).toBe(true);
+		expect(player.seekTo).not.toHaveBeenCalled();
+		back.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(0.09999999999999964));
+		forward.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenLastCalledWith(10.1));
+		expect((h.viewerLeaf.view as VideoView).isPlaying()).toBe(playing);
+		expect(player.play).not.toHaveBeenCalled();
+		expect(player.pause).not.toHaveBeenCalled();
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+	});
+
+	it("uses an associated loaded player when the active player is empty", async () => {
+		const h = await harness();
+		const player = navigationPlayer(h, true);
+		const empty = Object.create(VideoView.prototype) as VideoView;
+		Object.assign(empty, { filePath: h.file.path, videoId: null, containerEl: document.createElement("div") });
+		const emptyLeaf = { view: empty } as unknown as WorkspaceLeaf;
+		h.leaves.push(emptyLeaf, h.transcriptLeaf);
+		h.app.workspace.activeLeaf = emptyLeaf;
+		const { commands } = navigationCommands(h);
+		const forward = commands.find((c) => c.id === "video-seek-forward-10-seconds")!;
+		expect(forward.checkCallback!(false)).toBe(true);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(20.1), { timeout: 500 });
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("clamps background seek at the video end while preserving playing=%s", async (playing) => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		const playback = (await h.plugin["backgroundPlaybackFor"](h.file as TFile))!;
+		playback["player"].info.duration = 100;
+		playback.seekTo(95);
+		if (playing) playback.play();
+		const { commands } = navigationCommands(h);
+		commands.find((c) => c.id === "video-seek-forward-10-seconds")!.checkCallback!(false);
+		await vi.waitFor(() => expect(playback.getPlaybackSeconds()).toBe(100));
+		expect(playback.isPlaying()).toBe(playing);
+		await h.transcript.onClose();
+	});
+
+	it.each([false, true])("uses visible transcript audio when a matching player is empty (playing=%s)", async (playing) => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(h.viewerLeaf.view, { videoId: null, player: null });
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile);
+		expect(playback).not.toBeNull();
+		playback!.seekTo(5);
+		if (playing) playback!.play();
+		const { commands } = navigationCommands(h);
+		commands.find((c) => c.id === "video-seek-backward-10-seconds")!.checkCallback!(false);
+		await vi.waitFor(() => expect(playback!.getPlaybackSeconds()).toBe(0));
+		expect(playback!.isPlaying()).toBe(playing);
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		await h.transcript.onClose();
+	});
+});
 
 describe("transcript activation commands", () => {
 	it.each([false, true])("full registration preserves remaining legacy hotkeys only when bound (%s)", async (bound) => {
@@ -211,7 +552,7 @@ describe("transcript activation commands", () => {
 			"transcript-search-forward", "transcript-search-backward", "transcript-toggle-orientation",
 		]);
 		const toggle = commands.find((c) => c.id === "show-youtube-transcript")!;
-		expect(toggle.name).toBe("Toggle YouTube transcript panel");
+		expect(toggle.name).toBe("Video: show or hide transcript");
 		const run = vi.spyOn(h.plugin, "toggleTranscript").mockResolvedValue();
 		expect(toggle.checkCallback!(true)).toBe(true);
 		expect(run).not.toHaveBeenCalled();
@@ -233,6 +574,17 @@ describe("transcript activation commands", () => {
 		expect(move).not.toHaveBeenCalled();
 		alias.checkCallback!(false);
 		expect(move).toHaveBeenCalledWith(h.file, h.viewerLeaf, "sidebar");
+	});
+
+	it("validates transcript before creating a viewer for orientation", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\nno timestamps\nhttps://youtu.be/dQw4w9WgXcQ");
+		const open = vi.spyOn(h.plugin, "openViewerForNote" as never);
+		await h.plugin.toggleTranscriptOrientation(h.file as TFile, null);
+		expect(open).not.toHaveBeenCalled();
+		expect(createdNotices.at(-1)?.message).toContain("No timestamped transcript");
 	});
 
 	it("toggles below/beside without changing the saved default", async () => {
@@ -526,7 +878,7 @@ describe("transcript activation commands", () => {
 		expect(commands.map((command) => command.id)).toEqual([
 			"video-workspace", "cycle-note-video-transcript",
 		]);
-		expect(commands[1].name).toBe("Cycle visible literature-note panes");
+		expect(commands[1].name).toBe("Video: cycle panes");
 		commands[0].checkCallback!(true);
 		expect(open).not.toHaveBeenCalled();
 		commands[0].checkCallback!(false);
@@ -689,7 +1041,7 @@ describe("transcript activation commands", () => {
 		const highlight = vi.spyOn(h.transcript, "showPlayback");
 		const focus = vi.spyOn(h.transcript, "focusPlayback").mockImplementation(() => {});
 		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 28, true);
-		expect(highlight).toHaveBeenLastCalledWith(28, true);
+		expect(highlight).toHaveBeenLastCalledWith(28, true, true);
 		await h.plugin["cycleVisibleParts"](h.file as TFile, "note");
 		expect(focus).toHaveBeenCalledWith(28, true);
 		await h.transcript.onClose();

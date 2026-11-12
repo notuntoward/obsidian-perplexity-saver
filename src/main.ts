@@ -308,6 +308,37 @@ export default class PerplexitySaverPlugin extends Plugin {
 						highlights: this.settings.transcriptSearchHighlights,
 					}),
 					playAt: (filePath, url, seconds, play) => void this.playTranscriptAt(filePath, url, seconds, play),
+					isVideoVisible: (filePath) => {
+						return this.app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).some((leaf) =>
+							leaf.view instanceof VideoView && leaf.view.getFilePath() === filePath &&
+							!!leaf.view.getVideoId() && this.isPartVisible(leaf));
+					},
+					isPlaybackPlaying: (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						if (!file) return false;
+						const video = this.partLeaves(file).video?.view;
+						if (video instanceof VideoView && video.getVideoId()) return video.isPlaying();
+						return this.existingBackgroundPlayback(filePath)?.isPlaying() ?? false;
+					},
+					onPlaybackSessionChanged: (filePath, videoId) => {
+						this.forMatchingTranscripts(videoId, filePath, (view) => view.refreshPlaybackControls());
+					},
+					runPlaybackControl: (filePath, action) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						if (!file) return;
+						const candidate = this.partLeaves(file).video?.view;
+						const target = candidate instanceof VideoView && candidate.getVideoId()
+							? Promise.resolve(candidate) : this.backgroundPlaybackFor(file);
+						void target.then((playback) => {
+							if (!playback) return;
+							if (action === "play") playback.togglePlay();
+							else if (action === "insert") return this.insertTimestampIntoNote(playback);
+							else return this.jumpToTranscriptTimestamp(playback, action === "next" ? 1 : -1);
+						}).catch((error: unknown) => {
+							console.error("Perplexity Saver: could not run transcript playback control", error);
+							new Notice("Could not run transcript playback control.");
+						});
+					},
 					movePanel: async (filePath, location) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) throw new Error(`Transcript note not found: ${filePath}`);
@@ -343,9 +374,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 							new Notice("Could not navigate transcript timestamps.");
 						});
 					},
-					onPlayback: (videoId, filePath, seconds) => {
+					onPlayback: (videoId, filePath, seconds, stateChanged) => {
 						if (filePath) this.stopBackgroundPlayback(filePath);
-						this.showPlayback(videoId, filePath, seconds);
+						this.showPlayback(videoId, filePath, seconds, stateChanged);
 					},
 					rememberPlayback: (videoId, filePath, seconds) => {
 						if (!filePath || !Number.isFinite(seconds) || seconds < 0) return;
@@ -403,14 +434,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	private registerVideoCommands(): void {
 		const audioCommands: [id: string, name: string, run: (view: NotePlayback) => unknown][] = [
-			["video-viewer-play-pause", "Video viewer: play or pause", (v) => v.togglePlay()],
+			["video-viewer-play-pause", "Video: play or pause", (v) => v.togglePlay()],
+			["video-seek-backward-10-seconds", "Video: back 10 seconds", (v) => v.seekTo(v.getPlaybackSeconds() - 10)],
+			["video-seek-forward-10-seconds", "Video: forward 10 seconds", (v) => v.seekTo(v.getPlaybackSeconds() + 10)],
 			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
 			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
 			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
 			["video-viewer-next-note-timestamp", "Video: next transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, 1)],
 			["video-viewer-previous-note-timestamp", "Video: previous transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, -1)],
-			["video-viewer-copy-timestamp", "Video viewer: copy timestamp link", (v) => v.copyTimestampLink()],
-			["video-viewer-insert-timestamp", "Video viewer: insert timestamp bullet into literature note", (v) => this.insertTimestampIntoNote(v)],
+			["video-viewer-copy-timestamp", "Video: copy current timestamp", (v) => v.copyTimestampLink()],
+			["video-viewer-insert-timestamp", "Video: insert timestamp bullet", (v) => this.insertTimestampIntoNote(v)],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
 		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
@@ -428,13 +461,17 @@ export default class PerplexitySaverPlugin extends Plugin {
 				id,
 				name,
 				checkCallback: (checking: boolean) => {
-					const view = this.videoViewForActivePart();
+					const candidate = this.videoViewForActivePart();
+					const view = candidate?.getVideoId() ? candidate : null;
 					const file = this.activePart().file;
 					const background = backgroundCommands.get(id);
 					const transcript = file && !view ? this.visiblePartLeaves(file).transcript : null;
-					if ((!view?.getVideoId() && !(background && transcript)) || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
+					if ((!view && !(background && transcript)) || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
 					if (!checking) void Promise.resolve().then(async () => {
-						if (view) return run(view);
+						if (view) {
+							if (id.startsWith("video-viewer-screenshot") && !this.isPartVisible(view.leaf)) await this.activatePartLeaf(view.leaf, null);
+							return run(view);
+						}
 						if (file && background) {
 							const playback = await this.backgroundPlaybackFor(file);
 							if (playback) return background(playback);
@@ -462,7 +499,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		};
 		this.addCommand({
 			id: "video-workspace",
-			name: "Video workspace...",
+			name: "Video: choose workspace...",
 			checkCallback: (checking) => {
 				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
@@ -472,7 +509,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "cycle-note-video-transcript",
-			name: "Cycle visible literature-note panes",
+			name: "Video: cycle panes",
 			checkCallback: (checking) => {
 				const { file, part } = this.activePart();
 				if (!file || file.extension !== "md") return false;
@@ -656,7 +693,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private registerTranscriptCommands(): void {
 		this.addCommand({
 			id: "show-youtube-transcript",
-			name: "Toggle YouTube transcript panel",
+			name: "Video: show or hide transcript",
 			checkCallback: (checking: boolean) => {
 				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
@@ -669,7 +706,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		});
 		this.addCommand({
 			id: "search-youtube-transcript",
-			name: "Search YouTube transcript",
+			name: "Video: search transcript",
 			checkCallback: (checking: boolean) => {
 				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
@@ -742,12 +779,14 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/** Mark the playing line in transcript panels showing this video (scrolling them if the setting is on). */
-	private showPlayback(videoId: string, filePath: string | null, seconds: number): void {
+	private showPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged = true): void {
+		this.forMatchingTranscripts(videoId, filePath, (view) => view.showPlayback(seconds, this.settings.followTranscript, stateChanged));
+	}
+
+	private forMatchingTranscripts(videoId: string, filePath: string | null, update: (view: TranscriptView) => void): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			const view = leaf.view;
-			if (view instanceof TranscriptView && view.showsVideo(filePath, videoId)) {
-				view.showPlayback(seconds, this.settings.followTranscript);
-			}
+			if (view instanceof TranscriptView && view.showsVideo(filePath, videoId)) update(view);
 		}
 	}
 
@@ -840,9 +879,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const note = findLeafForFile(this.app, file);
 		const noteWin = note ? getWindowForLeaf(note) : null;
 		const videos = ws.getLeavesOfType(VIDEO_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
+		const playable = videos.filter((leaf) => leaf.view instanceof VideoView && !!leaf.view.getVideoId());
+		const candidates = playable.length ? playable : videos;
 		const activeWin = getWindowForLeaf(getActiveLeafInFocusedWindow(this.app, { includeSidebars: true }) ?? note);
-		const video = videos.find((leaf) => getWindowForLeaf(leaf) === activeWin)
-			?? videos.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? videos[0] ?? null;
+		const video = candidates.find((leaf) => getWindowForLeaf(leaf) === activeWin)
+			?? candidates.find((leaf) => getWindowForLeaf(leaf) === noteWin) ?? candidates[0] ?? null;
 		const transcripts = ws.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).filter((leaf) => this.partFileKey(leaf) === file.path);
 		const transcript = transcripts.find((leaf) => getWindowForLeaf(leaf) === activeWin) ?? transcripts[0] ?? null;
 		return { note, video, transcript };
@@ -851,14 +892,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 	/** Prefer the video associated with the focused note/transcript over another viewer in the same window. */
 	private videoViewForActivePart(): VideoView | null {
 		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view;
-		if (active instanceof VideoView) return active;
+		if (active instanceof VideoView && active.getVideoId()) return active;
 		const { file } = this.activePart();
 		if (file) {
 			const related = this.partLeaves(file).video?.view;
 			return related instanceof VideoView ? related : null;
 		}
-		const fallback = getVideoLeaf(this.app)?.view;
-		return fallback instanceof VideoView ? fallback : null;
+		return null;
 	}
 
 	private async jumpToTranscriptTimestamp(playback: NotePlayback, direction: 1 | -1): Promise<void> {
@@ -900,6 +940,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 		else playback.seekTo(target);
 	}
 
+	private existingBackgroundPlayback(filePath: string): BackgroundPlayback | null {
+		return this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
+			.map((panel) => panel.view instanceof TranscriptView ? panel.view.getBackgroundPlayback() : null)
+			.find((playback) => playback?.getFilePath() === filePath) ?? null;
+	}
+
 	private async backgroundPlaybackFor(file: TFile, request?: { videoId: string; seconds: number; autoplay?: boolean; playbackRate?: number }): Promise<BackgroundPlayback | null> {
 		const leaf = this.visiblePartLeaves(file).transcript;
 		if (!(leaf?.view instanceof TranscriptView)) {
@@ -918,20 +964,19 @@ export default class PerplexitySaverPlugin extends Plugin {
 			new Notice("The transcript workspace changed before playback could start.");
 			return null;
 		}
-		if (this.partLeaves(file).video) {
+		const video = this.partLeaves(file).video?.view;
+		if (video instanceof VideoView && video.getVideoId()) {
 			new Notice("A video pane is open; use its playback controls.");
 			return null;
 		}
-		const existing = this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
-			.map((panel) => panel.view instanceof TranscriptView ? panel.view.getBackgroundPlayback() : null)
-			.find((playback) => playback?.getFilePath() === file.path);
+		const existing = this.existingBackgroundPlayback(file.path);
 		if (existing?.getVideoId() === videoId) return existing;
 		if (existing) this.stopBackgroundPlayback(file.path);
 		const saved = this.settings.videoPlayback[file.path];
 		const playback = new BackgroundPlayback(this.app, transcript.containerEl, file.path, videoId,
 			request?.seconds ?? (saved?.videoId === videoId ? saved.seconds : 0), {
 				getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
-				onPlayback: (id, path, seconds) => this.showPlayback(id, path, seconds),
+				onPlayback: (id, path, seconds, stateChanged) => this.showPlayback(id, path, seconds, stateChanged),
 				remember: (id, path, seconds) => {
 					this.settings.videoPlayback[path] = { videoId: id, seconds };
 					void this.saveData(this.settings).catch((error: unknown) => {
@@ -1077,6 +1122,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 		if (!location && !this.transcriptLocations.has(file.path) && selected === "sidebar" && viewer && this.viewerInPopout(viewer)) {
 			placement = { nextTo: viewer, direction: "vertical" };
 		} else if (selected !== "sidebar") {
+			if (!viewer && !workspaceOnly && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
+				new Notice(`No timestamped transcript under a "${this.settings.transcriptHeading}" heading in ${file.basename}.`);
+				return;
+			}
 			const nextTo = viewer ?? (workspaceOnly ? this.partLeaves(file).note : await this.openViewerForNote(file, false));
 			if (!nextTo) return;
 			placement = { nextTo, direction: selected === "viewer" ? "horizontal" : "vertical" };

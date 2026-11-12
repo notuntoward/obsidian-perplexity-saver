@@ -70,7 +70,7 @@ export interface VideoViewHost {
 	toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf): Promise<void>;
 	jumpToTranscriptTimestamp(view: VideoView, direction: 1 | -1): void;
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
-	onPlayback(videoId: string, filePath: string | null, seconds: number): void;
+	onPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged?: boolean): void;
 	rememberPlayback?(videoId: string, filePath: string | null, seconds: number): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
 }
@@ -81,6 +81,7 @@ export class VideoView extends ItemView {
 	private filePath: string | null = null;
 	private startTime = 0;
 	private player: YouTubeEmbed | null = null;
+	private lastReportedPlayerState: number | null = null;
 	private playbackRevision = 0;
 	private marks: number[] = [];
 	private zoom: ZoomState = { zoom: 1, x: 0, y: 0 };
@@ -131,6 +132,10 @@ export class VideoView extends ItemView {
 				if (oldPath === this.filePath) {
 					this.filePath = file.path;
 					this.playbackRevision++;
+					if (this.videoId && this.player) {
+						this.lastReportedPlayerState = this.player.info.playerState;
+						this.host.onPlayback(this.videoId, this.filePath, this.getPlaybackSeconds(), true);
+					}
 				}
 			})
 		);
@@ -220,7 +225,10 @@ export class VideoView extends ItemView {
 	/** Show `videoId` at `seconds`; seeks without reloading when the video is already loaded. */
 	showVideo(videoId: string, seconds: number, filePath: string | null, autoplay = false): void {
 		const fileChanged = filePath !== null && filePath !== this.filePath;
-		if (fileChanged || this.videoId !== videoId) this.playbackRevision++;
+		if (fileChanged || this.videoId !== videoId) {
+			this.playbackRevision++;
+			this.lastReportedPlayerState = null;
+		}
 		if (filePath !== null) this.filePath = filePath;
 		if (this.player && this.videoId === videoId) {
 			this.player.seekTo(seconds);
@@ -241,7 +249,7 @@ export class VideoView extends ItemView {
 
 		this.emptyEl = el.createDiv({
 			cls: "perplexity-saver-video-empty",
-			text: "Click a timestamp link to a YouTube video, or run \"Video workspace...\" from a literature note.",
+			text: "Click a timestamp link to a YouTube video, or run \"Video: choose workspace...\" from a literature note.",
 		});
 
 		this.stageEl = el.createDiv({ cls: "perplexity-saver-video-stage" });
@@ -300,6 +308,8 @@ export class VideoView extends ItemView {
 		});
 		this.timestampBtn.setAttribute("aria-haspopup", "menu");
 		this.timestampBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, this.timestampBtn, false));
+		const timestampMenu = this.button(bar, "chevron-down", "Timestamp alternatives", (evt) => this.showCaptureMenu(evt, timestampMenu, false));
+		timestampMenu.setAttribute("aria-haspopup", "menu");
 		this.button(bar, "external-link", "Open in browser at this time", () => this.openInBrowser());
 		if (Platform.isDesktopApp) {
 			this.screenshotBtn = this.button(bar, "camera", "", (evt) => {
@@ -309,9 +319,13 @@ export class VideoView extends ItemView {
 			const screenshotBtn = this.screenshotBtn;
 			screenshotBtn.setAttribute("aria-haspopup", "menu");
 			screenshotBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, screenshotBtn, true));
+			const screenshotMenu = this.button(bar, "chevron-down", "Screenshot alternatives", (evt) => this.showCaptureMenu(evt, screenshotMenu, true));
+			screenshotMenu.setAttribute("aria-haspopup", "menu");
 		}
 		this.updateToolbarCaptureLabels();
+		this.button(bar, "skip-back", "Previous transcript row ([)", () => this.host.jumpToTranscriptTimestamp(this, -1), "[");
 		this.transcriptBtn = this.button(bar, "captions", "Show transcript (C)", () => void this.toggleTranscript(), "C");
+		this.button(bar, "skip-forward", "Next transcript row (])", () => this.host.jumpToTranscriptTimestamp(this, 1), "]");
 		this.updateTranscriptButton();
 
 		el.addEventListener("keydown", (evt) => this.onKey(evt));
@@ -403,9 +417,9 @@ export class VideoView extends ItemView {
 
 	updateToolbarCaptureLabels(): void {
 		const insert = this.host.getToolbarCaptureAction() === "insert";
-		this.timestampBtn?.setAttribute("aria-label", `${insert ? "Insert timestamp into note" : "Copy timestamp"} (right-click for both actions)`);
+		this.timestampBtn?.setAttribute("aria-label", `${insert ? "Insert timestamp into note" : "Copy timestamp"} (alternatives button or right-click for both actions)`);
 		this.screenshotBtn?.setAttribute("aria-label",
-			`${insert ? "Insert screenshot into note" : "Copy screenshot"}: drag an area, or click for the whole picture (Shift-click: whole picture now; right-click for both actions)`);
+			`${insert ? "Insert screenshot into note" : "Copy screenshot"}: drag an area, or click for the whole picture (Shift-click: whole picture now; alternatives button or right-click for both actions)`);
 	}
 
 	updateYoutubeCaptions(): void {
@@ -467,6 +481,7 @@ export class VideoView extends ItemView {
 		if (!this.frameEl) return;
 		this.player?.destroy();
 		this.player = null;
+		this.lastReportedPlayerState = null;
 		this.setZoom({ zoom: 1, x: 0, y: 0 });
 		if (this.videoId) {
 			this.player = new YouTubeEmbed(this.frameEl, this.videoId, this.startTime, (info) => this.update(info), {
@@ -503,7 +518,11 @@ export class VideoView extends ItemView {
 			this.showRate(info.playbackRate);
 		}
 		this.renderMarks();
-		if (this.videoId) this.host.onPlayback(this.videoId, this.filePath, info.currentTime);
+		if (this.videoId) {
+			const stateChanged = this.lastReportedPlayerState !== info.playerState;
+			this.lastReportedPlayerState = info.playerState;
+			this.host.onPlayback(this.videoId, this.filePath, info.currentTime, stateChanged);
+		}
 	}
 
 	/** Jump `delta` seconds forward (negative: back). */

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
@@ -12,7 +12,7 @@ vi.mock("obsidian", async (importOriginal) => {
 	const original = await importOriginal<Record<string, unknown>>();
 	return {
 		...original,
-		setIcon: (): void => {},
+		setIcon: (el: HTMLElement, icon: string): void => { el.dataset.icon = icon; },
 		Menu: class {
 			addItem(build: (item: {
 				setTitle(title: string): unknown;
@@ -68,6 +68,16 @@ beforeEach(() => {
 	HTMLElement.prototype.scrollIntoView = vi.fn();
 });
 
+afterEach(() => vi.unstubAllGlobals());
+
+function stubPopout(doc: Document): void {
+	Object.defineProperty(doc, "activeElement", { configurable: true, value: doc.body });
+	const win = Object.create(window) as Window;
+	Object.defineProperty(win, "document", { value: doc });
+	vi.stubGlobal("activeDocument", doc);
+	vi.stubGlobal("activeWindow", win);
+}
+
 async function panel(doc = document, host: Partial<TranscriptViewHost> = {}): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
@@ -111,6 +121,114 @@ function key(el: HTMLElement, name: string, init: KeyboardEventInit = {}): void 
 function rows(view: TranscriptView): HTMLElement[] {
 	return Array.from(view.contentEl.querySelectorAll<HTMLElement>('[role="option"]'));
 }
+
+describe("transcript-only playback controls", () => {
+	it.each([false, true])("shows controls only without a visible matching player (%s)", async (visible) => {
+		const runPlaybackControl = vi.fn();
+		const view = await panel(document, { isVideoVisible: () => visible, runPlaybackControl } as Partial<TranscriptViewHost>);
+		const bar = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback")!;
+		expect(bar.parentElement).toBe(view.contentEl.querySelector(".perplexity-saver-transcript-controls"));
+		expect(bar.hidden).toBe(visible);
+		for (const [label, action] of [["Play", "play"], ["Previous transcript row", "previous"], ["Next transcript row", "next"], ["Insert current timestamp", "insert"]]) {
+			bar.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!.click();
+			if (visible) expect(runPlaybackControl).not.toHaveBeenCalled();
+			else expect(runPlaybackControl).toHaveBeenLastCalledWith("note.md", action);
+		}
+	});
+
+	it.each([false, true])("refreshes play state for updates in the same row (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let playing = false;
+		const view = await panel(doc, {
+			isVideoVisible: () => false,
+			isPlaybackPlaying: () => playing,
+			runPlaybackControl: vi.fn(),
+		} as Partial<TranscriptViewHost>);
+		const button = view.contentEl.querySelector<HTMLElement>('.perplexity-saver-transcript-playback button')!;
+		expect(button.ownerDocument).toBe(doc);
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(button.dataset.icon).toBe("play");
+		view.showPlayback(1.1);
+		playing = true;
+		view.showPlayback(1.2);
+		expect(button.getAttribute("aria-label")).toBe("Pause");
+		expect(button.dataset.icon).toBe("pause");
+		playing = false;
+		view.showPlayback(1.3);
+		expect(button.getAttribute("aria-label")).toBe("Play");
+		expect(button.dataset.icon).toBe("play");
+	});
+
+	it.each([[false, false], [false, true], [true, false], [true, true]] as const)("skips workspace lookups for unchanged playback state (popout=%s, player visible=%s)", async (popout, visible) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		let playing = false;
+		const isVideoVisible = vi.fn(() => visible);
+		const isPlaybackPlaying = vi.fn(() => playing);
+		const view = await panel(doc, { isVideoVisible, isPlaybackPlaying, runPlaybackControl: vi.fn() });
+		isVideoVisible.mockClear();
+		isPlaybackPlaying.mockClear();
+		view.showPlayback(1.1, true, false);
+		view.showPlayback(1.2, true, false);
+		expect(isVideoVisible).not.toHaveBeenCalled();
+		expect(isPlaybackPlaying).not.toHaveBeenCalled();
+		expect(rows(view)[1].classList.contains("is-playing")).toBe(true);
+		playing = true;
+		view.showPlayback(1.3, true, true);
+		expect(isVideoVisible).toHaveBeenCalledOnce();
+		expect(isPlaybackPlaying).toHaveBeenCalledOnce();
+		expect(view.contentEl.querySelector('[data-icon="pause"]')).not.toBeNull();
+	});
+
+	it.each([false, true])("refreshes on an active-leaf change (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		let playing = false;
+		const view = await panel(doc, { isVideoVisible: () => false, isPlaybackPlaying: () => playing, runPlaybackControl: vi.fn() });
+		const handlers = new Map<string, () => void>();
+		Object.assign(view.app.workspace, { on: (name: string, handler: () => void) => { handlers.set(name, handler); return {}; } });
+		Object.assign(view.app.metadataCache, { on: vi.fn(() => ({})) });
+		Object.assign(view.app.vault, { on: vi.fn(() => ({})) });
+		Object.assign(view, { registerDomEvent: vi.fn() });
+		await view.onOpen();
+		playing = true;
+		expect(handlers.get("active-leaf-change")).toBeTypeOf("function");
+		handlers.get("active-leaf-change")!();
+		expect(view.contentEl.querySelector('[data-icon="pause"]')).not.toBeNull();
+	});
+
+	it("notifies other transcript panels when background audio's note is renamed", async () => {
+		const changed = vi.fn();
+		const view = await panel(document, { isVideoVisible: () => false, isPlaybackPlaying: () => true, onPlaybackSessionChanged: changed });
+		const vaultEvents = new Map<string, (file: { path: string }, oldPath: string) => void>();
+		Object.assign(view.app.workspace, { on: vi.fn(() => ({})) });
+		Object.assign(view.app.metadataCache, { on: vi.fn(() => ({})) });
+		Object.assign(view.app.vault, { on: (name: string, handler: (file: { path: string }, oldPath: string) => void) => { vaultEvents.set(name, handler); return {}; } });
+		Object.assign(view, { registerDomEvent: vi.fn() });
+		await view.onOpen();
+		let filePath = "note.md";
+		const playback = {
+			getFilePath: () => filePath,
+			getVideoId: () => "dQw4w9WgXcQ",
+			renameFile: (path: string) => { filePath = path; },
+			destroy: vi.fn(),
+		} as unknown as Parameters<TranscriptView["setBackgroundPlayback"]>[0];
+		view.setBackgroundPlayback(playback);
+		changed.mockClear();
+		vaultEvents.get("rename")!({ path: "renamed.md" }, "note.md");
+		expect(changed).toHaveBeenCalledWith("renamed.md", "dQw4w9WgXcQ");
+	});
+
+	it("renders controls in the transcript owner document", async () => {
+		const doc = document.implementation.createHTMLDocument();
+		const runPlaybackControl = vi.fn();
+		const view = await panel(doc, { isVideoVisible: () => false, runPlaybackControl } as Partial<TranscriptViewHost>);
+		const button = view.contentEl.querySelector<HTMLElement>('button[aria-label="Play"]')!;
+		expect(button.ownerDocument).toBe(doc);
+		button.click();
+		expect(runPlaybackControl).toHaveBeenCalledWith("note.md", "play");
+	});
+});
 
 describe("accepting transcript search", () => {
 	it("exposes the same orientation toggle in the labeled Layout menu", async () => {

@@ -112,6 +112,10 @@ export interface TranscriptViewHost {
 	 * link (may be empty). With `play`, start playing; otherwise keep playing or paused.
 	 */
 	playAt(filePath: string, url: string, seconds: number, play: boolean): void;
+	isVideoVisible?(filePath: string): boolean;
+	isPlaybackPlaying?(filePath: string): boolean;
+	onPlaybackSessionChanged?(filePath: string, videoId: string): void;
+	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert"): void;
 	movePanel?(filePath: string, location: TranscriptPanelLocation): Promise<void>;
 	toggleOrientation?(filePath: string): Promise<void>;
 	closePanel?(leaf: WorkspaceLeaf): Promise<void>;
@@ -215,11 +219,17 @@ export class TranscriptView extends ItemView {
 	setBackgroundPlayback(playback: BackgroundPlayback): void {
 		this.stopBackgroundPlayback();
 		this.backgroundPlayback = playback;
+		this.refreshPlaybackControls();
+		this.host.onPlaybackSessionChanged?.(playback.getFilePath(), playback.getVideoId());
 	}
 
 	stopBackgroundPlayback(remember = true): void {
-		this.backgroundPlayback?.destroy(remember);
+		const playback = this.backgroundPlayback;
+		if (!playback) return;
+		playback.destroy(remember);
 		this.backgroundPlayback = null;
+		this.refreshPlaybackControls();
+		this.host.onPlaybackSessionChanged?.(playback.getFilePath(), playback.getVideoId());
 	}
 
 	private filePath: string | null = null;
@@ -302,6 +312,8 @@ export class TranscriptView extends ItemView {
 	}
 
 	async onOpen(): Promise<void> {
+		this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshPlaybackControls()));
+		this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshPlaybackControls()));
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file) => {
 				if (file.path === this.filePath) void this.reload();
@@ -310,9 +322,11 @@ export class TranscriptView extends ItemView {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				if (oldPath === this.filePath) {
-					this.backgroundPlayback?.renameFile(file.path);
+					const playback = this.backgroundPlayback;
+					playback?.renameFile(file.path);
 					this.filePath = file.path;
 					this.render();
+					if (playback) this.host.onPlaybackSessionChanged?.(file.path, playback.getVideoId());
 				}
 			})
 		);
@@ -415,9 +429,10 @@ export class TranscriptView extends ItemView {
 	 * Mark the row playing at `seconds` (null clears the mark). With `follow`,
 	 * unless the user is scrolling or searching, scroll it into the middle of the panel.
 	 */
-	showPlayback(seconds: number | null, follow = true): void {
+	showPlayback(seconds: number | null, follow = true, stateChanged = true): void {
 		this.playbackSec = seconds;
 		this.follow = follow;
+		if (stateChanged) this.refreshPlaybackControls();
 		const idx = seconds === null ? -1 : currentRowIndex(this.rowStarts, seconds);
 		if (idx === this.currentRow) return;
 		this.rendered[this.currentRow]?.el.removeClass("is-playing");
@@ -498,7 +513,7 @@ export class TranscriptView extends ItemView {
 		if (!file) {
 			el.createDiv({
 				cls: "perplexity-saver-transcript-empty",
-				text: "Open a literature note and run \"Toggle YouTube transcript panel\".",
+				text: "Open a literature note and run \"Video: show or hide transcript\".",
 			});
 			return;
 		}
@@ -559,6 +574,21 @@ export class TranscriptView extends ItemView {
 				menu.showAtPosition({ x: rect.left, y: rect.bottom }, placement.ownerDocument);
 			});
 		}
+		if (this.host.runPlaybackControl) {
+			const playback = controls.createDiv({ cls: "perplexity-saver-transcript-playback" });
+			for (const [icon, label, action] of [
+				["play", "Play", "play"],
+				["skip-back", "Previous transcript row", "previous"],
+				["skip-forward", "Next transcript row", "next"],
+				["list-plus", "Insert current timestamp", "insert"],
+			] as const) {
+				const button = this.iconButton(playback, icon, label, () => {
+					if (this.filePath && !playback.hidden) this.host.runPlaybackControl?.(this.filePath, action);
+				});
+				if (action === "play") button.addClass("perplexity-saver-transcript-play-toggle");
+			}
+			this.refreshPlaybackControls();
+		}
 		const help = this.iconButton(controls, "circle-help", "Transcript keyboard help", () => {
 			const shown = !el.hasClass("show-help");
 			el.toggleClass("show-help", shown);
@@ -618,6 +648,20 @@ export class TranscriptView extends ItemView {
 		if (this.matches.length && keep >= 0) this.selectMatch(Math.min(keep, this.matches.length - 1), false);
 		if (searchFocused) this.focusSearch();
 		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow);
+	}
+
+	refreshPlaybackControls(): void {
+		const controls = this.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback");
+		if (!controls) return;
+		controls.hidden = !this.filePath || !!this.host.isVideoVisible?.(this.filePath);
+		const button = controls.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle");
+		if (!button) return;
+		const playing = !!this.filePath && !!this.host.isPlaybackPlaying?.(this.filePath);
+		const label = playing ? "Pause" : "Play";
+		if (button.getAttribute("aria-label") !== label) {
+			setIcon(button, playing ? "pause" : "play");
+			button.setAttribute("aria-label", label);
+		}
 	}
 
 	private buildSearch(header: HTMLElement): void {

@@ -15,9 +15,12 @@ async function toolbar(doc = document) {
 	let action: "copy" | "insert" = "insert";
 	const insertTimestamp = vi.fn().mockResolvedValue(undefined);
 	const insertScreenshot = vi.fn().mockResolvedValue(undefined);
+	const jump = vi.fn();
+	const onPlayback = vi.fn();
+	const vaultEvents = new Map<string, (file: { path: string }, oldPath: string) => void>();
 	const app = {
 		metadataCache: { on: vi.fn() },
-		vault: { on: vi.fn() },
+		vault: { on: vi.fn((name: string, handler: (file: { path: string }, oldPath: string) => void) => { vaultEvents.set(name, handler); }) },
 		workspace: { on: vi.fn() },
 	};
 	const view = new VideoView({ app } as unknown as WorkspaceLeaf, {
@@ -29,8 +32,8 @@ async function toolbar(doc = document) {
 		insertScreenshot,
 		isTranscriptShown: () => false,
 		toggleTranscript: async () => {},
-		jumpToTranscriptTimestamp: () => {},
-		onPlayback: () => {},
+		jumpToTranscriptTimestamp: jump,
+		onPlayback,
 		focusNote: async () => {},
 	});
 	view.register = vi.fn();
@@ -41,16 +44,96 @@ async function toolbar(doc = document) {
 	doc.adoptNode(view.contentEl);
 	const timestamp = view.contentEl.querySelector<HTMLElement>('[data-icon="link"]')!;
 	const camera = view.contentEl.querySelector<HTMLElement>('[data-icon="camera"]')!;
-	return { view, timestamp, camera, copy, screenshot, insertTimestamp, insertScreenshot, setAction: (value: typeof action) => { action = value; } };
+	return { view, timestamp, camera, copy, screenshot, insertTimestamp, insertScreenshot, jump, onPlayback, vaultEvents, setAction: (value: typeof action) => { action = value; } };
 }
 
 describe("video toolbar capture destinations", () => {
 	beforeEach(() => {
 		MockMenu.last = null;
 		HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
+		HTMLElement.prototype.getText = function () { return this.textContent ?? ""; };
+		HTMLElement.prototype.setAttr = function (name, value) { this.setAttribute(name, String(value)); };
 		HTMLElement.prototype.setCssProps = function (props) {
 			for (const [key, value] of Object.entries(props)) this.style.setProperty(key, value);
 		};
+	});
+
+	it("reports state transitions without treating time updates as state changes", async () => {
+		const h = await toolbar();
+		Object.assign(h.view, { videoId: "dQw4w9WgXcQ", filePath: "note.md" });
+		const info = { currentTime: 1, duration: 120, playbackRate: 1, playerState: 2 };
+		h.view["update"](info);
+		h.view["update"]({ ...info, currentTime: 2 });
+		h.view["update"]({ ...info, currentTime: 2, playerState: 1 });
+		h.view["update"]({ ...info, currentTime: 3, playerState: 1 });
+		expect(h.onPlayback.mock.calls).toEqual([
+			["dQw4w9WgXcQ", "note.md", 1, true],
+			["dQw4w9WgXcQ", "note.md", 2, false],
+			["dQw4w9WgXcQ", "note.md", 2, true],
+			["dQw4w9WgXcQ", "note.md", 3, false],
+		]);
+	});
+
+	it("refreshes state when a loaded video is associated with another note", async () => {
+		const h = await toolbar();
+		const info = { currentTime: 12, duration: 120, playbackRate: 1, playerState: 1 };
+		const player = { info, seekTo: vi.fn(() => h.view["update"](info)) };
+		Object.assign(h.view, {
+			videoId: "dQw4w9WgXcQ", filePath: "note.md", player,
+			refreshMarks: vi.fn().mockResolvedValue(undefined),
+		});
+		h.view["update"](info);
+		h.onPlayback.mockClear();
+		h.view.showVideo("dQw4w9WgXcQ", 12, "other.md");
+		expect(h.onPlayback).toHaveBeenCalledWith("dQw4w9WgXcQ", "other.md", 12, true);
+	});
+
+	it("notifies transcript panels when the associated note is renamed", async () => {
+		const h = await toolbar();
+		const info = { currentTime: 12, duration: 120, playbackRate: 1, playerState: 1 };
+		Object.assign(h.view, { videoId: "dQw4w9WgXcQ", filePath: "note.md", player: { info } });
+		h.view["update"](info);
+		h.onPlayback.mockClear();
+		h.vaultEvents.get("rename")!({ path: "renamed.md" }, "note.md");
+		expect(h.onPlayback).toHaveBeenCalledWith("dQw4w9WgXcQ", "renamed.md", 12, true);
+	});
+
+	it("routes the transcript row buttons to the host", async () => {
+		const h = await toolbar();
+		const previous = h.view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Previous transcript row ([)"]');
+		const next = h.view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Next transcript row (])"]');
+		expect(previous).not.toBeNull();
+		expect(next).not.toBeNull();
+		previous!.click();
+		next!.click();
+		expect(h.jump.mock.calls).toEqual([[h.view, -1], [h.view, 1]]);
+	});
+
+	it.each(["timestamp", "screenshot"] as const)("opens %s alternatives from a separate accessible button in its owner document", async (kind) => {
+		const doc = document.implementation.createHTMLDocument();
+		const h = await toolbar(doc);
+		const button = h.view.contentEl.querySelector<HTMLButtonElement>(`button[aria-label="${kind === "timestamp" ? "Timestamp" : "Screenshot"} alternatives"]`);
+		expect(button).not.toBeNull();
+		expect(button!.getAttribute("aria-haspopup")).toBe("menu");
+		const show = vi.spyOn(MockMenu.prototype, "showAtPosition");
+		button!.click();
+		expect(show).toHaveBeenCalledWith(expect.any(Object), doc);
+		if (kind === "timestamp") {
+			expect(MockMenu.last?.items.map((item) => item.title)).toEqual(["Insert timestamp into note", "Copy timestamp"]);
+		} else {
+			expect(MockMenu.last?.items.map((item) => item.title)).toEqual([
+				"Insert selected area into note...", "Copy selected area...", "Insert whole picture into note", "Copy whole picture",
+			]);
+		}
+		for (const item of MockMenu.last!.items) item.click();
+		if (kind === "timestamp") {
+			expect(h.insertTimestamp).toHaveBeenCalledWith(h.view);
+			expect(h.copy).toHaveBeenCalledOnce();
+		} else {
+			expect(h.insertScreenshot.mock.calls).toEqual([[h.view, false], [h.view, true]]);
+			expect(h.screenshot.mock.calls).toEqual([[false], [true]]);
+		}
+		show.mockRestore();
 	});
 
 	it.each(["insert", "copy"] as const)("uses the live %s setting for timestamp and camera clicks", async (action) => {
@@ -105,7 +188,9 @@ describe("video toolbar capture destinations", () => {
 		h.setAction("copy");
 		h.view.updateToolbarCaptureLabels();
 		expect(h.timestamp.getAttribute("aria-label")).toContain("Copy timestamp");
+		expect(h.timestamp.getAttribute("aria-label")).toContain("alternatives button");
 		expect(h.camera.getAttribute("aria-label")).toContain("Copy screenshot");
+		expect(h.camera.getAttribute("aria-label")).toContain("alternatives button");
 		expect(h.camera.getAttribute("aria-label")).toContain("Shift-click");
 		expect(h.camera.getAttribute("aria-label")).toContain("right-click");
 		h.timestamp.click();

@@ -12,7 +12,7 @@ export type NotePlayback = Pick<VideoView,
 
 interface BackgroundPlaybackHost {
 	getTimestampCopyFormat(): TimestampCopyFormat;
-	onPlayback(videoId: string, filePath: string, seconds: number): void;
+	onPlayback(videoId: string, filePath: string, seconds: number, stateChanged?: boolean): void;
 	remember(videoId: string, filePath: string, seconds: number): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
 }
@@ -37,8 +37,11 @@ export class BackgroundPlayback implements NotePlayback {
 		this.container = parent.createDiv({ cls: "perplexity-saver-background-playback" });
 		this.container.setAttribute("aria-hidden", "true");
 		this.rate = options.playbackRate ?? 1;
+		let lastPlayerState: number | null = null;
 		this.player = new YouTubeEmbed(this.container, videoId, seconds, (info) => {
-			this.host.onPlayback(videoId, this.filePath, info.currentTime);
+			const stateChanged = lastPlayerState !== info.playerState;
+			lastPlayerState = info.playerState;
+			this.host.onPlayback(videoId, this.filePath, info.currentTime, stateChanged);
 		}, { ...options, captions: false });
 		if (options.autoplay) this.player.play();
 	}

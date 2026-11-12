@@ -52,6 +52,54 @@ test("browsing has a compact toolbar, no idle search/hints and substantially mor
 	}
 });
 
+test("transcript-only playback controls remain reachable in narrow panes", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			* { box-sizing: border-box; }
+			body { margin: 0; font: 14px/20px sans-serif; }
+			:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --font-ui-smaller: 12px; }
+			.view-content { padding: 12px; width: 700px; height: 240px; overflow: auto; }
+			.clickable-icon { flex: none; width: 28px; height: 28px; padding: 0; }
+			.perplexity-saver-transcript-row { min-height: 40px; }
+		</style>
+		<div class="view-content perplexity-saver-transcript-view">
+			<div class="perplexity-saver-transcript-header">
+				<div class="perplexity-saver-transcript-controls">
+					<a class="perplexity-saver-transcript-title">A long literature note title</a>
+					<span class="perplexity-saver-transcript-count">381 lines</span>
+					<button class="perplexity-saver-transcript-format">Paragraphs</button>
+					<button class="clickable-icon">S</button><button>Layout</button>
+					<div class="perplexity-saver-transcript-playback">
+						<button class="clickable-icon" aria-label="Play">P</button>
+						<button class="clickable-icon" aria-label="Previous transcript row">B</button>
+						<button class="clickable-icon" aria-label="Next transcript row">N</button>
+						<button class="clickable-icon" aria-label="Insert current timestamp">I</button>
+					</div>
+					<button class="clickable-icon">?</button><button class="clickable-icon">X</button>
+				</div>
+			</div>
+			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">Transcript text</div></div>
+		</div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const panel = page.locator(".view-content");
+	const playback = page.locator(".perplexity-saver-transcript-playback");
+	for (const width of [240, 320, 700]) {
+		await panel.evaluate((el, value) => { (el as HTMLElement).style.width = value + "px"; }, width);
+		expect(await panel.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+		for (const button of await playback.locator("button").all()) await expect(button).toBeVisible();
+		const bar = await playback.boundingBox();
+		const row = await page.locator(".perplexity-saver-transcript-row").boundingBox();
+		expect(bar!.y + bar!.height).toBeLessThanOrEqual(row!.y);
+		if (width === 700) {
+			const header = await page.locator(".perplexity-saver-transcript-header").boundingBox();
+			expect(header!.height).toBeLessThanOrEqual(48);
+		}
+	}
+	await playback.evaluate((el) => { (el as HTMLElement).hidden = true; });
+	await expect(playback).toBeHidden();
+});
+
 for (const width of [240, 320, 760]) {
 	test(`transcript search controls wrap without squeezing the input at ${width}px`, async ({ page }) => {
 		await page.setViewportSize({ width, height: 600 });

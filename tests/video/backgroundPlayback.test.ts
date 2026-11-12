@@ -5,8 +5,9 @@ import "commons/testing";
 import { BackgroundPlayback } from "../../src/video/backgroundPlayback";
 
 const embeds = vi.hoisted(() => ({ instances: [] as Array<{
-	info: { currentTime: number; playbackRate: number };
+	info: { currentTime: number; playbackRate: number; duration: number; playerState: number };
 	playing: boolean;
+	emit: (seconds: number, state: number) => void;
 	toggle: ReturnType<typeof vi.fn>;
 	seekTo: ReturnType<typeof vi.fn>;
 	setPlaybackRate: ReturnType<typeof vi.fn>;
@@ -17,14 +18,20 @@ vi.mock("../../src/video/youtubePlayer", async (original) => {
 	return {
 		...actual,
 		YouTubeEmbed: class {
-			info: { currentTime: number; playbackRate: number };
+			info: { currentTime: number; playbackRate: number; duration: number; playerState: number };
 			playing = false;
 			iframe: HTMLIFrameElement;
-			constructor(parent: HTMLElement, _id: string, seconds: number) {
-				this.info = { currentTime: seconds, playbackRate: 1 };
+			constructor(parent: HTMLElement, _id: string, seconds: number, private readonly onUpdate: (info: { currentTime: number; playbackRate: number; duration: number; playerState: number }) => void) {
+				this.info = { currentTime: seconds, playbackRate: 1, duration: 120, playerState: 2 };
 				this.iframe = parent.createEl("iframe");
 				embeds.instances.push(this);
 			}
+			emit = (seconds: number, state: number) => {
+				this.info.currentTime = seconds;
+				this.info.playerState = state;
+				this.playing = state === 1 || state === 3;
+				this.onUpdate(this.info);
+			};
 			toggle = vi.fn(() => { this.playing = !this.playing; });
 			pause = vi.fn(() => { this.playing = false; });
 			play = vi.fn(() => { this.playing = true; });
@@ -39,6 +46,41 @@ describe("transcript background playback", () => {
 	beforeEach(() => {
 		document.body.replaceChildren();
 		embeds.instances.length = 0;
+	});
+
+	it("reports background state transitions without treating time updates as state changes", () => {
+		const parent = document.body.createDiv();
+		const onPlayback = vi.fn();
+		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
+			getTimestampCopyFormat: () => "list", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
+		});
+		const player = embeds.instances[0];
+		player.emit(1, 2);
+		player.emit(2, 2);
+		player.emit(2, 1);
+		player.emit(3, 1);
+		expect(onPlayback.mock.calls).toEqual([
+			["dQw4w9WgXcQ", "note.md", 1, true],
+			["dQw4w9WgXcQ", "note.md", 2, false],
+			["dQw4w9WgXcQ", "note.md", 2, true],
+			["dQw4w9WgXcQ", "note.md", 3, false],
+		]);
+		playback.destroy();
+	});
+
+	it("reports the initial state again after transferring the player", () => {
+		const parent = document.body.createDiv();
+		const next = document.body.createDiv();
+		const onPlayback = vi.fn();
+		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
+			getTimestampCopyFormat: () => "list", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
+		});
+		embeds.instances[0].emit(1, 1);
+		const moved = playback.transferTo(next);
+		onPlayback.mockClear();
+		embeds.instances[1].emit(2, 1);
+		expect(onPlayback).toHaveBeenCalledWith("dQw4w9WgXcQ", "note.md", 2, true);
+		moved.destroy();
 	});
 
 	it("runs play and speed without a workspace leaf and saves position on cleanup", () => {
