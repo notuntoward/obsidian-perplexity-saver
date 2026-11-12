@@ -45,7 +45,6 @@ describe("transcript background playback", () => {
 		const parent = document.body.createDiv();
 		const remember = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
-			getTranscriptHeading: () => "Transcript",
 			getTimestampCopyFormat: () => "list",
 			onPlayback: vi.fn(),
 			remember,
@@ -72,7 +71,7 @@ describe("transcript background playback", () => {
 		const other = document.implementation.createHTMLDocument();
 		const parent = other.body.createDiv();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "list",
 			onPlayback: vi.fn(), remember: vi.fn(), focusNote: vi.fn(),
 		});
 		expect(parent.querySelector("iframe")?.ownerDocument).toBe(other);
@@ -85,7 +84,7 @@ describe("transcript background playback", () => {
 		const next = document.body.createDiv();
 		const remember = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 31, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "list",
 			onPlayback: vi.fn(), remember, focusNote: vi.fn(),
 		});
 		playback.play();
@@ -103,7 +102,7 @@ describe("transcript background playback", () => {
 	it("releases the embed even if position persistence throws", () => {
 		const parent = document.body.createDiv();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "list",
 			onPlayback: vi.fn(), remember: () => { throw new Error("Cannot save"); }, focusNote: vi.fn(),
 		});
 		expect(() => playback.destroy()).toThrow("Cannot save");

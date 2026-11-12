@@ -68,6 +68,7 @@ export interface VideoViewHost {
 	isTranscriptShown(viewer: WorkspaceLeaf): boolean;
 	/** Close that transcript panel if it is on screen, otherwise show the note's transcript (beside a pop-out viewer, else per the plugin setting). */
 	toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf): Promise<void>;
+	jumpToTranscriptTimestamp(view: VideoView, direction: 1 | -1): void;
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
 	onPlayback(videoId: string, filePath: string | null, seconds: number): void;
 	rememberPlayback?(videoId: string, filePath: string | null, seconds: number): void;
@@ -80,6 +81,7 @@ export class VideoView extends ItemView {
 	private filePath: string | null = null;
 	private startTime = 0;
 	private player: YouTubeEmbed | null = null;
+	private playbackRevision = 0;
 	private marks: number[] = [];
 	private zoom: ZoomState = { zoom: 1, x: 0, y: 0 };
 	private marksToken = 0;
@@ -126,7 +128,10 @@ export class VideoView extends ItemView {
 		);
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
-				if (oldPath === this.filePath) this.filePath = file.path;
+				if (oldPath === this.filePath) {
+					this.filePath = file.path;
+					this.playbackRevision++;
+				}
 			})
 		);
 		this.register(() => this.player?.destroy());
@@ -136,6 +141,7 @@ export class VideoView extends ItemView {
 	}
 
 	async onClose(): Promise<void> {
+		this.playbackRevision++;
 		if (this.videoId) this.host.rememberPlayback?.(this.videoId, this.filePath, this.getPlaybackSeconds());
 		this.player?.destroy();
 		this.player = null;
@@ -191,6 +197,14 @@ export class VideoView extends ItemView {
 		return this.player?.info.currentTime ?? this.startTime;
 	}
 
+	getPlaybackToken(): { player: object; revision: number } | null {
+		return this.player ? { player: this.player, revision: this.playbackRevision } : null;
+	}
+
+	seekTo(seconds: number): void {
+		this.player?.seekTo(seconds);
+	}
+
 	getPlaybackRate(): number { return this.rate; }
 
 	isPlaying(): boolean {
@@ -206,6 +220,7 @@ export class VideoView extends ItemView {
 	/** Show `videoId` at `seconds`; seeks without reloading when the video is already loaded. */
 	showVideo(videoId: string, seconds: number, filePath: string | null, autoplay = false): void {
 		const fileChanged = filePath !== null && filePath !== this.filePath;
+		if (fileChanged || this.videoId !== videoId) this.playbackRevision++;
 		if (filePath !== null) this.filePath = filePath;
 		if (this.player && this.videoId === videoId) {
 			this.player.seekTo(seconds);
@@ -240,7 +255,7 @@ export class VideoView extends ItemView {
 			attr: {
 				tabindex: "0",
 				role: "slider",
-				"aria-label": "Position (arrows: 5 seconds, page up/down: 1 minute, [ and ]: note timestamps)",
+				"aria-label": "Position (arrows: 5 seconds, page up/down: 1 minute, [ and ]: transcript timestamps)",
 				"aria-valuemin": "0",
 			},
 		});
@@ -496,16 +511,6 @@ export class VideoView extends ItemView {
 		if (this.player) this.player.seekTo(this.player.info.currentTime + delta);
 	}
 
-	/** Jump to the next (1) or previous (-1) timestamp the note links to. */
-	jumpToMark(direction: 1 | -1): void {
-		if (!this.player) return;
-		const now = this.player.info.currentTime;
-		const sorted = [...this.marks].sort((a, b) => a - b);
-		const target = direction > 0 ? sorted.find((t) => t > now + 0.5) : sorted.reverse().find((t) => t < now - 1.5);
-		if (target === undefined) new Notice(direction > 0 ? "No later timestamp in the note." : "No earlier timestamp in the note.");
-		else this.player.seekTo(target);
-	}
-
 	/** Re-read the user's own timestamp links (outside the transcript) for the timeline. */
 	private async refreshMarks(): Promise<void> {
 		const token = ++this.marksToken;
@@ -656,8 +661,8 @@ export class VideoView extends ItemView {
 			PageDown: () => this.skip(-PAGE_SECONDS),
 			Home: () => player.seekTo(0),
 			End: () => player.seekTo(Math.max(0, player.info.duration - 1)),
-			"[": () => this.jumpToMark(-1),
-			"]": () => this.jumpToMark(1),
+			"[": () => this.host.jumpToTranscriptTimestamp(this, -1),
+			"]": () => this.host.jumpToTranscriptTimestamp(this, 1),
 			">": () => this.stepRate(1),
 			"<": () => this.stepRate(-1),
 			c: () => void this.toggleTranscript(),

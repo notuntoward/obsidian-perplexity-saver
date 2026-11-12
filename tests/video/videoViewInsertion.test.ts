@@ -68,6 +68,7 @@ function videoView() {
 		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false,
 		toggleTranscript: async () => {},
+		jumpToTranscriptTimestamp: () => {},
 		onPlayback: () => {},
 		focusNote,
 	};

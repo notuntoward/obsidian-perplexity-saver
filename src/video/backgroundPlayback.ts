@@ -1,16 +1,16 @@
 import { Notice, type App } from "obsidian";
 import { writeClipboardIn } from "commons/windows";
-import { PLAYBACK_RATES, loadNoteVideoMarks, type VideoView } from "./videoView";
+import { PLAYBACK_RATES, type VideoView } from "./videoView";
 import { YouTubeEmbed } from "./youtubePlayer";
 import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "./youtubeLinks";
 import { insertPlaybackTimestamp, type NoteInsertionTarget } from "./noteInsertion";
 
 export type NotePlayback = Pick<VideoView,
-	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "isPlaying" | "togglePlay" | "pausePlayback" |
-	"stepRate" | "setRate" | "jumpToMark" | "copyTimestampLink" | "openInBrowser" | "insertTimestampBullet">;
+	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "getPlaybackToken" | "seekTo" |
+	"isPlaying" | "togglePlay" | "pausePlayback" | "stepRate" | "setRate" |
+	"copyTimestampLink" | "openInBrowser" | "insertTimestampBullet">;
 
 interface BackgroundPlaybackHost {
-	getTranscriptHeading(): string;
 	getTimestampCopyFormat(): TimestampCopyFormat;
 	onPlayback(videoId: string, filePath: string, seconds: number): void;
 	remember(videoId: string, filePath: string, seconds: number): void;
@@ -22,6 +22,7 @@ export class BackgroundPlayback implements NotePlayback {
 	private readonly container: HTMLElement;
 	private readonly player: YouTubeEmbed;
 	private destroyed = false;
+	private playbackRevision = 0;
 	private rate = 1;
 
 	constructor(
@@ -43,9 +44,15 @@ export class BackgroundPlayback implements NotePlayback {
 	}
 
 	getVideoId(): string { return this.videoId; }
-	renameFile(path: string): void { this.filePath = path; }
+	renameFile(path: string): void {
+		if (path !== this.filePath) this.playbackRevision++;
+		this.filePath = path;
+	}
 	getFilePath(): string { return this.filePath; }
 	getPlaybackSeconds(): number { return this.player.info.currentTime; }
+	getPlaybackToken(): { player: object; revision: number } | null {
+		return this.destroyed ? null : { player: this.player, revision: this.playbackRevision };
+	}
 	getPlaybackRate(): number { return this.rate; }
 	isPlaying(): boolean { return this.player.playing; }
 	togglePlay(): void { this.player.toggle(); }
@@ -60,14 +67,6 @@ export class BackgroundPlayback implements NotePlayback {
 		const index = PLAYBACK_RATES.indexOf(this.rate);
 		this.setRate(PLAYBACK_RATES[Math.min(PLAYBACK_RATES.length - 1, Math.max(0,
 			(index < 0 ? PLAYBACK_RATES.indexOf(1) : index) + direction))]);
-	}
-	async jumpToMark(direction: 1 | -1): Promise<void> {
-		const marks = await loadNoteVideoMarks(this.app, this.filePath, this.videoId, this.host.getTranscriptHeading());
-		if (this.destroyed) return;
-		const now = this.getPlaybackSeconds();
-		const target = direction > 0 ? marks.find((t) => t > now + 0.5) : [...marks].reverse().find((t) => t < now - 1.5);
-		if (target === undefined) new Notice(direction > 0 ? "No later timestamp in the note." : "No earlier timestamp in the note.");
-		else this.seekTo(target);
 	}
 	async copyTimestampLink(): Promise<void> {
 		const win = this.container.ownerDocument.defaultView;

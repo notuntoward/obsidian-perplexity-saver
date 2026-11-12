@@ -22,7 +22,7 @@ describe("video timestamp copy", () => {
 			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
-			isTranscriptShown: () => false, toggleTranscript: async () => {}, onPlayback: () => {}, focusNote: async () => {},
+			isTranscriptShown: () => false, toggleTranscript: async () => {}, jumpToTranscriptTimestamp: () => {}, onPlayback: () => {}, focusNote: async () => {},
 		});
 
 		Object.assign(view, { startTime: 27.25 });
@@ -39,6 +39,7 @@ describe("video timestamp copy", () => {
 			getShowYoutubeCaptions: () => false, getToolbarCaptureAction: () => "insert",
 			insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
 			onPlayback: () => {}, focusNote: async () => {}, rememberPlayback,
 		});
 		Object.assign(view, { videoId: "abc", filePath: "note.md", player: { info: { currentTime: 123.75 }, destroy } });
@@ -55,7 +56,7 @@ describe("video timestamp copy", () => {
 			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
-			isTranscriptShown: () => false, toggleTranscript: async () => { throw error; }, onPlayback: () => {}, focusNote: async () => {},
+			isTranscriptShown: () => false, toggleTranscript: async () => { throw error; }, jumpToTranscriptTimestamp: () => {}, onPlayback: () => {}, focusNote: async () => {},
 		});
 		await view.toggleTranscript();
 		expect(log).toHaveBeenCalledWith("Perplexity Saver: could not toggle transcript", error);
@@ -72,6 +73,7 @@ describe("video timestamp copy", () => {
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
 			onPlayback: () => {},
 			focusNote: async () => {},
 		};
@@ -95,6 +97,7 @@ describe("video timestamp copy", () => {
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
 			onPlayback: () => {},
 			focusNote: async () => {},
 		});

@@ -29,6 +29,7 @@ async function toolbar(doc = document) {
 		insertScreenshot,
 		isTranscriptShown: () => false,
 		toggleTranscript: async () => {},
+		jumpToTranscriptTimestamp: () => {},
 		onPlayback: () => {},
 		focusNote: async () => {},
 	});

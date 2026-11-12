@@ -92,7 +92,9 @@ async function harness() {
 		getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
 		getShowYoutubeCaptions: () => false,
 		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
-		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l), onPlayback: () => {}, focusNote: async () => {},
+		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l),
+		jumpToTranscriptTimestamp: (view, direction) => { void plugin["jumpToTranscriptTimestamp"](view, direction); },
+		onPlayback: () => {}, focusNote: async () => {},
 	});
 	viewer.contentEl = document.createElement("div");
 	viewer.containerEl = viewer.contentEl;
@@ -847,6 +849,7 @@ describe("transcript activation commands", () => {
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
 			toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
 			onPlayback: () => {},
 			focusNote: async () => {},
 		});
@@ -952,4 +955,441 @@ describe("transcript activation commands", () => {
 		expect(h.transcript.focusLines).toHaveBeenCalled();
 	});
 
+});
+
+const NAVIGATION_VIDEO = "dQw4w9WgXcQ";
+const OTHER_VIDEO = "BaW_jenozKc";
+const NAVIGATION_NOTE = [
+	`[0:12](https://youtu.be/${NAVIGATION_VIDEO}?t=12) note timestamp`,
+	"# Transcript",
+	`[0:10](https://youtu.be/${NAVIGATION_VIDEO}?t=10 "10.1–10.2") first`,
+	`[0:10](https://youtu.be/${OTHER_VIDEO}?t=10 "10.15–10.2") unrelated`,
+	`[0:10](https://youtu.be/${NAVIGATION_VIDEO}?t=10 "10.3–10.6") second`,
+	`[0:10](https://youtu.be/${NAVIGATION_VIDEO}?t=10 "10.1–10.2") duplicate`,
+	`[0:20](https://youtu.be/${NAVIGATION_VIDEO}?t=20 "20.2–21") third`,
+].join("\n");
+
+type NavigationHarness = Awaited<ReturnType<typeof harness>>;
+
+function navigationFixture(h: NavigationHarness, content = NAVIGATION_NOTE): void {
+	const start = content.indexOf("# Transcript");
+	Object.assign(h.app.metadataCache, {
+		getFileCache: () => ({ headings: start < 0 ? [] : [{
+			heading: "Transcript", level: 1,
+			position: { start: { offset: start }, end: { offset: start + "# Transcript".length } },
+		}] }),
+	});
+	h.app.vault.cachedRead = vi.fn(async () => content);
+}
+
+function navigationCommands(h: NavigationHarness) {
+	const commands: import("obsidian").Command[] = [];
+	vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+	h.plugin["registerVideoCommands"]();
+	return {
+		next: commands.find((command) => command.id === "video-viewer-next-note-timestamp")!,
+		previous: commands.find((command) => command.id === "video-viewer-previous-note-timestamp")!,
+		commands,
+	};
+}
+
+function navigationPlayer(h: NavigationHarness, playing = false) {
+	const info = { currentTime: 10.1, playerState: playing ? 1 : 2, duration: 120, playbackRate: 1 };
+	const player = {
+		info,
+		seekTo: vi.fn((seconds: number) => { info.currentTime = seconds; }),
+		play: vi.fn(), pause: vi.fn(), destroy: vi.fn(),
+	};
+	Object.assign(h.viewerLeaf.view, { videoId: NAVIGATION_VIDEO, player, marks: [12] });
+	return player;
+}
+
+function navigationContext(h: NavigationHarness, context: "note" | "video" | "transcript"): void {
+	const note = addNote(h);
+	h.leaves.push(h.transcriptLeaf);
+	h.app.workspace.activeLeaf = context === "note" ? note : context === "video" ? h.viewerLeaf : h.transcriptLeaf;
+}
+
+function delayedNavigationRead(h: NavigationHarness) {
+	let resolveRead!: (content: string) => void;
+	const read = vi.fn(() => new Promise<string>((resolve) => { resolveRead = resolve; }));
+	h.app.vault.cachedRead = read;
+	return {
+		waitForStart: () => vi.waitFor(() => expect(read).toHaveBeenCalledOnce(), { timeout: 500 }),
+		finish: () => resolveRead(NAVIGATION_NOTE),
+	};
+}
+
+describe("transcript timestamp navigation", () => {
+	beforeEach(() => { createdNotices.length = 0; });
+
+	it("retains command IDs and registers the transcript-specific display names", async () => {
+		const h = await harness();
+		const { next, previous, commands } = navigationCommands(h);
+		expect(next.name).toBe("Video: next transcript timestamp");
+		expect(previous.name).toBe("Video: previous transcript timestamp");
+		expect(commands.filter((command) => command.id === next.id)).toHaveLength(1);
+		expect(commands.filter((command) => command.id === previous.id)).toHaveLength(1);
+	});
+
+	it.each([
+		["note", "lines", 10.3],
+		["video", "lines", 10.3],
+		["transcript", "lines", 10.3],
+		["note", "paragraphs", 20.2],
+		["video", "paragraphs", 20.2],
+		["transcript", "paragraphs", 20.2],
+	] as const)("uses %s focus and %s rows to seek to %s", async (context, mode, target) => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, context);
+		Object.assign(h.transcript, { mode });
+		const playing = context === "video";
+		const player = navigationPlayer(h, playing);
+		const { next } = navigationCommands(h);
+		expect(next.checkCallback!(true)).toBe(true);
+		expect(player.seekTo).not.toHaveBeenCalled();
+		expect(next.checkCallback!(false)).toBe(true);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(target));
+		expect((h.viewerLeaf.view as VideoView).isPlaying()).toBe(playing);
+		expect(player.play).not.toHaveBeenCalled();
+		expect(player.pause).not.toHaveBeenCalled();
+		expect((h.viewerLeaf.view as VideoView)["marks"]).toEqual([12]);
+	});
+
+	it("uses caption lines when the transcript panel is closed", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		addNote(h);
+		Object.assign(h.transcript, { mode: "paragraphs" });
+		const player = navigationPlayer(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.3));
+	});
+
+	it("prefers the focused viewer when two videos belong to the same note", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const other = new VideoView({ app: h.app } as unknown as WorkspaceLeaf, (h.viewerLeaf.view as VideoView)["host"]);
+		other.containerEl = document.createElement("div");
+		const otherSeek = vi.fn();
+		Object.assign(other, { filePath: h.file.path, videoId: OTHER_VIDEO, marks: [30], player: {
+			info: { currentTime: 10.1 }, seekTo: otherSeek,
+		} });
+		h.leaves.unshift({ view: other } as unknown as WorkspaceLeaf);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.3));
+		expect(otherSeek).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["note", "lines", false, 10.5],
+		["video", "lines", true, 10.5],
+		["transcript", "lines", false, 10.5],
+		["note", "paragraphs", false, 20.5],
+		["video", "paragraphs", true, 20.5],
+		["transcript", "paragraphs", true, 20.5],
+	] as const)("moves to the previous row from %s in %s mode while playing=%s", async (context, mode, playing, now) => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, context);
+		Object.assign(h.transcript, { mode });
+		const player = navigationPlayer(h, playing);
+		player.info.currentTime = now;
+		const { previous } = navigationCommands(h);
+		expect(previous.checkCallback!(false)).toBe(true);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.1), { timeout: 500 });
+		expect((h.viewerLeaf.view as VideoView).isPlaying()).toBe(playing);
+		expect(player.play).not.toHaveBeenCalled();
+		expect(player.pause).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["note", false],
+		["transcript", true],
+	] as const)("moves to the previous row of background audio from %s while playing=%s", async (context, playing) => {
+		const h = await harness();
+		navigationFixture(h);
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.workspace.activeLeaf = context === "note" ? note : h.transcriptLeaf;
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile, {
+			videoId: NAVIGATION_VIDEO, seconds: 10.5, autoplay: playing,
+		});
+		expect(playback).not.toBeNull();
+		try {
+			const { previous } = navigationCommands(h);
+			expect(previous.checkCallback!(false)).toBe(true);
+			await vi.waitFor(() => expect(playback!.getPlaybackSeconds()).toBe(10.1), { timeout: 500 });
+			expect(playback!.isPlaying()).toBe(playing);
+			expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		} finally {
+			await h.transcript.onClose();
+		}
+	});
+
+	it("does not restart the first row when there is no previous row", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "transcript");
+		const player = navigationPlayer(h);
+		player.info.currentTime = 10.1001;
+		const { previous } = navigationCommands(h);
+		previous.checkCallback!(false);
+		await vi.waitFor(() => expect(createdNotices.at(-1)?.message).toMatch(/no.*previous.*transcript/i), { timeout: 500 });
+		expect(player.seekTo).not.toHaveBeenCalled();
+	});
+
+	it("moves between distinct fractional rows and does not wrap at either end", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "transcript");
+		const player = navigationPlayer(h);
+		const { next, previous } = navigationCommands(h);
+		previous.checkCallback!(false);
+		await vi.waitFor(() => expect(createdNotices).toHaveLength(1));
+		expect(createdNotices[0]?.message).toMatch(/no.*previous.*transcript/i);
+		expect(player.seekTo).not.toHaveBeenCalled();
+		player.info.currentTime = 20.2001;
+		previous.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenLastCalledWith(10.3));
+		previous.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenLastCalledWith(10.1));
+		previous.checkCallback!(false);
+		await vi.waitFor(() => expect(createdNotices).toHaveLength(2));
+		expect(player.seekTo).toHaveBeenCalledTimes(2);
+		player.info.currentTime = 20.2;
+		player.seekTo.mockClear();
+		next.checkCallback!(false);
+		await vi.waitFor(() => expect(createdNotices).toHaveLength(3));
+		expect(createdNotices[2]?.message).toMatch(/no.*later.*transcript/i);
+		expect(player.seekTo).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["missing heading", "# Notes\n[0:12](https://youtu.be/dQw4w9WgXcQ?t=12)"],
+		["empty section", "# Transcript\nNo timed captions"],
+		["unrelated video", `# Transcript\n[0:12](https://youtu.be/${OTHER_VIDEO}?t=12) other`],
+	] as const)("notices %s without seeking", async (_label, content) => {
+		const h = await harness();
+		navigationFixture(h, content);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await vi.waitFor(() => expect(createdNotices.at(-1)?.message).toMatch(/no.*transcript/i));
+		expect(player.seekTo).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["note", false, "lines", 10.3],
+		["note", true, "paragraphs", 20.2],
+		["transcript", false, "paragraphs", 20.2],
+		["transcript", true, "lines", 10.3],
+	] as const)("navigates background audio from %s, playing=%s, with %s rows", async (context, playing, mode, target) => {
+		const h = await harness();
+		navigationFixture(h);
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.workspace.activeLeaf = context === "note" ? note : h.transcriptLeaf;
+		Object.assign(h.transcript, { mode });
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile, {
+			videoId: NAVIGATION_VIDEO, seconds: 10.1, autoplay: playing,
+		});
+		expect(playback).not.toBeNull();
+		try {
+			const { next } = navigationCommands(h);
+			expect(next.checkCallback!(true)).toBe(true);
+			next.checkCallback!(false);
+			await vi.waitFor(() => expect(playback!.getPlaybackSeconds()).toBe(target));
+			expect(playback!.isPlaying()).toBe(playing);
+			expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		} finally {
+			await h.transcript.onClose();
+		}
+	});
+
+	it("routes bracket keys through transcript navigation in the registered viewer", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		Object.assign(h.app.workspace, { on: vi.fn(), onLayoutReady: vi.fn(), getLastOpenFiles: () => [] });
+		Object.assign(h.app.vault, { on: vi.fn() });
+		Object.assign(h.plugin, { registerView: vi.fn() });
+		h.plugin.settings.autoRelinkSources = false;
+		vi.spyOn(h.plugin, "loadSettings").mockResolvedValue();
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => command);
+		await h.plugin.onload();
+		const factory = vi.mocked(h.plugin.registerView).mock.calls.find(([type]) => type === h.viewerLeaf.view.getViewType())?.[1];
+		if (!factory) throw new Error("Missing video view registration");
+		const view = h.viewerLeaf.view as VideoView;
+		Object.assign(view, { host: (factory(h.viewerLeaf) as VideoView)["host"] });
+		const press = (key: string): KeyboardEvent => {
+			const event = new KeyboardEvent("keydown", { key, cancelable: true });
+			Object.defineProperty(event, "target", { value: view.contentEl });
+			view["onKey"](event);
+			return event;
+		};
+		expect(press("]").defaultPrevented).toBe(true);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenLastCalledWith(10.3));
+		player.info.currentTime = 10.5;
+		expect(press("[").defaultPrevented).toBe(true);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenLastCalledWith(10.1));
+	});
+
+	it.each(["closed", "note", "video", "player"] as const)("does not seek a stale viewer after the %s changes during a read", async (change) => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		const view = h.viewerLeaf.view as VideoView;
+		const replacementSeek = vi.fn();
+		if (change === "closed") await view.onClose();
+		else if (change === "note") Object.assign(view, { filePath: "other.md" });
+		else if (change === "video") Object.assign(view, { videoId: OTHER_VIDEO });
+		else Object.assign(view, { player: { info: { currentTime: 10.1 }, seekTo: replacementSeek } });
+		pending.finish();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(player.seekTo).not.toHaveBeenCalled();
+		expect(replacementSeek).not.toHaveBeenCalled();
+	});
+
+	it("does not seek destroyed background audio after a read completes", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile, { videoId: NAVIGATION_VIDEO, seconds: 10.1 });
+		const seek = vi.spyOn(playback!, "seekTo");
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		h.transcript.stopBackgroundPlayback();
+		pending.finish();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(seek).not.toHaveBeenCalled();
+	});
+
+	it("uses the active transcript's mode when panels for the same note differ", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "transcript");
+		const other = Object.create(TranscriptView.prototype) as TranscriptView;
+		Object.assign(other, { filePath: h.file.path, mode: "paragraphs", containerEl: document.createElement("div") });
+		h.leaves.unshift({ view: other } as unknown as WorkspaceLeaf);
+		const player = navigationPlayer(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.3));
+	});
+
+	it("uses the current panel mode after a delayed read", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		Object.assign(h.transcript, { mode: "paragraphs" });
+		pending.finish();
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(20.2));
+	});
+
+	it("uses the current playback position after a delayed read", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		player.info.currentTime = 10.3;
+		pending.finish();
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(20.2));
+	});
+
+	it("uses captions if the paragraph panel closes during a read", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		Object.assign(h.transcript, { mode: "paragraphs" });
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
+		pending.finish();
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.3));
+	});
+
+	it("ignores a delayed viewer read after switching away and back to the note", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		const view = h.viewerLeaf.view as VideoView;
+		vi.spyOn(view as unknown as { refreshMarks(): Promise<void> }, "refreshMarks").mockResolvedValue();
+		view.showVideo(NAVIGATION_VIDEO, 10.1, "other.md");
+		view.showVideo(NAVIGATION_VIDEO, 10.1, h.file.path);
+		player.seekTo.mockClear();
+		pending.finish();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(player.seekTo).not.toHaveBeenCalled();
+	});
+
+	it("ignores a delayed background read after its note is renamed away and back", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile, { videoId: NAVIGATION_VIDEO, seconds: 10.1 });
+		const seek = vi.spyOn(playback!, "seekTo");
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		playback!.renameFile("other.md");
+		playback!.renameFile(h.file.path);
+		pending.finish();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(seek).not.toHaveBeenCalled();
+		await h.transcript.onClose();
+	});
+
+	it("ignores a delayed read when the associated note is replaced at the same path", async () => {
+		const h = await harness();
+		navigationFixture(h);
+		navigationContext(h, "video");
+		const player = navigationPlayer(h);
+		const pending = delayedNavigationRead(h);
+		const { next } = navigationCommands(h);
+		next.checkCallback!(false);
+		await pending.waitForStart();
+		h.app.vault.getFileByPath = vi.fn(() => ({ ...h.file } as TFile));
+		pending.finish();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(player.seekTo).not.toHaveBeenCalled();
+	});
 });
