@@ -3,7 +3,7 @@ import { writeClipboardIn } from "commons/windows";
 import { PLAYBACK_RATES, type VideoView } from "./videoView";
 import { YouTubeEmbed } from "./youtubePlayer";
 import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "./youtubeLinks";
-import { insertPlaybackTimestamp, type NoteInsertionTarget } from "./noteInsertion";
+import { insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
 
 export type NotePlayback = Pick<VideoView,
 	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "getPlaybackToken" | "seekTo" |
@@ -12,6 +12,7 @@ export type NotePlayback = Pick<VideoView,
 
 interface BackgroundPlaybackHost {
 	getTimestampCopyFormat(): TimestampCopyFormat;
+	getTimestampListStyle?(): TimestampListStyle;
 	onPlayback(videoId: string, filePath: string, seconds: number, stateChanged?: boolean): void;
 	remember(videoId: string, filePath: string, seconds: number): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
@@ -74,6 +75,7 @@ export class BackgroundPlayback implements NotePlayback {
 	async copyTimestampLink(): Promise<void> {
 		const win = this.container.ownerDocument.defaultView;
 		const seconds = this.getPlaybackSeconds();
+		this.pausePlayback();
 		const text = timestampClipboardText(this.videoId, seconds, this.host.getTimestampCopyFormat());
 		const copied = win ? await writeClipboardIn(win, text).catch(() => false) : false;
 		new Notice(copied ? `Copied ${formatClock(seconds)} link.` : "Could not write to the clipboard.");
@@ -83,7 +85,7 @@ export class BackgroundPlayback implements NotePlayback {
 		this.container.ownerDocument.defaultView?.open(watchUrl(this.videoId, Math.floor(this.getPlaybackSeconds())), "_blank");
 	}
 	async insertTimestampBullet(target: NoteInsertionTarget): Promise<void> {
-		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback())) {
+		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match")) {
 			await this.host.focusNote(target);
 			new Notice("Timestamp inserted.");
 		}

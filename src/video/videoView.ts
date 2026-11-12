@@ -10,8 +10,9 @@ import {
 	insertAtNoteInsertionAnchor,
 	releaseNoteInsertionAnchor,
 	insertPlaybackTimestamp,
-	timestampedScreenshotBlock,
+	timestampedScreenshotItem,
 	type NoteInsertionTarget,
+	type TimestampListStyle,
 } from "./noteInsertion";
 import {
 	clampPan,
@@ -60,6 +61,7 @@ interface VideoViewState {
 export interface VideoViewHost {
 	getTranscriptHeading(): string;
 	getTimestampCopyFormat(): TimestampCopyFormat;
+	getTimestampListStyle?(): TimestampListStyle;
 	getToolbarCaptureAction(): VideoToolbarCaptureAction;
 	getShowYoutubeCaptions(): boolean;
 	insertTimestamp(view: VideoView): Promise<void>;
@@ -354,9 +356,9 @@ export class VideoView extends ItemView {
 		this.player?.pause();
 	}
 
-	/** Insert a paused timestamp bullet into the note's tracked editor position. */
+	/** Insert a paused timestamp list item into the note's tracked editor position. */
 	async insertTimestampBullet(target: NoteInsertionTarget): Promise<void> {
-		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback())) {
+		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match")) {
 			await this.focusNoteAfterInsertion(target, "Timestamp inserted.");
 		}
 	}
@@ -710,9 +712,11 @@ export class VideoView extends ItemView {
 	async copyTimestampLink(): Promise<void> {
 		if (!this.player || !this.videoId) return;
 		const win = this.ownerWin;
-		const text = timestampClipboardText(this.videoId, this.player.info.currentTime, this.host.getTimestampCopyFormat());
+		const seconds = this.player.info.currentTime;
+		this.pausePlayback();
+		const text = timestampClipboardText(this.videoId, seconds, this.host.getTimestampCopyFormat());
 		if (win && (await writeClipboardIn(win, text).catch(() => false))) {
-			new Notice(`Copied ${formatClock(this.player.info.currentTime)} link.`);
+			new Notice(`Copied ${formatClock(seconds)} link.`);
 		} else {
 			new Notice("Could not write to the clipboard.");
 		}
@@ -840,9 +844,9 @@ export class VideoView extends ItemView {
 					new Notice(`Screenshot saved to ${image.path}, but its insertion point is no longer available.`);
 					return;
 				}
-				const block = timestampedScreenshotBlock(embed, this.videoId, seconds);
+				const block = timestampedScreenshotItem(embed, this.videoId, seconds);
 				const insertion = blockInsertion(target.anchor.view.state.doc, position, block);
-				if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset)) {
+				if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset, insertion.replace)) {
 					new Notice(`Screenshot saved to ${image.path}, but it could not be inserted into the note.`);
 					return;
 				}

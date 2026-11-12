@@ -79,13 +79,15 @@ describe("video timestamp copy", () => {
 		};
 		const view = new VideoView({} as WorkspaceLeaf, host);
 		view.contentEl = document.createElement("div");
-		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65.9 } } });
+		const pause = vi.fn();
+		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65.9 }, pause } });
 		const link = timestampLink("VID", 65.9);
 		await view.copyTimestampLink();
 		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, format === "list" ? `- ${link}: ` : link);
 		format = initial === "list" ? "link" : "list";
 		await view.copyTimestampLink();
 		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, format === "list" ? `- ${link}: ` : link);
+		expect(pause).toHaveBeenCalledTimes(2);
 	});
 
 	it("reports clipboard failure instead of claiming the timestamp was copied", async () => {
@@ -102,7 +104,7 @@ describe("video timestamp copy", () => {
 			focusNote: async () => {},
 		});
 		view.contentEl = document.createElement("div");
-		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65 } } });
+		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65 }, pause: vi.fn() } });
 		await view.copyTimestampLink();
 		expect(createdNotices.map((notice) => notice.message)).toEqual(["Could not write to the clipboard."]);
 	});

@@ -34,17 +34,17 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
-	it("defaults existing installations to list copies while retaining an explicit link-only choice", async () => {
+	it("defaults copies to link only while retaining an explicit list-item choice", async () => {
 		const plugin = new PerplexitySaverPlugin({} as App, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
 			minAppVersion: "1.14.0", author: "", description: "",
 		});
 		vi.spyOn(plugin, "loadData").mockResolvedValue({});
 		await plugin.loadSettings();
-		expect(plugin.settings.timestampCopyFormat).toBe("list");
-		vi.mocked(plugin.loadData).mockResolvedValue({ timestampCopyFormat: "link" });
-		await plugin.loadSettings();
 		expect(plugin.settings.timestampCopyFormat).toBe("link");
+		vi.mocked(plugin.loadData).mockResolvedValue({ timestampCopyFormat: "list" });
+		await plugin.loadSettings();
+		expect(plugin.settings.timestampCopyFormat).toBe("list");
 	});
 
 	it("defaults toolbar captures to insertion and preserves and saves an explicit copy choice", async () => {
@@ -100,9 +100,43 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
+	it("defaults inserted timestamp list items to the current list and offers every list form", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.timestampListStyle).toBe("match");
+		vi.mocked(plugin.loadData).mockResolvedValue({ timestampListStyle: "task" });
+		await plugin.loadSettings();
+		expect(plugin.settings.timestampListStyle).toBe("task");
+		const tab = new PerplexitySaverSettingTab({} as App, plugin);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "Video viewer");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "Timestamp list item style",
+			control: {
+				type: "dropdown", key: "timestampListStyle",
+				options: {
+					match: "Match current list (default)",
+					unordered: "Unordered list (-)",
+					ordered: "Ordered list (1.)",
+					task: "Task list (- [ ])",
+				},
+			},
+		}));
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("timestampListStyle", "ordered");
+		expect(plugin.settings.timestampListStyle).toBe("ordered");
+		expect(plugin.saveSettings).toHaveBeenCalledOnce();
+	});
+
 	const createMockPlugin = () => ({
 		settings: {
-			timestampCopyFormat: "list",
+			timestampCopyFormat: "link",
+			timestampListStyle: "match",
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
 			collapseBlankLines: true,
@@ -230,7 +264,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			"type" in item && item.type === "group" && item.heading === "Video viewer");
 		expect(group?.type).toBe("group");
 		if (!group?.items) throw new Error("Missing Video viewer settings");
-		const format = group.items.find((item) => "name" in item && item.name === "Copied timestamp format");
+		const format = group.items.find((item) => "name" in item && item.name === "Copy current timestamp format");
 		expect(format && "control" in format ? format.control : undefined).toMatchObject({
 			type: "dropdown", key: "timestampCopyFormat",
 			options: { list: expect.any(String), link: expect.any(String) },

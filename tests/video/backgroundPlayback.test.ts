@@ -9,10 +9,17 @@ const embeds = vi.hoisted(() => ({ instances: [] as Array<{
 	playing: boolean;
 	emit: (seconds: number, state: number) => void;
 	toggle: ReturnType<typeof vi.fn>;
+	pause: ReturnType<typeof vi.fn>;
+	play: ReturnType<typeof vi.fn>;
 	seekTo: ReturnType<typeof vi.fn>;
 	setPlaybackRate: ReturnType<typeof vi.fn>;
 	destroy: ReturnType<typeof vi.fn>;
 }> }));
+const writeClipboard = vi.hoisted(() => vi.fn().mockResolvedValue(true));
+vi.mock("commons/windows", async (original) => ({
+	...await original<Record<string, unknown>>(),
+	writeClipboardIn: writeClipboard,
+}));
 vi.mock("../../src/video/youtubePlayer", async (original) => {
 	const actual = await original<Record<string, unknown>>();
 	return {
@@ -81,6 +88,22 @@ describe("transcript background playback", () => {
 		embeds.instances[1].emit(2, 1);
 		expect(onPlayback).toHaveBeenCalledWith("dQw4w9WgXcQ", "note.md", 2, true);
 		moved.destroy();
+	});
+
+	it("pauses background playback when copying the current timestamp", async () => {
+		const parent = document.body.createDiv();
+		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
+			getTimestampCopyFormat: () => "link",
+			onPlayback: vi.fn(),
+			remember: vi.fn(),
+			focusNote: vi.fn(),
+		});
+		const player = embeds.instances[0];
+		playback.play();
+		await playback.copyTimestampLink();
+		expect(player.pause).toHaveBeenCalledOnce();
+		expect(writeClipboard).toHaveBeenLastCalledWith(expect.anything(), `[0:42](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42)`);
+		playback.destroy();
 	});
 
 	it("runs play and speed without a workspace leaf and saves position on cleanup", () => {

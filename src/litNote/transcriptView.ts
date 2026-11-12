@@ -430,19 +430,24 @@ export class TranscriptView extends ItemView {
 	/**
 	 * Mark the row playing at `seconds` (null clears the mark). With `follow`,
 	 * unless the user is scrolling or searching, scroll it into the middle of the panel.
+	 * `reveal` marks and centers the row even when following is paused or disabled.
 	 */
-	showPlayback(seconds: number | null, follow = true, stateChanged = true): void {
+	showPlayback(seconds: number | null, follow = true, stateChanged = true, reveal = false): void {
 		this.playbackSec = seconds;
 		this.follow = follow;
 		if (stateChanged) this.refreshPlaybackControls();
 		const idx = seconds === null ? -1 : currentRowIndex(this.rowStarts, seconds);
-		if (idx === this.currentRow) return;
-		this.rendered[this.currentRow]?.el.removeClass("is-playing");
-		this.currentRow = idx;
+		const changed = idx !== this.currentRow;
+		if (changed) {
+			this.rendered[this.currentRow]?.el.removeClass("is-playing");
+			this.currentRow = idx;
+			this.rendered[idx]?.el.addClass("is-playing");
+		}
 		const current = this.rendered[idx];
-		if (!current) return;
-		current.el.addClass("is-playing");
-		if (follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
+		if (!current || (!changed && !reveal)) return;
+		if (reveal) {
+			this.scrollToRow(current.el, false);
+		} else if (follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
 			this.scrollToRow(current.el, true);
 		}
 	}

@@ -147,7 +147,7 @@ export function timestampLink(videoId: string, seconds: number): string {
 export type TimestampCopyFormat = "list" | "link";
 
 /** Keep the description suffix outside the Markdown link and preserve its trailing space. */
-export function timestampClipboardText(videoId: string, seconds: number, format: TimestampCopyFormat = "list"): string {
+export function timestampClipboardText(videoId: string, seconds: number, format: TimestampCopyFormat = "link"): string {
 	const link = timestampLink(videoId, seconds);
 	return format === "link" ? link : `- ${link}: `;
 }

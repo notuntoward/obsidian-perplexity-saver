@@ -477,6 +477,23 @@ describe("accepting transcript search", () => {
 		expect(play).not.toHaveBeenCalled();
 	});
 
+	it("reveals an explicitly opened timestamp despite a recent scroll, row focus, or following off", async () => {
+		const view = await panel();
+		const scroll = vi.spyOn(view as unknown as {
+			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
+		}, "scrollToRow");
+		rows(view)[1].focus();
+		view["userScrollAt"] = Date.now();
+		view.showPlayback(3.5, false, false);
+		expect(scroll).not.toHaveBeenCalled();
+		view.showPlayback(2.5, false, false, true);
+		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
+		expect(scroll).toHaveBeenLastCalledWith(rows(view)[2], false);
+		scroll.mockClear();
+		view.showPlayback(2.5, false, false, true);
+		expect(scroll).toHaveBeenLastCalledWith(rows(view)[2], false);
+	});
+
 	it.each([false, true])("provides standalone native transcript commands with no Incremental Search installed (popout=%s)", async (popout) => {
 		settings.keyboard = "emacs";
 		const doc = popout ? document.implementation.createHTMLDocument() : document;

@@ -97,16 +97,15 @@ describe("linkUrlAt", () => {
 });
 
 describe("formatting", () => {
-	it("defaults copied timestamps to a list item with space for a plain-text description", () => {
+	it("defaults copied timestamps to a link and still offers a list item with space for a description", () => {
 		const link = timestampLink(ID, 65.9);
-		expect(timestampClipboardText(ID, 65.9)).toBe(`- ${link}: `);
+		expect(timestampClipboardText(ID, 65.9)).toBe(link);
 		expect(timestampClipboardText(ID, 65.9, "link")).toBe(link);
 		expect(timestampClipboardText(ID, 65.9, "list")).toBe(`- ${link}: `);
-		expect(timestampClipboardText(ID, 65.9)).toMatch(/\): $/);
 	});
 
 	it("leaves the native editor insertion cursor after the description separator", () => {
-		const text = timestampClipboardText(ID, 65);
+		const text = timestampClipboardText(ID, 65, "list");
 		const empty = EditorState.create();
 		const pasted = empty.update(empty.replaceSelection(text)).state;
 		expect(pasted.selection.main.head).toBe(text.length);

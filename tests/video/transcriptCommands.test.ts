@@ -1135,7 +1135,7 @@ describe("transcript activation commands", () => {
 		const highlight = vi.spyOn(h.transcript, "showPlayback");
 		const focus = vi.spyOn(h.transcript, "focusPlayback").mockImplementation(() => {});
 		await h.plugin["playTranscriptAt"](h.file.path, "https://youtu.be/dQw4w9WgXcQ", 28, true);
-		expect(highlight).toHaveBeenLastCalledWith(28, true, true);
+		expect(highlight).toHaveBeenLastCalledWith(28, true, true, false);
 		await h.plugin["cycleVisibleParts"](h.file as TFile, "note");
 		expect(focus).toHaveBeenCalledWith(28, true);
 		await h.transcript.onClose();
@@ -1156,15 +1156,17 @@ describe("transcript activation commands", () => {
 		await h.transcript.onClose();
 	});
 
-	it("timestamp clicks seek the transcript's audio session without opening a player", async () => {
+	it("timestamp clicks seek the transcript's audio session and reveal the clicked row", async () => {
 		const h = await harness();
 		h.leaves.length = 0;
 		const note = addNote(h);
 		h.leaves.push(h.transcriptLeaf);
+		const reveal = vi.spyOn(h.transcript, "showPlayback");
 		const target = note.view.containerEl.createEl("a");
 		await h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target });
 		expect(h.transcript.getBackgroundPlayback()?.getPlaybackSeconds()).toBe(73);
 		expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(true);
+		expect(reveal).toHaveBeenLastCalledWith(73, true, false, true);
 		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
 		await h.transcript.onClose();
 	});

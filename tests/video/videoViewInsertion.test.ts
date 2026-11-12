@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 import { createdNotices } from "../__mocks__/obsidian";
 import { VideoView, type VideoViewHost } from "../../src/video/videoView";
-import { createNoteInsertionAnchor, noteInsertionAnchors, type NoteInsertionTarget } from "../../src/video/noteInsertion";
+import { createNoteInsertionAnchor, noteInsertionAnchors, type NoteInsertionTarget, type TimestampListStyle } from "../../src/video/noteInsertion";
 
 const captureImage = vi.hoisted(() => vi.fn());
 const writeClipboard = vi.hoisted(() => vi.fn());
@@ -47,7 +47,7 @@ function insertionTarget(doc: string): NoteInsertionTarget {
 	};
 }
 
-function videoView() {
+function videoView(listStyle: TimestampListStyle = "match") {
 	const file = { path: "Lit.md", basename: "Lit" };
 	const image = { path: "Attachments/capture.png" };
 	const focusNote = vi.fn().mockResolvedValue(undefined);
@@ -64,6 +64,7 @@ function videoView() {
 	const host: VideoViewHost = {
 		getTranscriptHeading: () => "Transcript",
 		getTimestampCopyFormat: () => "list",
+		getTimestampListStyle: () => listStyle,
 		getShowYoutubeCaptions: () => false,
 		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false,
@@ -96,7 +97,7 @@ describe("video capture insertion", () => {
 		document.body.replaceChildren();
 	});
 
-	it("pauses and inserts a timestamp bullet, then focuses the associated note", async () => {
+	it("pauses and inserts a timestamp list item, then focuses the associated note", async () => {
 		const target = insertionTarget("");
 		const { view, focusNote, player } = videoView();
 
@@ -107,6 +108,17 @@ describe("video capture insertion", () => {
 		expect(target.anchor.view.state.selection.main.head).toBe(target.anchor.view.state.doc.length);
 		expect(focusNote).toHaveBeenCalledWith(target);
 		expect(createdNotices.at(-1)?.message).toBe("Timestamp inserted.");
+	});
+
+	it("uses the configured list style and advances ordered items", async () => {
+		const target = insertionTarget("3. existing");
+		const { view } = videoView("ordered");
+
+		await view.insertTimestampBullet(target);
+
+		expect(target.anchor.view.state.doc.toString()).toBe(
+			`3. existing\n4. [1:05](https://www.youtube.com/watch?v=VID&t=65): `
+		);
 	});
 
 	it("saves a whole-frame screenshot before inserting it, and does not change the clipboard", async () => {

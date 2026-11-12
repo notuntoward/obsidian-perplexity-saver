@@ -69,6 +69,7 @@ import {
 	noteInsertionAnchors,
 	releaseNoteInsertionAnchor,
 	type NoteInsertionTarget,
+	type TimestampListStyle,
 } from "./video/noteInsertion";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
 import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
@@ -172,6 +173,7 @@ export interface PerplexitySaverSettings {
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
 	videoViewerLocation: VideoViewerLocation;
 	timestampCopyFormat: TimestampCopyFormat;
+	timestampListStyle: TimestampListStyle;
 	videoToolbarCaptureAction: VideoToolbarCaptureAction;
 	showYoutubeCaptions: boolean;
 	videoNoteFocusIndicator: boolean;
@@ -210,7 +212,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
-	timestampCopyFormat: "list",
+	timestampCopyFormat: "link",
+	timestampListStyle: "match",
 	videoToolbarCaptureAction: "insert",
 	showYoutubeCaptions: false,
 	videoNoteFocusIndicator: true,
@@ -359,6 +362,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new VideoView(leaf, {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
+					getTimestampListStyle: () => this.settings.timestampListStyle,
 					getToolbarCaptureAction: () => this.settings.videoToolbarCaptureAction,
 					getShowYoutubeCaptions: () => this.settings.showYoutubeCaptions,
 					insertTimestamp: (view) => this.insertTimestampIntoNote(view),
@@ -442,7 +446,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-next-note-timestamp", "Video: next transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, 1)],
 			["video-viewer-previous-note-timestamp", "Video: previous transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, -1)],
 			["video-viewer-copy-timestamp", "Video: copy current timestamp", (v) => v.copyTimestampLink()],
-			["video-viewer-insert-timestamp", "Video: insert timestamp bullet", (v) => this.insertTimestampIntoNote(v)],
+			["video-viewer-insert-timestamp", "Video: insert timestamp list item", (v) => this.insertTimestampIntoNote(v)],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
 		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
@@ -774,8 +778,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/** Mark the playing line in transcript panels showing this video (scrolling them if the setting is on). */
-	private showPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged = true): void {
-		this.forMatchingTranscripts(videoId, filePath, (view) => view.showPlayback(seconds, this.settings.followTranscript, stateChanged));
+	private showPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged = true, reveal = false): void {
+		this.forMatchingTranscripts(videoId, filePath, (view) => view.showPlayback(seconds, this.settings.followTranscript, stateChanged, reveal));
 	}
 
 	private forMatchingTranscripts(videoId: string, filePath: string | null, update: (view: TranscriptView) => void): void {
@@ -936,6 +940,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 			return;
 		}
 		await this.playSession(file, request.videoId, request.seconds, true);
+		// Clicking a link is explicit navigation: reveal the chunk even if the user
+		// recently scrolled the panel or keyboard focus is still on a transcript row.
+		this.showPlayback(request.videoId, file.path, request.seconds, false, true);
 	}
 
 	/** Which of note / video / transcript is active, and the literature note it belongs to. */
@@ -1071,6 +1078,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const playback = new BackgroundPlayback(this.app, transcript.containerEl, file.path, videoId,
 			request?.seconds ?? (saved?.videoId === videoId ? saved.seconds : 0), {
 				getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
+				getTimestampListStyle: () => this.settings.timestampListStyle,
 				onPlayback: (id, path, seconds, stateChanged) => this.showPlayback(id, path, seconds, stateChanged),
 				remember: (id, path, seconds) => {
 					this.settings.videoPlayback[path] = { videoId: id, seconds };
@@ -2034,14 +2042,28 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						control: { type: "toggle", key: "showYoutubeCaptions" },
 					},
 					{
-						name: "Copied timestamp format",
-						desc: "Format used when copying a timestamp from the toolbar or copy command. The list item ends with ': ' so pasting leaves the cursor ready for a plain-text description outside the link. Insertions, transcript-row and screenshot copies are unchanged.",
+						name: "Timestamp list item style",
+						desc: "List form used by Video: insert timestamp list item and the toolbar's insert action. Match current list reuses the marker at the cursor and follows ordered numbering. Unordered, ordered, and task start that form; on a blank line an ordered item starts at 1. Indentation and list placement follow the cursor in every case.",
+						control: {
+							type: "dropdown",
+							key: "timestampListStyle",
+							options: {
+								match: "Match current list (default)",
+								unordered: "Unordered list (-)",
+								ordered: "Ordered list (1.)",
+								task: "Task list (- [ ])",
+							},
+						},
+					},
+					{
+						name: "Copy current timestamp format",
+						desc: "Format for Video: copy current timestamp and the toolbar's copy action. Timestamp link only copies [m:ss](URL). List item copies - [m:ss](URL): with a trailing space for typing a description. This setting does not affect inserting timestamps, transcript-row copies, or screenshot copies.",
 						control: {
 							type: "dropdown",
 							key: "timestampCopyFormat",
 							options: {
-								list: "List item: - <timestamp link>: (default)",
-								link: "Timestamp link only",
+								link: "Timestamp link only (default)",
+								list: "List item: - <timestamp link>: ",
 							},
 						},
 					},
