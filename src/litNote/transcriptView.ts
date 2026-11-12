@@ -112,7 +112,9 @@ export interface TranscriptViewHost {
 	 * link (may be empty). With `play`, start playing; otherwise keep playing or paused.
 	 */
 	playAt(filePath: string, url: string, seconds: number, play: boolean): void;
-	isVideoVisible?(filePath: string): boolean;
+	/** True when a player for this note is loaded in any window, so the panel stays with that player. */
+	hasPlayerFor?(filePath: string): boolean;
+	isVideoVisible?(filePath: string, leaf: WorkspaceLeaf): boolean;
 	isPlaybackPlaying?(filePath: string): boolean;
 	onPlaybackSessionChanged?(filePath: string, videoId: string): void;
 	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert"): void;
@@ -460,7 +462,8 @@ export class TranscriptView extends ItemView {
 	}
 
 	private async followFile(file: TFile): Promise<void> {
-		if (this.pinned || file.extension !== "md") return;
+		// A transcript whose note has a player follows that player, not unrelated note opens.
+		if (this.pinned || file.extension !== "md" || (this.filePath && this.host.hasPlayerFor?.(this.filePath))) return;
 		const token = ++this.loadToken;
 		const lines = await loadTranscriptLines(this.app, file, this.host.getHeadingName());
 		if (token !== this.loadToken || !lines?.length) return;
@@ -656,7 +659,7 @@ export class TranscriptView extends ItemView {
 	refreshPlaybackControls(): void {
 		const controls = this.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback");
 		if (!controls) return;
-		controls.hidden = !this.filePath || !!this.host.isVideoVisible?.(this.filePath);
+		controls.hidden = !this.filePath || !!this.host.isVideoVisible?.(this.filePath, this.leaf);
 		const button = controls.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle");
 		if (!button) return;
 		const playing = !!this.filePath && !!this.host.isPlaybackPlaying?.(this.filePath);

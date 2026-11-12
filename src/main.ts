@@ -71,12 +71,13 @@ import {
 	type NoteInsertionTarget,
 } from "./video/noteInsertion";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
-import { parseYouTubeUrl, watchUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
+import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
 import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
-import { buildNavigationModel, closePopoutWindowIfEmpty, getGroupForLeaf, isInCollapsedSidebar, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
+import { isVisiblePart, loadedPlayers, mediaWindowFor, playerForNote, primaryPlayer, transcriptsForNote, visiblePlayers, visibleTranscripts, type VisiblePart } from "./video/session";
+import { buildNavigationModel, closePopoutWindowIfEmpty, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { getCommandHotkeyLabel } from "commons/modal";
@@ -308,10 +309,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 						highlights: this.settings.transcriptSearchHighlights,
 					}),
 					playAt: (filePath, url, seconds, play) => void this.playTranscriptAt(filePath, url, seconds, play),
-					isVideoVisible: (filePath) => {
-						return this.app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).some((leaf) =>
-							leaf.view instanceof VideoView && leaf.view.getFilePath() === filePath &&
-							!!leaf.view.getVideoId() && this.isPartVisible(leaf));
+					hasPlayerFor: (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						return !!file && !!playerForNote(this.app, file);
+					},
+					isVideoVisible: (filePath, leaf) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						const player = file ? playerForNote(this.app, file) : null;
+						return !!player && !!leaf.view && isVisiblePart(this.app, player.leaf) &&
+							getWindowForLeaf(player.leaf) === getWindowForLeaf(leaf);
 					},
 					isPlaybackPlaying: (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
@@ -326,15 +332,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					runPlaybackControl: (filePath, action) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) return;
-						const candidate = this.partLeaves(file).video?.view;
-						const target = candidate instanceof VideoView && candidate.getVideoId()
-							? Promise.resolve(candidate) : this.backgroundPlaybackFor(file);
-						void target.then((playback) => {
-							if (!playback) return;
-							if (action === "play") playback.togglePlay();
-							else if (action === "insert") return this.insertTimestampIntoNote(playback);
-							else return this.jumpToTranscriptTimestamp(playback, action === "next" ? 1 : -1);
-						}).catch((error: unknown) => {
+						void this.runTranscriptControl(file, action).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not run transcript playback control", error);
 							new Notice("Could not run transcript playback control.");
 						});
@@ -376,6 +374,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					},
 					onPlayback: (videoId, filePath, seconds, stateChanged) => {
 						if (filePath) this.stopBackgroundPlayback(filePath);
+						this.stopBackgroundPlaybackIn(getWindowForLeaf(leaf));
 						this.showPlayback(videoId, filePath, seconds, stateChanged);
 					},
 					rememberPlayback: (videoId, filePath, seconds) => {
@@ -469,7 +468,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					if ((!view && !(background && transcript)) || (id.includes("screenshot") && !Platform.isDesktopApp)) return false;
 					if (!checking) void Promise.resolve().then(async () => {
 						if (view) {
-							if (id.startsWith("video-viewer-screenshot") && !this.isPartVisible(view.leaf)) await this.activatePartLeaf(view.leaf, null);
+							if (id.startsWith("video-viewer-screenshot") && !isVisiblePart(this.app, view.leaf)) await this.activatePartLeaf(view.leaf, null);
 							return run(view);
 						}
 						if (file && background) {
@@ -527,17 +526,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}));
 	}
 
-	private isPartVisible(leaf: WorkspaceLeaf | null): leaf is WorkspaceLeaf {
-		return !!leaf && leaf.view.containerEl.isShown() && !isInCollapsedSidebar(this.app, leaf);
-	}
-
 	private visiblePartLeaves(file: TFile): Record<NotePart, WorkspaceLeaf | null> {
 		const leaves: Record<NotePart, WorkspaceLeaf | null> = { note: null, video: null, transcript: null };
 		// Prefer a visible duplicate over a hidden tab for the same file.
 		for (const part of PART_ORDER) {
 			const type = part === "note" ? "markdown" : part === "video" ? VIDEO_VIEW_TYPE : TRANSCRIPT_VIEW_TYPE;
 			leaves[part] = this.app.workspace.getLeavesOfType(type).find((leaf) =>
-				this.partFileKey(leaf) === file.path && this.isPartVisible(leaf)) ?? null;
+				this.partFileKey(leaf) === file.path && isVisiblePart(this.app, leaf)) ?? null;
 		}
 		return leaves;
 	}
@@ -792,25 +787,117 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	/** Transcript panel: show the video from a line in the video viewer, starting playback with `play`. */
 	private async playTranscriptAt(filePath: string, url: string, seconds: number, play: boolean): Promise<void> {
+		const file = this.app.vault.getFileByPath(filePath);
 		let videoId = url ? parseYouTubeUrl(url)?.videoId ?? null : null;
-		if (!videoId) {
-			const file = this.app.vault.getFileByPath(filePath);
-			videoId = file ? await noteVideoId(this.app, file) : null;
-		}
+		if (!videoId) videoId = file ? await noteVideoId(this.app, file) : null;
 		if (!videoId) {
 			new Notice("No YouTube link for this transcript.");
 			return;
 		}
-		const file = this.app.vault.getFileByPath(filePath);
-		if (file && !this.partLeaves(file).video && this.visiblePartLeaves(file).transcript) {
-			const background = await this.backgroundPlaybackFor(file, { videoId, seconds });
+		if (!file) {
+			await openVideoViewer(this.app, { videoId, seconds, sourcePath: filePath, autoplay: play }, this.settings.videoViewerLocation);
+			return;
+		}
+		await this.playSession(file, videoId, seconds, play);
+	}
+
+	/**
+	 * Play a note in its session, wherever that session lives: use the note's own
+	 * player, retarget a player in the transcript's window, use background audio
+	 * when the note has a visible transcript, or open a player. One audio source
+	 * survives per note and per window.
+	 */
+	private async playSession(file: TFile, videoId: string, seconds: number, play: boolean): Promise<void> {
+		const origin = mediaWindowFor(this.app, file);
+		const own = playerForNote(this.app, file);
+		if (own) {
+			await this.switchPlayer(own, file, videoId, seconds, play);
+			return;
+		}
+		const transcript = transcriptsForNote(this.app, file, origin)[0] ?? null;
+		if (transcript) {
+			const win = getWindowForLeaf(transcript.leaf);
+			const rival = visiblePlayers(this.app, win).find((part) => part.view.getFilePath() !== file.path);
+			if (rival) {
+				await this.switchPlayer(rival, file, videoId, seconds, play);
+				return;
+			}
+			this.stopBackgroundPlaybackIn(win, file.path);
+			const background = await this.backgroundPlaybackFor(file, { videoId, seconds }, win);
 			if (background) {
 				background.seekTo(seconds);
 				if (play) background.play();
 			}
 			return;
 		}
-		await openVideoViewer(this.app, { videoId, seconds, sourcePath: filePath, autoplay: play }, this.settings.videoViewerLocation);
+		const fallback = primaryPlayer(this.app, origin);
+		if (fallback) {
+			await this.switchPlayer(fallback, file, videoId, seconds, play);
+			return;
+		}
+		this.stopBackgroundPlayback(file.path);
+		this.stopBackgroundPlaybackIn(origin);
+		await openVideoViewer(this.app, { videoId, seconds, sourcePath: file.path, autoplay: play, preferWindow: origin }, this.settings.videoViewerLocation);
+	}
+
+	/** Retarget a player and move every transcript of its previous note to the new note. */
+	private async switchPlayer(player: VisiblePart<VideoView>, file: TFile, videoId: string, seconds: number, play: boolean): Promise<void> {
+		const previousPath = player.view.getFilePath();
+		this.stopBackgroundPlayback(file.path);
+		this.stopBackgroundPlaybackIn(getWindowForLeaf(player.leaf));
+		await openVideoViewer(this.app, {
+			videoId, seconds, sourcePath: file.path, autoplay: play, preferLeaf: player.leaf,
+		}, this.settings.videoViewerLocation);
+		await this.alignTranscripts(previousPath, file.path);
+	}
+
+	/** Keep every transcript of the old note on the player's new note, in any window. */
+	private async alignTranscripts(previousPath: string | null, nextPath: string | null): Promise<void> {
+		if (!previousPath || !nextPath || nextPath === previousPath) return;
+		const moves: Promise<void>[] = [];
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === previousPath) {
+				moves.push(leaf.view.showFile(nextPath));
+			}
+		}
+		await Promise.all(moves);
+	}
+
+	/** Stop hidden playback in one window, so a visible player is the only audio source. */
+	private stopBackgroundPlaybackIn(win: Window | null | undefined, exceptPath?: string): void {
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (!(leaf.view instanceof TranscriptView) || (win && getWindowForLeaf(leaf) !== win)) continue;
+			if (exceptPath && leaf.view.getFilePath() === exceptPath) continue;
+			leaf.view.stopBackgroundPlayback();
+		}
+	}
+
+	/** Toolbar play/previous/next/insert: drive the session's player, never start a second one. */
+	private async runTranscriptControl(file: TFile, action: "play" | "previous" | "next" | "insert"): Promise<void> {
+		const origin = mediaWindowFor(this.app, file);
+		const attached = playerForNote(this.app, file)?.view ?? null;
+		if (action === "play") {
+			if (attached) {
+				attached.togglePlay();
+				return;
+			}
+			const transcript = transcriptsForNote(this.app, file, origin)[0] ?? null;
+			const win = transcript ? getWindowForLeaf(transcript.leaf) : null;
+			const rival = win ? visiblePlayers(this.app, win).find((part) => part.view.getFilePath() !== file.path) : null;
+			if (rival) {
+				const videoId = await noteVideoId(this.app, file) ?? rival.view.getVideoId();
+				if (!videoId) return;
+				const saved = this.settings.videoPlayback[file.path];
+				await this.switchPlayer(rival, file, videoId, saved?.videoId === videoId ? saved.seconds : 0, true);
+				return;
+			}
+			(await this.backgroundPlaybackFor(file, undefined, win))?.togglePlay();
+			return;
+		}
+		const target = attached ?? this.existingBackgroundPlayback(file.path);
+		if (!target) return;
+		if (action === "insert") await this.insertTimestampIntoNote(target);
+		else await this.jumpToTranscriptTimestamp(target, action === "next" ? 1 : -1);
 	}
 
 	/** Reveal a transcript panel (opening the active note's if none is open) and focus its search box. */
@@ -840,15 +927,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private async openTimestamp(request: TimestampRequest): Promise<void> {
 		const filePath = this.sourcePathFor(request.target);
 		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
-		if (file && !this.partLeaves(file).video && this.visiblePartLeaves(file).transcript) {
-			await this.playTranscriptAt(file.path, watchUrl(request.videoId, request.seconds), request.seconds, true);
+		if (!file) {
+			await openVideoViewer(
+				this.app,
+				{ videoId: request.videoId, seconds: request.seconds, sourcePath: filePath, autoplay: true },
+				this.settings.videoViewerLocation
+			);
 			return;
 		}
-		await openVideoViewer(
-			this.app,
-			{ videoId: request.videoId, seconds: request.seconds, sourcePath: this.sourcePathFor(request.target), autoplay: true },
-			this.settings.videoViewerLocation
-		);
+		await this.playSession(file, request.videoId, request.seconds, true);
 	}
 
 	/** Which of note / video / transcript is active, and the literature note it belongs to. */
@@ -940,19 +1027,27 @@ export default class PerplexitySaverPlugin extends Plugin {
 		else playback.seekTo(target);
 	}
 
-	private existingBackgroundPlayback(filePath: string): BackgroundPlayback | null {
-		return this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)
-			.map((panel) => panel.view instanceof TranscriptView ? panel.view.getBackgroundPlayback() : null)
-			.find((playback) => playback?.getFilePath() === filePath) ?? null;
+	private existingBackgroundPlayback(filePath: string, win: Window | null = null): BackgroundPlayback | null {
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (!(leaf.view instanceof TranscriptView) || (win && getWindowForLeaf(leaf) !== win)) continue;
+			const playback = leaf.view.getBackgroundPlayback();
+			if (playback?.getFilePath() === filePath) return playback;
+		}
+		return null;
 	}
 
-	private async backgroundPlaybackFor(file: TFile, request?: { videoId: string; seconds: number; autoplay?: boolean; playbackRate?: number }): Promise<BackgroundPlayback | null> {
-		const leaf = this.visiblePartLeaves(file).transcript;
-		if (!(leaf?.view instanceof TranscriptView)) {
+	private async backgroundPlaybackFor(
+		file: TFile,
+		request?: { videoId: string; seconds: number; autoplay?: boolean; playbackRate?: number },
+		preferWindow?: Window | null
+	): Promise<BackgroundPlayback | null> {
+		const panel = transcriptsForNote(this.app, file, preferWindow)[0] ?? null;
+		if (!panel) {
 			new Notice("Open the transcript before playing audio in the background.");
 			return null;
 		}
-		const transcript = leaf.view;
+		const leaf = panel.leaf;
+		const transcript = panel.view;
 		const videoId = request?.videoId ?? transcript.getBackgroundPlayback()?.getVideoId() ?? await noteVideoId(this.app, file);
 		if (!videoId) {
 			new Notice(`No YouTube link in ${file.basename}.`);
@@ -960,12 +1055,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 		// Metadata reads may finish after a layout change or another command.
 		if (!this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).includes(leaf) ||
-			transcript.getFilePath() !== file.path || !this.isPartVisible(leaf)) {
+			transcript.getFilePath() !== file.path || !isVisiblePart(this.app, leaf)) {
 			new Notice("The transcript workspace changed before playback could start.");
 			return null;
 		}
-		const video = this.partLeaves(file).video?.view;
-		if (video instanceof VideoView && video.getVideoId()) {
+		const win = getWindowForLeaf(leaf);
+		if (playerForNote(this.app, file) || loadedPlayers(this.app, win).length) {
 			new Notice("A video pane is open; use its playback controls.");
 			return null;
 		}
@@ -1100,11 +1195,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const playing = sameVideo ? playback.isPlaying() : autoplay;
 		const rate = sameVideo ? playback.getPlaybackRate() : null;
 		this.stopBackgroundPlayback(file.path);
+		const origin = mediaWindowFor(this.app, file);
+		const target = playerForNote(this.app, file) ?? (associatedOnly ? null : primaryPlayer(this.app, origin));
+		const previousPath = target?.view.getFilePath() ?? null;
 		const leaf = await openVideoViewer(
 			this.app,
-			{ videoId, seconds, sourcePath: file.path, autoplay: playing, associatedOnly },
+			{ videoId, seconds, sourcePath: file.path, autoplay: playing, associatedOnly, preferLeaf: target?.leaf ?? null, preferWindow: origin },
 			this.settings.videoViewerLocation
 		);
+		if (leaf.view) this.stopBackgroundPlaybackIn(getWindowForLeaf(leaf));
+		if (!associatedOnly) await this.alignTranscripts(previousPath, file.path);
 		if (rate !== null && leaf.view instanceof VideoView) leaf.view.setRate(rate);
 		return leaf;
 	}

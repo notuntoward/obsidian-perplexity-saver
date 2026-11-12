@@ -918,15 +918,28 @@ export function getVideoLeaf(app: App, preferWindow?: Window | null): WorkspaceL
  */
 export async function openVideoViewer(
 	app: App,
-	request: { videoId: string; seconds: number; sourcePath: string | null; autoplay?: boolean; associatedOnly?: boolean },
+	request: {
+		videoId: string;
+		seconds: number;
+		sourcePath: string | null;
+		autoplay?: boolean;
+		associatedOnly?: boolean;
+		/** Reuse this specific player (the session's player) rather than any other. */
+		preferLeaf?: WorkspaceLeaf | null;
+		/** Open in this window's player when no leaf is preferred. */
+		preferWindow?: Window | null;
+	},
 	location: VideoViewerLocation
 ): Promise<WorkspaceLeaf> {
 	const autoplay = request.autoplay ?? false;
 	const noteLeaf = request.sourcePath ? findLeafForFile(app, request.sourcePath) : null;
-	const existing = request.associatedOnly
-		? app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).find((leaf) =>
-			leaf.view instanceof VideoView && leaf.view.getFilePath() === request.sourcePath)
-		: getVideoLeaf(app, noteLeaf ? getWindowForLeaf(noteLeaf) : null);
+	const preferred = request.preferLeaf;
+	const existing = preferred && app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).includes(preferred)
+		? preferred
+		: request.associatedOnly
+			? app.workspace.getLeavesOfType(VIDEO_VIEW_TYPE).find((leaf) =>
+				leaf.view instanceof VideoView && leaf.view.getFilePath() === request.sourcePath)
+			: getVideoLeaf(app, request.preferWindow ?? (noteLeaf ? getWindowForLeaf(noteLeaf) : null));
 	if (existing) {
 		await loadLeafIfDeferred(existing);
 		await app.workspace.revealLeaf(existing);
