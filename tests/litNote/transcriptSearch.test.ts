@@ -846,6 +846,19 @@ describe("transcript search settings", () => {
 		expect(document.activeElement).toBe(rows(view)[3]);
 	});
 
+	it("re-centers the playing chunk when switching transcript format after a click", async () => {
+		const view = await panel();
+		view.showPlayback(2.5);
+		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
+		const scrolled = vi.mocked(HTMLElement.prototype.scrollIntoView);
+		scrolled.mockClear();
+		view["userScrollAt"] = Date.now();
+		view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-format")!.click();
+		expect(view.contentEl.querySelectorAll(".is-playing")).toHaveLength(1);
+		expect(rows(view)[0].classList.contains("is-playing")).toBe(true);
+		expect(scrolled).toHaveBeenCalled();
+	});
+
 	it("accepts a search after paragraph formatting without playing", async () => {
 		const view = await panel();
 		view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-controls button")!.click();

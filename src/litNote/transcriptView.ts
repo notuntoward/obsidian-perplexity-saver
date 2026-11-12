@@ -477,6 +477,9 @@ export class TranscriptView extends ItemView {
 
 	private setMode(mode: TranscriptViewMode): void {
 		this.mode = mode;
+		// Rebuilding the list resets its scroll position; re-center on the playing
+		// row at once instead of waiting out the pause a click in the panel starts.
+		this.userScrollAt = 0;
 		this.render();
 	}
 
