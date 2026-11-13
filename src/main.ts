@@ -42,7 +42,6 @@ import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
-import { runJevTranscriptExperiment } from "./litNote/jevTranscriptExperiment";
 import { runWhisperxExperiment } from "./litNote/whisperxExperiment";
 import {
 	TRANSCRIPT_VIEW_TYPE,
@@ -172,12 +171,8 @@ export interface PerplexitySaverSettings {
 	 * "blocks": one line per 5 cues with a whole-second start time only.
 	 */
 	transcriptFormat: TranscriptFormat;
-	jevExperimentEnabled: boolean;
 	whisperxEnabled: boolean;
 	whisperxPythonPath: string;
-	jevApiKeySecret: string;
-	jevSentenceThreshold: number;
-	jevParagraphThreshold: number;
 	/** What a plain click on a YouTube timestamp link does; Ctrl/Cmd-click does the other. */
 	timestampClickAction: TimestampClickAction;
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
@@ -223,12 +218,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
 	collapseTranscriptOnOpen: true,
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
-	jevExperimentEnabled: false,
 	whisperxEnabled: false,
 	whisperxPythonPath: "",
-	jevApiKeySecret: "",
-	jevSentenceThreshold: 0.8,
-	jevParagraphThreshold: 0.8,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
 	timestampCopyFormat: "link",
@@ -327,16 +318,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
-					getJevSettings: () => ({
-						enabled: this.settings.jevExperimentEnabled,
-						sentenceThreshold: this.settings.jevSentenceThreshold,
-						paragraphThreshold: this.settings.jevParagraphThreshold,
-					}),
-					classifyTranscript: async (filePath) => {
-						const file = this.app.vault.getFileByPath(filePath);
-						if (!file) throw new Error("Transcript note not found.");
-						await this.classifyJevTranscript(file);
-					},
 					getAlignmentEnabled: () => this.settings.whisperxEnabled,
 					alignTranscript: async (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
@@ -392,7 +373,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 				})
 		);
 		this.registerTranscriptCommands();
-		this.registerJevTranscriptCommand();
 		this.registerVideoWorkspaceCommands();
 
 		this.registerView(
@@ -728,22 +708,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
-	private registerJevTranscriptCommand(): void {
-		this.addCommand({
-			id: "jev-classify-transcript",
-			name: "Transcript: classify boundaries (experiment)",
-			checkCallback: (checking: boolean) => {
-				const file = this.activePart().file;
-				if (!this.settings.jevExperimentEnabled || !file || file.extension !== "md") return false;
-				if (!checking) void this.classifyJevTranscript(file).catch((error: unknown) => {
-					console.error("Perplexity Saver: Jev classification failed", error);
-					new Notice(error instanceof Error ? error.message : "Jev classification failed.");
-				});
-				return true;
-			},
-		});
-	}
-
 	private registerTranscriptCommands(): void {
 		this.addCommand({
 			id: "whisperx-align-transcript",
@@ -820,7 +784,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
-	private jevAbort = new AbortController();
 	private whisperxAbort = new AbortController();
 
 	stopWhisperxAlignment(): void {
@@ -844,21 +807,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
-	stopJevExperiment(): void {
-		this.jevAbort.abort();
-		this.jevAbort = new AbortController();
-	}
-
-	private async classifyJevTranscript(file: TFile): Promise<void> {
-		if (!this.settings.jevExperimentEnabled) throw new Error("Enable the Jev transcript experiment in settings first.");
-		await runJevTranscriptExperiment(this.app, file, this.settings.transcriptHeading, this.settings.jevApiKeySecret, this.jevAbort.signal);
-		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
-			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === file.path) await leaf.view.reload();
-		}
-	}
-
 	onunload(): void {
-		this.jevAbort.abort();
 		this.whisperxAbort.abort();
 		for (const cancel of this.transcriptFallbacks.values()) cancel();
 		this.transcriptFallbacks.clear();
@@ -1828,11 +1777,6 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 	}
 
 	async setControlValue(key: string, value: unknown): Promise<void> {
-		if ((key === "jevSentenceThreshold" || key === "jevParagraphThreshold") &&
-			(typeof value !== "number" || !Number.isFinite(value) || value < 0.5 || value > 0.99)) {
-			new Notice("Jev thresholds must be between 0.50 and 0.99.");
-			return;
-		}
 		(this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
 		if (key === "zoteroPort") {
 			const n = Number(value);
@@ -1868,8 +1812,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		if (key === "transcriptHeading") {
 			this.plugin.applyTranscriptHeading();
 		}
-		if (key === "whisperxEnabled" || key === "jevExperimentEnabled" || key === "jevSentenceThreshold" || key === "jevParagraphThreshold") {
-			if (key === "jevExperimentEnabled" && !value) this.plugin.stopJevExperiment();
+		if (key === "whisperxEnabled") {
 			if (key === "whisperxEnabled" && !value) this.plugin.stopWhisperxAlignment();
 			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 				if (leaf.view instanceof TranscriptView) await leaf.view.reload();
@@ -2155,26 +2098,6 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						name: "WhisperX Python executable",
 						desc: "Optional full path to the Python executable with scripts/whisperx/requirements.txt installed. Leave blank for this plugin's .venv-whisperx environment. Do not include arguments or quotes.",
 						control: { type: "text", key: "whisperxPythonPath" },
-					},
-					{
-						name: "Jev transcript experiment",
-						desc: "Opt in to sentence and paragraph comparisons in the existing transcript panel. Classification is manual, confirmed, paid, and sends transcript text to TypeSafe AI. Turning this off restores the original interface; saved results remain in the note.",
-						control: { type: "toggle", key: "jevExperimentEnabled" },
-					},
-					{
-						name: "TypeSafe API key",
-						desc: "Select or create an Obsidian secret. Only its reference is saved in plugin settings; the key is never written into notes.",
-						control: { type: "secret", key: "jevApiKeySecret", disabled: () => !this.plugin.settings.jevExperimentEnabled },
-					},
-					{
-						name: "Jev sentence threshold",
-						desc: "Minimum sentence-break probability. Changing this reuses saved probabilities offline; it never calls the API.",
-						control: { type: "slider", key: "jevSentenceThreshold", min: 0.5, max: 0.99, step: 0.01, displayFormat: (value) => value.toFixed(2), disabled: () => !this.plugin.settings.jevExperimentEnabled },
-					},
-					{
-						name: "Jev paragraph threshold",
-						desc: "Minimum paragraph-break probability, applied only at accepted sentence boundaries. A soft 100-word target also breaks at sentence ends. Changing this is offline.",
-						control: { type: "slider", key: "jevParagraphThreshold", min: 0.5, max: 0.99, step: 0.01, displayFormat: (value) => value.toFixed(2), disabled: () => !this.plugin.settings.jevExperimentEnabled },
 					},
 				],
 			},

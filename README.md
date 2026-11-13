@@ -145,13 +145,16 @@ These are suggestions, not plugin defaults; assign them in **Settings → Hotkey
 awful, but the latest native-first, caption-anchored timing works very well,
 with no significant alignment errors observed. Earlier broad-window WhisperX
 alignment did not work well. Three hard Obsidian freezes have now been reported,
-including on displaying Properties; this snapshot preserves both experiments
-before Jev removal and a separate freeze investigation. Timing quality does not
-establish UI/storage safety.
+including on displaying Properties. Commit `372b654` on `commons-adoption`
+preserves both experiments. The `experiment/transcript-properties-freeze`
+branch removes Jev classification, settings, commands and comparisons while
+retaining punctuation-based sentence segmentation and word timing. Existing
+Jev note data is not deleted automatically. Timing quality does not establish
+UI/storage safety.
 
 Keep the existing **Punctuation sentences**, but time them against the actual audio.
 Use YouTube's existing word offsets first; reserve WhisperX for missing internal
-timings. This is independent of Jev: no API key, paid inference, generated
+timings. No API key, paid inference, generated
 punctuation, or replacement transcript is involved. English, desktop only.
 
 1. Reload Saver and enable **Settings -> Perplexity Saver -> YouTube transcripts -> Caption word timing** (the renamed alignment toggle; existing enabled preferences are retained).
@@ -166,8 +169,7 @@ punctuation, or replacement transcript is involved. English, desktop only.
 4. Select **Word-timed sentences**. **Compare** toggles between these and
    **Punctuation sentences**, preserving source-text position without seeking.
    Text, sentence boundaries, search, filtering, keyboard navigation and playback
-   controls are shared; only the timing changes. If Jev is also enabled, select
-   **Jev sentences** explicitly to inspect that separate experiment.
+   controls are shared; only the timing changes.
 
 **Already set up on this Windows ARM development machine:** an isolated x64
 Python 3.12 environment in `.venv-whisperx`, WhisperX 3.8.6, yt-dlp and the English
@@ -218,7 +220,7 @@ origins are `caption`, `youtube`, `acoustic` or `unmatched`; unmatched words are
 `null`. Matching results reopen without downloading audio,
 running Python or loading models. Editing source text, URLs or caption times
 invalidates the cache; recomputation always requires confirmation. Other note
-properties, Jev caches and source captions are preserved. A body edit during a
+properties and source captions are preserved. A body edit during a
 run prevents saving against edited text. Old version-1 broad-window results are
 stale automatically; **Time words** replaces them only after a successful,
 confirmed run. Failed/cancelled runs do not save partial
@@ -238,38 +240,9 @@ successful run. Cached timing comparison works offline; YouTube playback still
 requires network access.
 
 To discard/recompute results, remove only `whisperx_transcript` in the note's
-source mode and click **Time words** again. Disable both experiments to restore
+source mode and click **Time words** again. Disable **Caption word timing** to restore
 the original toolbar. WhisperX uses BSD-2-Clause; the selected
 [`WAV2VEC2_ASR_BASE_960H` model is MIT-licensed](https://docs.pytorch.org/audio/2.8.0/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html).
-
-### Jev transcript experiment
-
-This is opt-in and leaves the source captions unchanged. It classifies each space between transcript words, including spaces inside a caption, rather than generating or rewriting text.
-
-1. Reload Saver, then enable **Settings -> Perplexity Saver -> YouTube transcripts -> Jev transcript experiment**.
-2. Obtain a TypeSafe API key from [the TypeSafe console](https://console.typesafe.ai/). In **TypeSafe API key**, create/select an Obsidian secret containing that key. Plugin settings store only the secret reference; notes never contain the key.
-3. Open a note with a stored YouTube transcript and use the usual **Video: show or hide transcript** command.
-4. Click **Classify with Jev**, or run **Transcript: classify boundaries (experiment)**. Confirm the paid request. Only transcript words and available caption gaps are sent to TypeSafe, not the rest of your note or audio. There are no background or automatic classification requests.
-5. Select a format in the panel:
-
-   | Format | Purpose |
-   |---|---|
-   | Original captions / lines | Unchanged source chunks |
-   | Punctuation sentences | Native `Intl.Segmenter` sentence segmentation of existing punctuation; no inferred punctuation |
-   | Jev sentences | One row per inferred sentence |
-   | Original paragraphs | Existing pause/60-second algorithm |
-   | Jev paragraphs | Accepted sentence boundaries plus paragraph probabilities and a soft 100-word target |
-
-6. Click **Compare** repeatedly to alternate punctuation/Jev sentences or original/Jev paragraphs. When caption word timing is also enabled, **Compare** from punctuation sentences prefers word-timed sentences; select **Jev sentences** explicitly to inspect Jev. The panel retains its source-text reading position through coarser groupings. Search, filtering, timestamp links, row keyboard controls and playback following are shared by all formats. Comparing does not seek or start playback.
-7. Adjust **Jev sentence threshold** and **Jev paragraph threshold** in settings if desired (both default to 0.80). This reuses the saved probabilities offline, with no new charge.
-
-**Persistence and recovery.** The note's `jev_transcript` frontmatter property contains versioned sentence/paragraph probability arrays, a SHA-256 fingerprint of source text/URLs/timing, the pinned model (`jev-1.14.0`), prompt version, creation time and cumulative billable input tokens. Each successful batch is saved immediately. **Resume Jev** evaluates only remaining batches after a network/API failure. A complete matching cache needs no API key or network to reopen. Editing source text, URLs or timing makes the cache stale; reclassification requires another explicit confirmation. An edit to the note body during classification stops saving results against that edited body.
-
-**Cost.** TypeSafe advertises $0.042 per million input tokens, with output tokens free ([current model documentation](https://docs.typesafe.ai/models)). The completion notice reports actual cumulative input tokens and an estimate at that rate. Requests contain at most 32 candidate boundaries, two binary questions per boundary, and up to 32 context words on either side. Request sizes are bounded; there are no automatic retries.
-
-**Limitations.** This initial experiment uses whitespace-separated words and English sentence-segmentation conventions for the punctuation baseline. Unpunctuated captions can therefore produce one long baseline sentence. No punctuation, capitalization or words are synthesized, including in Jev paragraph mode. Only caption-level timing is available: multiple sentences within one caption share its start timestamp. Caption gaps are not measured silence, and Jev receives no acoustic features. Its advertised calibration is not established for this task; quality needs comparison on real transcripts.
-
-**Abandoning or recording the experiment.** Turn **Jev transcript experiment** off to restore the original toolbar and stop any remaining batches; an already-issued HTTP request cannot be recalled. Saved results remain available if you enable it again. To record your judgment, add an ordinary note property such as `jev_transcript_review` with the thresholds and what improved or failed; Saver leaves that property alone. Remove `jev_transcript` in source mode only if you intentionally want to discard the cache and pay for a fresh run. No source-caption restoration or Git rollback is needed.
 
 ### YouTube video viewer
 

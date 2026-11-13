@@ -4,7 +4,7 @@ import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
 import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
-import { createJevCache, prepareTranscript } from "../../src/litNote/jevTranscript";
+import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
 const menuChoices = vi.hoisted(() => [] as { title: string; checked: boolean; run?: () => void }[]);
@@ -92,7 +92,7 @@ function stubPopout(doc: Document): void {
 	vi.stubGlobal("activeWindow", win);
 }
 
-async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cache?: unknown, alignment?: unknown, videoId = "abc"): Promise<TranscriptView> {
+async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, alignment?: unknown, videoId = "abc"): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
 		vault: {
@@ -100,7 +100,7 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cac
 			cachedRead: async () => `# Transcript\n[00:00](https://youtu.be/${videoId}?t=0) start\n[00:01](https://youtu.be/${videoId}?t=1) target first\n[00:02](https://youtu.be/${videoId}?t=2) context\n[00:03](https://youtu.be/${videoId}?t=3) target last\n`,
 		},
 		metadataCache: {
-			getFileCache: () => ({ frontmatter: { jev_transcript: cache, whisperx_transcript: alignment }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
+			getFileCache: () => ({ frontmatter: { whisperx_transcript: alignment }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
 		},
 		workspace: { requestSaveLayout: vi.fn() },
 		hotkeyManager: {
@@ -121,7 +121,32 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cac
 	return view;
 }
 
-describe("local acoustic alignment comparison without Jev", () => {
+describe("local acoustic alignment comparison", () => {
+	it("anchors toolbar sentence comparisons to visible text after scrolling", async () => {
+		const view = await panel(document, { getAlignmentEnabled: () => true });
+		vi.spyOn(view.app.vault, "cachedRead").mockResolvedValue("# Transcript\n" +
+			["Start.", "Target first.", "Context.", "Target last."].map((text, i) =>
+				`[00:0${i}](https://youtu.be/abc?t=${i}) ${text}\n`).join(""));
+		await view.reload();
+		const rect = (top: number, bottom: number) => ({
+			top, bottom, left: 0, right: 300, width: 300, height: bottom - top, x: 0, y: top, toJSON: () => ({}),
+		});
+		view.contentEl.style.overflowY = "auto";
+		Object.defineProperties(view.contentEl, { scrollHeight: { value: 800 }, clientHeight: { value: 200 } });
+		vi.spyOn(view.contentEl, "getBoundingClientRect").mockReturnValue(rect(0, 200));
+		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-list")!, "getBoundingClientRect").mockReturnValue(rect(-200, 600));
+		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-header")!, "getBoundingClientRect").mockReturnValue(rect(0, 40));
+		[[-200, -140], [-140, -80], [80, 130], [130, 180]].forEach(([top, bottom], i) => {
+			vi.spyOn(rows(view)[i], "getBoundingClientRect").mockReturnValue(rect(top, bottom));
+		});
+		const select = view.contentEl.querySelector("select")!;
+		select.focus();
+		select.value = "sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(rows(view)[2].tabIndex).toBe(0);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each([false, true])("compares identical text with aligned playback, offline in either document (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
@@ -138,9 +163,8 @@ describe("local acoustic alignment comparison without Jev", () => {
 			words: transcript.words.map((_, i) => i === 0 ? [0, null, null] : [i, 0.5 + i, 0.9]),
 		};
 		const align = vi.fn(async () => {});
-		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align }, undefined, cache, "abcdefghijk");
+		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align }, cache, "abcdefghijk");
 		expect(view.contentEl.querySelector('option[value="aligned-sentences"]')).not.toBeNull();
-		expect(view.contentEl.querySelector('option[value="jev-sentences"]')).toBeNull();
 		const select = view.contentEl.querySelector("select")!;
 		select.value = "sentences";
 		select.dispatchEvent(new Event("change"));
@@ -154,107 +178,6 @@ describe("local acoustic alignment comparison without Jev", () => {
 		key(rows(view)[0], "Enter");
 		expect(play).toHaveBeenLastCalledWith("note.md", "https://www.youtube.com/watch?v=abcdefghijk", 0, true);
 		expect(align).not.toHaveBeenCalled();
-	});
-});
-
-describe("opt-in Jev sentence and paragraph comparison", () => {
-	it("anchors toolbar comparisons to visible text after scrolling, not to the list origin", async () => {
-		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
-			startSec: i, url: `https://youtu.be/abc?t=${i}`, text,
-		}));
-		const cache = createJevCache(prepareTranscript(lines));
-		cache.sentence.fill(0);
-		cache.paragraph.fill(0);
-		cache.sentence[2] = 0.9;
-		const view = await panel(document, {
-			getJevSettings: () => ({ enabled: true, sentenceThreshold: 0.8, paragraphThreshold: 0.8 }),
-		}, cache);
-		const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 300, width: 300, height: bottom - top, x: 0, y: top, toJSON: () => ({}) });
-		view.contentEl.style.overflowY = "auto";
-		Object.defineProperties(view.contentEl, { scrollHeight: { value: 800 }, clientHeight: { value: 200 } });
-		vi.spyOn(view.contentEl, "getBoundingClientRect").mockReturnValue(rect(0, 200));
-		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-list")!, "getBoundingClientRect").mockReturnValue(rect(-200, 600));
-		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-header")!, "getBoundingClientRect").mockReturnValue(rect(0, 40));
-		const rows = view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row");
-		[[-200, -140], [-140, -80], [80, 130], [130, 180]].forEach(([top, bottom], i) => {
-			vi.spyOn(rows[i], "getBoundingClientRect").mockReturnValue(rect(top, bottom));
-		});
-		const select = view.contentEl.querySelector("select")!;
-		select.focus();
-		select.value = "jev-sentences";
-		select.dispatchEvent(new Event("change"));
-		expect(view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1].tabIndex).toBe(0);
-		expect(play).not.toHaveBeenCalled();
-	});
-
-	it.each(["main", "pop-out"])("compares baseline/Jev without playback and disables cleanly in the %s document", async (windowType) => {
-		const doc = windowType === "main" ? document : document.implementation.createHTMLDocument();
-		if (windowType === "pop-out") stubPopout(doc);
-		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
-			startSec: i, url: `https://youtu.be/abc?t=${i}`, text,
-		}));
-		const cache = createJevCache(prepareTranscript(lines));
-		cache.sentence.fill(0);
-		cache.paragraph.fill(0);
-		cache.sentence[2] = 0.9;
-		cache.paragraph[2] = 0.9;
-		let enabled = true;
-		let sentenceThreshold = 0.8;
-		const classify = vi.fn(async () => {});
-		const view = await panel(doc, {
-			getJevSettings: () => ({ enabled, sentenceThreshold, paragraphThreshold: 0.8 }),
-			classifyTranscript: classify,
-		}, cache);
-		const select = view.contentEl.querySelector("select")!;
-		select.value = "jev-sentences";
-		select.dispatchEvent(new Event("change"));
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(2);
-		expect(view.contentEl.querySelector(".perplexity-saver-transcript-count")?.textContent).toContain("Jev sentences");
-		const second = view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1];
-		if (windowType === "pop-out") Object.defineProperty(doc, "activeElement", { configurable: true, value: second });
-		else second.focus();
-		const compare = Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!;
-		compare.click();
-		expect(view.getState().mode).toBe("sentences");
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
-		if (windowType === "pop-out") Object.defineProperty(doc, "activeElement", {
-			configurable: true, value: view.contentEl.querySelector(".perplexity-saver-transcript-row"),
-		});
-		Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!.click();
-		expect(view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1].tabIndex).toBe(0);
-		sentenceThreshold = 0.95;
-		view.refreshSearchSettings();
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
-		sentenceThreshold = 0.8;
-		view.refreshSearchSettings();
-		const paragraphs = view.contentEl.querySelector("select")!;
-		paragraphs.value = "jev-paragraphs";
-		paragraphs.dispatchEvent(new Event("change"));
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(2);
-		Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!.click();
-		expect(view.getState().mode).toBe("paragraphs");
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
-		expect(play).not.toHaveBeenCalled();
-		expect(classify).not.toHaveBeenCalled();
-		search(view, "target");
-		expect(view.contentEl.querySelector("input")?.value).toBe("target");
-		enabled = false;
-		view.refreshSearchSettings();
-		expect(view.contentEl.querySelector("select")).toBeNull();
-		expect(view.getState().mode).toBe("paragraphs");
-	});
-
-	it("reports unavailable results instead of silently showing original text as Jev output", async () => {
-		const view = await panel(document, {
-			getJevSettings: () => ({ enabled: true, sentenceThreshold: 0.8, paragraphThreshold: 0.8 }),
-			classifyTranscript: vi.fn(async () => {}),
-		});
-		const select = view.contentEl.querySelector("select")!;
-		select.value = "jev-sentences";
-		select.dispatchEvent(new Event("change"));
-		expect(view.getState().mode).toBe("lines");
-		expect(view.contentEl.textContent).toContain("not classified");
-		expect(play).not.toHaveBeenCalled();
 	});
 });
 

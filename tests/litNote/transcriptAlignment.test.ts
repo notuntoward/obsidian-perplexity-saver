@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prepareTranscript, sentenceRows } from "../../src/litNote/jevTranscript";
+import { prepareTranscript, sentenceRows } from "../../src/litNote/transcriptSentences";
 import { alignedSentenceRows, readAlignmentCache, type AlignmentCache } from "../../src/litNote/transcriptAlignment";
 
 const transcript = prepareTranscript([{

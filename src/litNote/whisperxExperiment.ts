@@ -1,7 +1,7 @@
 import { getFrontMatterInfo, Notice, parseYaml, type App, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
 import { loadTranscriptLines } from "./transcriptView";
-import { prepareTranscript } from "./jevTranscript";
+import { prepareTranscript } from "./transcriptSentences";
 import { ALIGNMENT_CACHE_KEY, readAlignmentCache, transcriptVideoId, type AlignmentCache } from "./transcriptAlignment";
 import { runWhisperx, type WhisperxProcessOptions } from "./whisperxProcess";
 
@@ -35,7 +35,7 @@ export async function runWhisperxExperiment(
 			return cached;
 		}
 		const consent = await askNoteDecision(app, "Use caption word timing?",
-			`Check YouTube captions for ${videoId} and time these ${transcript.words.length} words?\n\nUse native word offsets first, without audio downloads or inference. Only missing internal timings need local WhisperX and short audio clips. The first word of each original caption stays fixed; no word may cross the next caption's start. Caption text must match the note before any results are applied.\n\nContinue only if you have permission to download/process the needed audio. Your note and transcript are not uploaded; no API charge. Save versioned timings/provenance in whisperx_transcript for offline comparison. Original text, punctuation and Jev results remain unchanged.`,
+			`Check YouTube captions for ${videoId} and time these ${transcript.words.length} words?\n\nUse native word offsets first, without audio downloads or inference. Only missing internal timings need local WhisperX and short audio clips. The first word of each original caption stays fixed; no word may cross the next caption's start. Caption text must match the note before any results are applied.\n\nContinue only if you have permission to download/process the needed audio. Your note and transcript are not uploaded; no API charge. Save versioned timings/provenance for offline comparison. Original text and punctuation remain unchanged.`,
 			[{ label: "Check captions and save timings", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 		if (consent !== "create") return null;
 		assertActive();

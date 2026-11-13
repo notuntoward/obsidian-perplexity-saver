@@ -1,4 +1,4 @@
-import { sentenceRows, type BoundaryRow, type PreparedTranscript } from "./jevTranscript";
+import { sentenceRows, type BoundaryRow, type PreparedTranscript } from "./transcriptSentences";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
 
 export const ALIGNMENT_CACHE_KEY = "whisperx_transcript";
