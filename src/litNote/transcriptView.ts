@@ -34,6 +34,7 @@ import {
 	type JevCache,
 } from "./jevTranscript";
 import { formatShortTimestamp } from "./youtubeTranscript";
+import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type AlignmentCache } from "./transcriptAlignment";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
 
@@ -57,7 +58,7 @@ export function transcriptSearchCommands(app: App): Command[] {
 	}));
 }
 
-export type TranscriptViewMode = "lines" | "paragraphs" | "sentences" | "jev-sentences" | "jev-paragraphs";
+export type TranscriptViewMode = "lines" | "paragraphs" | "sentences" | "jev-sentences" | "jev-paragraphs" | "aligned-sentences";
 
 const COMPARISON_MODES: Record<TranscriptViewMode, string> = {
 	lines: "Original captions / lines",
@@ -65,6 +66,7 @@ const COMPARISON_MODES: Record<TranscriptViewMode, string> = {
 	"jev-sentences": "Jev sentences",
 	paragraphs: "Original paragraphs",
 	"jev-paragraphs": "Jev paragraphs",
+	"aligned-sentences": "Word-timed sentences",
 };
 
 function isTranscriptMode(value: unknown): value is TranscriptViewMode {
@@ -95,6 +97,8 @@ interface TranscriptRow {
 	url: string;
 	text: string;
 	sourceStart?: number;
+	endSec?: number;
+	timingUncertain?: boolean;
 }
 
 /**
@@ -117,15 +121,20 @@ export async function loadTranscriptLines(
 export function transcriptRows(
 	lines: StoredTranscriptLine[],
 	mode: TranscriptViewMode,
-	jev?: { cache: JevCache | null; sentenceThreshold: number; paragraphThreshold: number }
+	jev?: { cache: JevCache | null; sentenceThreshold: number; paragraphThreshold: number },
+	alignment?: AlignmentCache | null
 ): TranscriptRow[] {
-	const prepared = jev || mode === "sentences" || mode.startsWith("jev-") ? prepareTranscript(lines) : null;
+	const prepared = jev || alignment || mode === "aligned-sentences" || mode === "sentences" || mode.startsWith("jev-") ? prepareTranscript(lines) : null;
 	const offsets = prepared ? new Map(prepared.lines.map((line, i) => [line, prepared.cueStarts[i]])) : null;
 	if (mode === "lines") return lines.map((line) => ({
 		startSec: line.startSec, url: line.url, text: line.text,
 		...(offsets ? { sourceStart: offsets.get(line) } : {}),
 	}));
 	if (mode === "sentences" && prepared) return sentenceRows(prepared);
+	if (mode === "aligned-sentences" && prepared) {
+		if (!alignment) throw new Error("WhisperX timings are unavailable for this transcript.");
+		return alignedSentenceRows(prepared, alignment);
+	}
 	if (prepared && (mode === "jev-sentences" || mode === "jev-paragraphs")) {
 		const cache = jev ? readJevCache(jev.cache, prepared) : null;
 		if (!cache || !jev) throw new Error("Jev results are unavailable for this transcript.");
@@ -148,6 +157,9 @@ export interface TranscriptViewHost {
 	getSearchSettings(): TranscriptSearchSettings;
 	getJevSettings?(): JevTranscriptSettings;
 	classifyTranscript?(filePath: string): Promise<void>;
+	getAlignmentEnabled?(): boolean;
+	alignTranscript?(filePath: string): Promise<void>;
+	cancelAlignment?(): void;
 	/**
 	 * Show the video at `seconds` in the video viewer; `url` is the row's timestamp
 	 * link (may be empty). With `play`, start playing; otherwise keep playing or paused.
@@ -282,6 +294,9 @@ export class TranscriptView extends ItemView {
 	private jevCache: JevCache | null = null;
 	private jevStatus = "Jev: not classified.";
 	private classifying = false;
+	private alignmentCache: AlignmentCache | null = null;
+	private alignmentStatus = "Caption timing: not computed.";
+	private aligning = false;
 	private comparisonSourceStart: number | null = null;
 	private loadToken = 0;
 	private rendered: RenderedRow[] = [];
@@ -475,7 +490,26 @@ export class TranscriptView extends ItemView {
 		if (token !== this.loadToken) return;
 		this.lines = lines;
 		this.loadJevCache(file, lines);
+		this.loadAlignmentCache(file, lines);
 		this.render();
+	}
+
+	private loadAlignmentCache(file: TFile | null, lines: StoredTranscriptLine[] | null): void {
+		this.alignmentCache = null;
+		this.alignmentStatus = "Caption timing: not computed.";
+		if (!file || !lines?.length || !this.host.getAlignmentEnabled?.()) return;
+		const raw: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.[ALIGNMENT_CACHE_KEY];
+		try {
+			this.alignmentCache = readAlignmentCache(raw, prepareTranscript(lines));
+			if (this.alignmentCache) {
+				const missing = this.alignmentCache.words.filter((word) => word === null).length;
+				const native = this.alignmentCache.wordSources.filter((source) => source === "caption" || source === "youtube").length;
+				this.alignmentStatus = `Caption timing: ${native}/${this.alignmentCache.words.length} original timestamps; ${missing} uncertain. Saved offline. ≈ marks estimates.`;
+			} else if (raw !== undefined) this.alignmentStatus = "Caption timing: saved timings are stale. Click Time words to recompute with caption anchors.";
+		} catch (error: unknown) {
+			console.error("Perplexity Saver: invalid WhisperX cache", error);
+			this.alignmentStatus = error instanceof Error ? error.message : "Invalid WhisperX transcript cache.";
+		}
 	}
 
 	private loadJevCache(file: TFile | null, lines: StoredTranscriptLine[] | null): void {
@@ -504,7 +538,7 @@ export class TranscriptView extends ItemView {
 		const settings = this.host.getJevSettings?.();
 		return transcriptRows(lines, this.mode, settings?.enabled
 			? { cache: this.jevCache, sentenceThreshold: settings.sentenceThreshold, paragraphThreshold: settings.paragraphThreshold }
-			: undefined);
+			: undefined, this.host.getAlignmentEnabled?.() ? this.alignmentCache : undefined);
 	}
 
 	/** Put the cursor in the search box. */
@@ -605,15 +639,20 @@ export class TranscriptView extends ItemView {
 		this.setSearchOpen(false);
 		this.lines = lines;
 		this.loadJevCache(file, lines);
+		this.loadAlignmentCache(file, lines);
 		this.render();
 	}
 
 	private setMode(mode: TranscriptViewMode): void {
+		if (mode === "aligned-sentences" && !this.alignmentCache) {
+			new Notice(this.alignmentStatus);
+			return;
+		}
 		if (mode.startsWith("jev-") && (!this.jevCache || !jevCacheComplete(this.jevCache))) {
 			new Notice(this.jevStatus);
 			return;
 		}
-		if (!this.host.getJevSettings?.().enabled) {
+		if (!this.host.getJevSettings?.().enabled && !this.host.getAlignmentEnabled?.()) {
 			this.mode = mode;
 			this.userScrollAt = 0;
 			this.render();
@@ -651,7 +690,11 @@ export class TranscriptView extends ItemView {
 
 	private render(): void {
 		const experiment = this.host.getJevSettings?.().enabled ?? false;
-		if ((!experiment && this.mode !== "lines" && this.mode !== "paragraphs") ||
+		const alignmentEnabled = this.host.getAlignmentEnabled?.() ?? false;
+		const comparison = experiment || alignmentEnabled;
+		if ((!comparison && this.mode !== "lines" && this.mode !== "paragraphs") ||
+			(this.mode === "aligned-sentences" && (!alignmentEnabled || !this.alignmentCache)) ||
+			(this.mode.startsWith("jev-") && !experiment) ||
 			(this.mode.startsWith("jev-") && (!this.jevCache || !jevCacheComplete(this.jevCache)))) this.mode = "lines";
 		const el = this.contentEl;
 		const input = this.search?.inputEl;
@@ -711,11 +754,13 @@ export class TranscriptView extends ItemView {
 		controls.createSpan({
 			cls: "perplexity-saver-transcript-count",
 			text: this.mode === "lines" ? `${rows.length} ${lineNoun}`
-				: !experiment && this.mode === "paragraphs" ? `${rows.length} paragraphs`
+				: !comparison && this.mode === "paragraphs" ? `${rows.length} paragraphs`
 				: `${rows.length} ${COMPARISON_MODES[this.mode]}`,
 		});
-		if (experiment) {
-			const format = new DropdownComponent(controls).addOptions(COMPARISON_MODES).setValue(this.mode)
+		if (comparison) {
+			const modes = Object.fromEntries(Object.entries(COMPARISON_MODES).filter(([mode]) =>
+				(!mode.startsWith("jev-") || experiment) && (mode !== "aligned-sentences" || alignmentEnabled)));
+			const format = new DropdownComponent(controls).addOptions(modes).setValue(this.mode)
 				.onChange((mode) => {
 					if (isTranscriptMode(mode)) this.setMode(mode);
 					format.setValue(this.mode);
@@ -723,16 +768,20 @@ export class TranscriptView extends ItemView {
 			format.selectEl.setAttribute("aria-label", "Transcript segmentation");
 			format.selectEl.addClass("perplexity-saver-transcript-segmentation");
 			const compare = controls.createEl("button", { text: "Compare", attr: { "aria-label": "Compare segmentations" } });
-			compare.disabled = this.mode === "lines" || !this.jevCache || !jevCacheComplete(this.jevCache);
+			const canCompareJev = experiment && !!this.jevCache && jevCacheComplete(this.jevCache);
+			compare.disabled = this.mode === "lines" ||
+				(this.mode === "paragraphs" || this.mode === "jev-paragraphs" ? !canCompareJev
+					: !this.alignmentCache && !canCompareJev);
 			compare.addEventListener("click", () => {
 				const counterpart: Partial<Record<TranscriptViewMode, TranscriptViewMode>> = {
-					sentences: "jev-sentences", "jev-sentences": "sentences",
+					sentences: this.alignmentCache ? "aligned-sentences" : "jev-sentences",
+					"aligned-sentences": "sentences", "jev-sentences": "sentences",
 					paragraphs: "jev-paragraphs", "jev-paragraphs": "paragraphs",
 				};
 				const next = counterpart[this.mode];
 				if (next) this.setMode(next);
 			});
-			if (this.host.classifyTranscript && (!this.jevCache || !jevCacheComplete(this.jevCache))) {
+			if (experiment && this.host.classifyTranscript && (!this.jevCache || !jevCacheComplete(this.jevCache))) {
 				const classify = controls.createEl("button", {
 					text: this.classifying ? "Classifying..." : this.jevCache ? "Resume Jev" : "Classify with Jev",
 				});
@@ -753,6 +802,29 @@ export class TranscriptView extends ItemView {
 					});
 				});
 			}
+			if (alignmentEnabled && this.host.alignTranscript && !this.alignmentCache) {
+				const align = controls.createEl("button", { text: this.aligning ? "Timing words..." : "Time words" });
+				align.disabled = this.aligning;
+				align.addEventListener("click", () => {
+					if (!this.filePath || this.aligning) return;
+					this.aligning = true;
+					this.render();
+					void this.host.alignTranscript?.(this.filePath).catch((error: unknown) => {
+						console.error("Perplexity Saver: audio alignment failed", error);
+						new Notice(error instanceof Error ? error.message : "Audio alignment failed.");
+					}).finally(() => {
+						this.aligning = false;
+						void this.reload().catch((error: unknown) => {
+							console.error("Perplexity Saver: could not reload alignment", error);
+							new Notice("Could not reload saved alignment.");
+						});
+					});
+				});
+			}
+			if (this.aligning && this.host.cancelAlignment) {
+				const cancel = controls.createEl("button", { text: "Cancel alignment" });
+				cancel.addEventListener("click", () => this.host.cancelAlignment?.());
+			}
 		} else {
 			const toggle = controls.createEl("button", {
 				cls: "perplexity-saver-transcript-format",
@@ -762,6 +834,7 @@ export class TranscriptView extends ItemView {
 			toggle.addEventListener("click", () => this.setMode(this.mode === "lines" ? "paragraphs" : "lines"));
 		}
 		if (experiment) header.createDiv({ cls: "perplexity-saver-transcript-experiment-status", text: this.jevStatus });
+		if (alignmentEnabled) header.createDiv({ cls: "perplexity-saver-transcript-experiment-status", text: this.alignmentStatus });
 		this.iconButton(controls, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
 		if (this.host.toggleOrientation) {
 			const placement = controls.createEl("button", {
@@ -834,7 +907,8 @@ export class TranscriptView extends ItemView {
 				// No aria-label: Obsidian shows aria-labels as hover tooltips; the row's own text is its accessible name.
 				attr: { tabindex: "-1", role: "option" },
 			});
-			const stamp = formatShortTimestamp(row.startSec * 1000);
+			const stamp = `${row.timingUncertain ? "≈ " : ""}${formatShortTimestamp(row.startSec * 1000)}`;
+			if (row.timingUncertain) rowEl.setAttribute("title", "Approximate timing: some words were not acoustically aligned.");
 			if (row.url) {
 				rowEl.createEl("a", {
 					cls: "perplexity-saver-transcript-time external-link",

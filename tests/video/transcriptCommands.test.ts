@@ -642,6 +642,7 @@ describe("transcript activation commands", () => {
 		h.app.workspace.activeLeaf = h.viewerLeaf;
 		h.plugin["registerTranscriptCommands"]();
 		expect(commands.map((c) => c.id)).toEqual([
+			"whisperx-align-transcript", "whisperx-cancel-alignment",
 			"show-youtube-transcript", "search-youtube-transcript",
 			"transcript-search-forward", "transcript-search-backward", "transcript-toggle-orientation",
 		]);

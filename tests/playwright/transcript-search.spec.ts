@@ -16,13 +16,16 @@ test("experimental sentence comparison controls and saved-results status fit nar
 					<a class="perplexity-saver-transcript-title">A long literature note title</a>
 					<span class="perplexity-saver-transcript-count">1234 Punctuation sentences</span>
 					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
-						<option>Original captions / lines</option><option>Punctuation sentences</option><option>Jev sentences</option>
+						<option>Original captions / lines</option><option>Punctuation sentences</option><option>Word-timed sentences</option><option>Jev sentences</option>
 					</select>
 					<button aria-label="Compare segmentations">Compare</button>
-					<button>Classify with Jev</button><button class="clickable-icon">S</button><button>Layout</button>
+					<button>Classify with Jev</button><button>Time words</button><button>Cancel alignment</button><button class="clickable-icon">S</button><button>Layout</button>
 				</div>
 				<div class="perplexity-saver-transcript-experiment-status">
 					jev-1.14.0: 12345 boundaries, 987654 input tokens. Saved for offline comparison.
+				</div>
+				<div class="perplexity-saver-transcript-experiment-status">
+					WhisperX: saved offline timings; 123/12345 words uncertain. ≈ marks sentences with uncertain timing.
 				</div>
 			</div>
 			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">A sentence.</div></div>

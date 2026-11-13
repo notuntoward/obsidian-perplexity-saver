@@ -139,6 +139,109 @@ These are suggestions, not plugin defaults; assign them in **Settings → Hotkey
 
 `Alt+P`, `Alt+T`, and `Alt+S` already have other assignments in the Main vault, so these suggestions avoid those collisions. Unmodified `Alt+Left/Right` continue to navigate Obsidian history there.
 
+### Caption-anchored word timing experiment
+
+**Experiment verdict (2026-11-13):** the user found Jev sentence segmentation
+awful, but the latest native-first, caption-anchored timing works very well,
+with no significant alignment errors observed. Earlier broad-window WhisperX
+alignment did not work well. Three hard Obsidian freezes have now been reported,
+including on displaying Properties; this snapshot preserves both experiments
+before Jev removal and a separate freeze investigation. Timing quality does not
+establish UI/storage safety.
+
+Keep the existing **Punctuation sentences**, but time them against the actual audio.
+Use YouTube's existing word offsets first; reserve WhisperX for missing internal
+timings. This is independent of Jev: no API key, paid inference, generated
+punctuation, or replacement transcript is involved. English, desktop only.
+
+1. Reload Saver and enable **Settings -> Perplexity Saver -> YouTube transcripts -> Caption word timing** (the renamed alignment toggle; existing enabled preferences are retained).
+2. Open the lecture's usual transcript panel and click **Time words**, or run
+   **Transcript: time words from captions (experiment)**.
+3. Confirm **Check captions and save timings**. First download matching English
+   JSON3 captions, not audio. If all words have native starts, no model is loaded
+   and no audio is downloaded. Missing internal timings use short audio clips for
+   only those captions; continue only for audio you have permission to process.
+   The progress notice identifies fallback captions. **Cancel alignment**, the cancel
+   command, disabling the setting, or unloading Saver stops the helper.
+4. Select **Word-timed sentences**. **Compare** toggles between these and
+   **Punctuation sentences**, preserving source-text position without seeking.
+   Text, sentence boundaries, search, filtering, keyboard navigation and playback
+   controls are shared; only the timing changes. If Jev is also enabled, select
+   **Jev sentences** explicitly to inspect that separate experiment.
+
+**Already set up on this Windows ARM development machine:** an isolated x64
+Python 3.12 environment in `.venv-whisperx`, WhisperX 3.8.6, yt-dlp and the English
+acoustic model. Leave **WhisperX Python executable** blank for that environment.
+The existing ARM Python is untouched. No install command is needed to try it here.
+
+For another checkout/machine, install FFmpeg and Node.js on PATH, then install
+[`scripts/whisperx/requirements.txt`](./scripts/whisperx/requirements.txt) into an
+isolated Python environment. For Windows ARM with [uv](https://docs.astral.sh/uv/),
+run from the plugin repository in Git Bash:
+
+```bash
+uv venv --python cpython-3.12-windows-x86_64-none .venv-whisperx
+uv pip install --python '.venv-whisperx\Scripts\python.exe' -r 'scripts\whisperx\requirements.txt'
+```
+
+For other platforms use a compatible Python 3.12 environment and its interpreter
+path instead. An optional full executable path can be entered in settings; no
+shell arguments or quotes. This source-checkout experiment also needs
+[`scripts/whisperx/align.py`](./scripts/whisperx/align.py) alongside the plugin;
+the usual three-file release bundle alone does not include the helper.
+
+**How timing works.** Match the downloaded caption words to the note before using
+their timing (case/punctuation differences are permitted; changed, added or missing
+words are not). A JSON3 segment's offset times its first word, not every word in a
+multiword segment. The first word of each original caption retains the caption's
+exact start. For missing internal offsets only, force-align the caption inside its
+own audio interval, ending no later than the next caption's start or the caption's
+declared end. Existing internal word offsets remain trusted anchors too. Reject
+cross-boundary, reversed and low-score acoustic results instead of clipping them.
+There is no broad search, greedy retranscription or drift across captions. Older
+five-caption note blocks regain original caption anchors from the matched JSON3
+track without rewriting the note. Existing punctuation still defines sentences.
+
+On the GARCH lecture used for this experiment, native starts covered 11,327 of
+11,328 words across 1,902 captions. Only one 1.84-second caption needed an audio
+clip; its one uncertain word remained unmatched. The full run took 44 seconds
+on this machine. All caption-start anchors and interval bounds were preserved;
+this is not a manually annotated measurement of acoustic accuracy.
+
+**Saved once, reused offline.** `whisperx_transcript` in the note's frontmatter
+contains a version-2 source-text/URL/timing SHA-256 fingerprint, video ID, caption
+SHA-256, optional audio-clip SHA-256, duration, engine/model identity, caption
+intervals, per-word provenance and one
+`[startSeconds, endSeconds, acousticScore]` tuple per whitespace-separated word.
+Native starts have `null` ends and scores: those values are not invented. Word
+origins are `caption`, `youtube`, `acoustic` or `unmatched`; unmatched words are
+`null`. Matching results reopen without downloading audio,
+running Python or loading models. Editing source text, URLs or caption times
+invalidates the cache; recomputation always requires confirmation. Other note
+properties, Jev caches and source captions are preserved. A body edit during a
+run prevents saving against edited text. Old version-1 broad-window results are
+stale automatically; **Time words** replaces them only after a successful,
+confirmed run. Failed/cancelled runs do not save partial
+results and must restart; temporary audio is removed when the job ends.
+
+**Uncertainty and limits.** Native word offsets are source timestamps, not model
+confidence scores or inferred acoustic word ends. Acoustic scores are not calibrated probabilities.
+Words with absent scores, scores below 0.3, numeric spellings or invalid/reversed
+timings are marked unmatched. Sentences containing any unmatched words show
+**approximately (`≈`)**; they use the available aligned words, or the preceding
+sentence's end if none matched. These are explicitly estimates, not successful
+alignments. Mismatched/missing original English captions stop the run with an error
+instead of aligning different words. Inaccurate original anchors, music, other
+languages and large transcript omissions can fail.
+The helper has a three-hour timeout; no accuracy guarantee is implied by a
+successful run. Cached timing comparison works offline; YouTube playback still
+requires network access.
+
+To discard/recompute results, remove only `whisperx_transcript` in the note's
+source mode and click **Time words** again. Disable both experiments to restore
+the original toolbar. WhisperX uses BSD-2-Clause; the selected
+[`WAV2VEC2_ASR_BASE_960H` model is MIT-licensed](https://docs.pytorch.org/audio/2.8.0/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html).
+
 ### Jev transcript experiment
 
 This is opt-in and leaves the source captions unchanged. It classifies each space between transcript words, including spaces inside a caption, rather than generating or rewriting text.
@@ -157,7 +260,7 @@ This is opt-in and leaves the source captions unchanged. It classifies each spac
    | Original paragraphs | Existing pause/60-second algorithm |
    | Jev paragraphs | Accepted sentence boundaries plus paragraph probabilities and a soft 100-word target |
 
-6. Click **Compare** repeatedly to alternate punctuation/Jev sentences or original/Jev paragraphs. The panel retains its source-text reading position through coarser groupings. Search, filtering, timestamp links, row keyboard controls and playback following are shared by all formats. Comparing does not seek or start playback.
+6. Click **Compare** repeatedly to alternate punctuation/Jev sentences or original/Jev paragraphs. When caption word timing is also enabled, **Compare** from punctuation sentences prefers word-timed sentences; select **Jev sentences** explicitly to inspect Jev. The panel retains its source-text reading position through coarser groupings. Search, filtering, timestamp links, row keyboard controls and playback following are shared by all formats. Comparing does not seek or start playback.
 7. Adjust **Jev sentence threshold** and **Jev paragraph threshold** in settings if desired (both default to 0.80). This reuses the saved probabilities offline, with no new charge.
 
 **Persistence and recovery.** The note's `jev_transcript` frontmatter property contains versioned sentence/paragraph probability arrays, a SHA-256 fingerprint of source text/URLs/timing, the pinned model (`jev-1.14.0`), prompt version, creation time and cumulative billable input tokens. Each successful batch is saved immediately. **Resume Jev** evaluates only remaining batches after a network/API failure. A complete matching cache needs no API key or network to reopen. Editing source text, URLs or timing makes the cache stale; reclassification requires another explicit confirmation. An edit to the note body during classification stops saving results against that edited body.

@@ -9,6 +9,24 @@ vi.mock("obsidian", async (original) => ({
 }));
 
 describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
+	it("keeps local alignment independent of Jev and cancels it when disabled", async () => {
+		const app = { workspace: { getLeavesOfType: () => [] } } as unknown as App;
+		const plugin = new PerplexitySaverPlugin(app, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		const stop = vi.spyOn(plugin, "stopWhisperxAlignment");
+		const tab = new PerplexitySaverSettingTab(app, plugin);
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("whisperxEnabled", true);
+		expect(plugin.settings.jevExperimentEnabled).toBe(false);
+		await tab.setControlValue("whisperxEnabled", false);
+		expect(stop).toHaveBeenCalledOnce();
+	});
+
 	it("keeps Jev opt-in, stores only a secret reference and rejects invalid thresholds", async () => {
 		const app = { workspace: { getLeavesOfType: () => [] } } as unknown as App;
 		const plugin = new PerplexitySaverPlugin(app, {

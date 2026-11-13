@@ -92,15 +92,15 @@ function stubPopout(doc: Document): void {
 	vi.stubGlobal("activeWindow", win);
 }
 
-async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cache?: unknown): Promise<TranscriptView> {
+async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cache?: unknown, alignment?: unknown, videoId = "abc"): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
 		vault: {
 			getFileByPath: () => file,
-			cachedRead: async () => "# Transcript\n[00:00](https://youtu.be/abc?t=0) start\n[00:01](https://youtu.be/abc?t=1) target first\n[00:02](https://youtu.be/abc?t=2) context\n[00:03](https://youtu.be/abc?t=3) target last\n",
+			cachedRead: async () => `# Transcript\n[00:00](https://youtu.be/${videoId}?t=0) start\n[00:01](https://youtu.be/${videoId}?t=1) target first\n[00:02](https://youtu.be/${videoId}?t=2) context\n[00:03](https://youtu.be/${videoId}?t=3) target last\n`,
 		},
 		metadataCache: {
-			getFileCache: () => ({ frontmatter: { jev_transcript: cache }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
+			getFileCache: () => ({ frontmatter: { jev_transcript: cache, whisperx_transcript: alignment }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
 		},
 		workspace: { requestSaveLayout: vi.fn() },
 		hotkeyManager: {
@@ -114,11 +114,48 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cac
 		playAt: play,
 		...host,
 	});
+
 	view.contentEl = doc.createElement("div");
 	doc.body.appendChild(view.contentEl);
 	await view.setState({ file: file.path }, { history: false });
 	return view;
 }
+
+describe("local acoustic alignment comparison without Jev", () => {
+	it.each([false, true])("compares identical text with aligned playback, offline in either document (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
+			startSec: i, url: `https://youtu.be/abcdefghijk?t=${i}`, text,
+		}));
+		const transcript = prepareTranscript(lines);
+		const cache = {
+			version: 2, sourceHash: transcript.hash, videoId: "abcdefghijk", engine: "whisperx-3.8.6",
+			model: "WAV2VEC2_ASR_BASE_960H", paddingSeconds: 0, createdAt: "2026-11-13T00:00:00Z",
+			audioSha256: "a".repeat(64), audioDuration: 100,
+			captionSha256: "b".repeat(64), captions: [{ first: 0, last: transcript.words.length, start: 0, end: 10 }],
+			wordSources: transcript.words.map((_, i) => i === 0 ? "caption" : "acoustic"),
+			words: transcript.words.map((_, i) => i === 0 ? [0, null, null] : [i, 0.5 + i, 0.9]),
+		};
+		const align = vi.fn(async () => {});
+		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align }, undefined, cache, "abcdefghijk");
+		expect(view.contentEl.querySelector('option[value="aligned-sentences"]')).not.toBeNull();
+		expect(view.contentEl.querySelector('option[value="jev-sentences"]')).toBeNull();
+		const select = view.contentEl.querySelector("select")!;
+		select.value = "sentences";
+		select.dispatchEvent(new Event("change"));
+		const text = rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent);
+		Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compare")!.click();
+		expect(view.getState().mode).toBe("aligned-sentences");
+		expect(rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent)).toEqual(text);
+		expect(rows(view)[0].querySelector("a")?.textContent).toBe("0:00");
+		rows(view)[0].focus();
+		if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[0] });
+		key(rows(view)[0], "Enter");
+		expect(play).toHaveBeenLastCalledWith("note.md", "https://www.youtube.com/watch?v=abcdefghijk", 0, true);
+		expect(align).not.toHaveBeenCalled();
+	});
+});
 
 describe("opt-in Jev sentence and paragraph comparison", () => {
 	it("anchors toolbar comparisons to visible text after scrolling, not to the list origin", async () => {

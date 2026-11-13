@@ -8,6 +8,7 @@ export default [
       'node_modules/**',
       'dist/**',
       'scratch/**',
+      '.venv-whisperx/**',
       'main.js'
     ]
   },

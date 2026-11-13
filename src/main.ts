@@ -1,6 +1,7 @@
 import {
 	App,
 	Editor,
+	FileSystemAdapter,
 	MarkdownView,
 	Notice,
 	Platform,
@@ -15,6 +16,7 @@ import {
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
 import http from "http";
+import path from "path";
 import { createPerplexityNote } from "./note-creator";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
 import { registerSyncCommand, registerSyncViaLinkCommand } from "./commands/sync";
@@ -41,6 +43,7 @@ import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
 import { runJevTranscriptExperiment } from "./litNote/jevTranscriptExperiment";
+import { runWhisperxExperiment } from "./litNote/whisperxExperiment";
 import {
 	TRANSCRIPT_VIEW_TYPE,
 	TranscriptView,
@@ -170,6 +173,8 @@ export interface PerplexitySaverSettings {
 	 */
 	transcriptFormat: TranscriptFormat;
 	jevExperimentEnabled: boolean;
+	whisperxEnabled: boolean;
+	whisperxPythonPath: string;
 	jevApiKeySecret: string;
 	jevSentenceThreshold: number;
 	jevParagraphThreshold: number;
@@ -219,6 +224,8 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	collapseTranscriptOnOpen: true,
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
 	jevExperimentEnabled: false,
+	whisperxEnabled: false,
+	whisperxPythonPath: "",
 	jevApiKeySecret: "",
 	jevSentenceThreshold: 0.8,
 	jevParagraphThreshold: 0.8,
@@ -330,6 +337,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 						if (!file) throw new Error("Transcript note not found.");
 						await this.classifyJevTranscript(file);
 					},
+					getAlignmentEnabled: () => this.settings.whisperxEnabled,
+					alignTranscript: async (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						if (!file) throw new Error("Transcript note not found.");
+						await this.alignWhisperxTranscript(file);
+					},
+					cancelAlignment: () => this.stopWhisperxAlignment(),
 					getSearchSettings: () => ({
 						keyboard: this.settings.transcriptSearchBehavior,
 						matching: this.settings.transcriptSearchMatching,
@@ -732,6 +746,24 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	private registerTranscriptCommands(): void {
 		this.addCommand({
+			id: "whisperx-align-transcript",
+			name: "Transcript: time words from captions (experiment)",
+			checkCallback: (checking: boolean) => {
+				const file = this.activePart().file;
+				if (!this.settings.whisperxEnabled || !file || file.extension !== "md") return false;
+				if (!checking) void this.alignWhisperxTranscript(file).catch((error: unknown) => {
+					console.error("Perplexity Saver: audio alignment failed", error);
+					new Notice(error instanceof Error ? error.message : "Audio alignment failed.");
+				});
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "whisperx-cancel-alignment",
+			name: "Transcript: cancel local audio alignment",
+			callback: () => this.stopWhisperxAlignment(),
+		});
+		this.addCommand({
 			id: "show-youtube-transcript",
 			name: "Video: show or hide transcript",
 			checkCallback: (checking: boolean) => {
@@ -789,6 +821,28 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	private jevAbort = new AbortController();
+	private whisperxAbort = new AbortController();
+
+	stopWhisperxAlignment(): void {
+		this.whisperxAbort.abort();
+		this.whisperxAbort = new AbortController();
+	}
+
+	private async alignWhisperxTranscript(file: TFile): Promise<void> {
+		if (!this.settings.whisperxEnabled) throw new Error("Enable Caption word timing in settings first.");
+		if (!(this.app.vault.adapter instanceof FileSystemAdapter) || !this.manifest.dir) {
+			throw new Error("Local WhisperX alignment requires a desktop filesystem vault.");
+		}
+		const root = path.join(this.app.vault.adapter.getBasePath(), this.manifest.dir);
+		await runWhisperxExperiment(this.app, file, this.settings.transcriptHeading, {
+			pythonPath: this.settings.whisperxPythonPath.trim() || path.join(root, ".venv-whisperx", Platform.isWin ? "Scripts\\python.exe" : "bin/python"),
+			helperPath: path.join(root, "scripts", "whisperx", "align.py"),
+			signal: this.whisperxAbort.signal,
+		});
+		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === file.path) await leaf.view.reload();
+		}
+	}
 
 	stopJevExperiment(): void {
 		this.jevAbort.abort();
@@ -805,6 +859,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	onunload(): void {
 		this.jevAbort.abort();
+		this.whisperxAbort.abort();
 		for (const cancel of this.transcriptFallbacks.values()) cancel();
 		this.transcriptFallbacks.clear();
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
@@ -1813,8 +1868,9 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		if (key === "transcriptHeading") {
 			this.plugin.applyTranscriptHeading();
 		}
-		if (key === "jevExperimentEnabled" || key === "jevSentenceThreshold" || key === "jevParagraphThreshold") {
+		if (key === "whisperxEnabled" || key === "jevExperimentEnabled" || key === "jevSentenceThreshold" || key === "jevParagraphThreshold") {
 			if (key === "jevExperimentEnabled" && !value) this.plugin.stopJevExperiment();
+			if (key === "whisperxEnabled" && !value) this.plugin.stopWhisperxAlignment();
 			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 				if (leaf.view instanceof TranscriptView) await leaf.view.reload();
 			}
@@ -2089,6 +2145,16 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 								blocks: "5-caption blocks, start time only",
 							},
 						},
+					},
+					{
+						name: "Caption word timing",
+						desc: "Use YouTube word offsets first. Only missing timings use local WhisperX inside original caption anchors, never beyond the next caption. Time words asks before network access. Saved results reopen offline. Requires the helper setup in the README; old broad-window results are not reused.",
+						control: { type: "toggle", key: "whisperxEnabled" },
+					},
+					{
+						name: "WhisperX Python executable",
+						desc: "Optional full path to the Python executable with scripts/whisperx/requirements.txt installed. Leave blank for this plugin's .venv-whisperx environment. Do not include arguments or quotes.",
+						control: { type: "text", key: "whisperxPythonPath" },
 					},
 					{
 						name: "Jev transcript experiment",
