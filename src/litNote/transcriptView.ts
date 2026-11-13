@@ -28,7 +28,7 @@ import {
 	storedLinesToCues,
 	type StoredTranscriptLine,
 } from "./transcriptSection";
-import { buildTranscriptParagraphs } from "./transcriptParagraphs";
+import { buildTranscriptParagraphs, groupSentencesIntoParagraphs, needsSpaceBetween } from "./transcriptParagraphs";
 import { prepareTranscript, sentenceRows } from "./transcriptSentences";
 import { formatShortTimestamp } from "./youtubeTranscript";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
@@ -56,13 +56,14 @@ export function transcriptSearchCommands(app: App): Command[] {
 	}));
 }
 
-export type TranscriptViewMode = "lines" | "paragraphs" | "sentences" | "aligned-sentences";
+export type TranscriptViewMode = "lines" | "paragraphs" | "sentences" | "aligned-sentences" | "readable-paragraphs";
 
 const COMPARISON_MODES: Record<TranscriptViewMode, string> = {
 	lines: "Original captions / lines",
 	sentences: "Punctuation sentences",
 	paragraphs: "Original paragraphs",
 	"aligned-sentences": "Word-timed sentences",
+	"readable-paragraphs": "Readable paragraphs",
 };
 
 function isTranscriptMode(value: unknown): value is TranscriptViewMode {
@@ -89,6 +90,7 @@ interface TranscriptRow {
 	sourceStart?: number;
 	endSec?: number;
 	timingUncertain?: boolean;
+	paragraphStart?: boolean;
 }
 
 /**
@@ -113,23 +115,29 @@ export function transcriptRows(
 	mode: TranscriptViewMode,
 	alignment?: WordTimings | null
 ): TranscriptRow[] {
-	const prepared = alignment || mode === "aligned-sentences" || mode === "sentences" ? prepareTranscript(lines) : null;
-	const offsets = prepared ? new Map(prepared.lines.map((line, i) => [line, prepared.cueStarts[i]])) : null;
+	const prepared = prepareTranscript(lines);
+	const offsets = new Map(prepared.lines.map((line, i) => [line, prepared.cueStarts[i]]));
 	if (mode === "lines") return lines.map((line) => ({
 		startSec: line.startSec, url: line.url, text: line.text,
-		...(offsets ? { sourceStart: offsets.get(line) } : {}),
+		sourceStart: offsets.get(line),
 	}));
-	if (mode === "sentences" && prepared) return sentenceRows(prepared);
-	if (mode === "aligned-sentences" && prepared) {
+	if (mode === "sentences") return sentenceRows(prepared);
+	if (mode === "aligned-sentences") {
 		if (!alignment) throw new Error("WhisperX timings are unavailable for this transcript.");
 		return alignedSentenceRows(prepared, alignment);
 	}
-	const cues = storedLinesToCues(lines).map((cue, i) => ({ ...cue, sourceStart: prepared?.cueStarts[i] }));
+	if (mode === "readable-paragraphs") {
+		const cueStarts = new Set(prepared.cueStarts);
+		const sentences = alignment ? alignedSentenceRows(prepared, alignment)
+			: sentenceRows(prepared).map((row) => ({ ...row, timingUncertain: !cueStarts.has(row.sourceStart) }));
+		return groupSentencesIntoParagraphs(sentences).flatMap((group) => group.map((row, i) => ({ ...row, paragraphStart: i === 0 })));
+	}
+	const cues = storedLinesToCues(lines).map((cue, i) => ({ ...cue, sourceStart: prepared.cueStarts[i] }));
 	return buildTranscriptParagraphs(cues).map((p) => ({
 		startSec: p.startSec,
 		url: p.cues[0].url,
 		text: p.text,
-		...(prepared ? { sourceStart: p.cues[0].sourceStart } : {}),
+		sourceStart: p.cues[0].sourceStart,
 	}));
 }
 
@@ -273,7 +281,7 @@ export class TranscriptView extends ItemView {
 	private lines: StoredTranscriptLine[] | null = null;
 	private alignmentCache: WordTimings | null = null;
 	private needsTimingMigration = false;
-	private alignmentStatus = "Caption timing: not computed.";
+	private alignmentStatus = "Sentence timing: not computed.";
 	private aligning = false;
 	private comparisonSourceStart: number | null = null;
 	private loadToken = 0;
@@ -461,20 +469,21 @@ export class TranscriptView extends ItemView {
 	}
 
 	/** Re-read the note (for example after the heading setting changed). */
-	async reload(): Promise<void> {
+	async reload(options?: { showWordTimedSentences?: boolean }): Promise<void> {
 		const token = ++this.loadToken;
 		const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
 		const lines = file ? await loadTranscriptLines(this.app, file, this.host.getHeadingName()) : null;
 		if (token !== this.loadToken) return;
 		this.lines = lines;
 		this.loadAlignmentCache(file, lines);
-		this.render();
+		if (options?.showWordTimedSentences && this.alignmentCache) this.setMode("aligned-sentences");
+		else this.render();
 	}
 
 	private loadAlignmentCache(file: TFile | null, lines: StoredTranscriptLine[] | null): void {
 		this.alignmentCache = null;
 		this.needsTimingMigration = false;
-		this.alignmentStatus = "Caption timing: not computed.";
+		this.alignmentStatus = "Sentence timing: not computed.";
 		if (!file || !lines?.length || !this.host.getAlignmentEnabled?.()) return;
 		const raw: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.[ALIGNMENT_CACHE_KEY];
 		try {
@@ -482,12 +491,12 @@ export class TranscriptView extends ItemView {
 			this.alignmentCache = readInlineTimings(transcript) ?? readAlignmentCache(raw, transcript);
 			this.needsTimingMigration = raw !== undefined && this.alignmentCache !== null;
 			if (this.alignmentCache) {
-				const missing = this.alignmentCache.words.filter((word) => word === null).length;
-				const native = this.alignmentCache.wordSources.filter((source) => source === "caption" || source === "youtube").length;
-				this.alignmentStatus = `Caption timing: ${native}/${this.alignmentCache.words.length} original timestamps; ${missing} uncertain. Saved offline. ≈ marks estimates.` +
+				const sentences = alignedSentenceRows(transcript, this.alignmentCache);
+				const missing = sentences.filter((sentence) => sentence.timingUncertain).length;
+				this.alignmentStatus = `Sentence timing: ${sentences.length - missing}/${sentences.length} sentence starts timed; ${missing} approximate. Saved offline. ≈ marks estimated starts.` +
 					(this.needsTimingMigration ? " Compact saved timings moves the old Properties cache into transcript links, offline." : "");
 			} else if (raw !== undefined || lines.some((line) => line.timingMarker !== undefined || line.wordTimings !== undefined)) {
-				this.alignmentStatus = "Caption timing: saved timings are stale. Click Time words to recompute with caption anchors.";
+				this.alignmentStatus = "Sentence timing: saved timings are stale. Click Time words to recompute sentence starts.";
 			}
 		} catch (error: unknown) {
 			console.error("Perplexity Saver: invalid WhisperX cache", error);
@@ -606,12 +615,6 @@ export class TranscriptView extends ItemView {
 			new Notice(this.alignmentStatus);
 			return;
 		}
-		if (!this.host.getAlignmentEnabled?.()) {
-			this.mode = mode;
-			this.userScrollAt = 0;
-			this.render();
-			return;
-		}
 		const { visible, onScreen } = this.visibleRows();
 		const focused = this.focusedRowIndex();
 		const row = this.rendered[onScreen.includes(focused) ? focused : onScreen[0] ?? visible[0] ?? -1];
@@ -645,7 +648,7 @@ export class TranscriptView extends ItemView {
 	private render(): void {
 		const alignmentEnabled = this.host.getAlignmentEnabled?.() ?? false;
 		const comparison = alignmentEnabled;
-		if ((!comparison && this.mode !== "lines" && this.mode !== "paragraphs") ||
+		if ((!comparison && this.mode !== "lines" && this.mode !== "paragraphs" && this.mode !== "readable-paragraphs") ||
 			(this.mode === "aligned-sentences" && (!alignmentEnabled || !this.alignmentCache))) this.mode = "lines";
 		const el = this.contentEl;
 		const input = this.search?.inputEl;
@@ -704,18 +707,24 @@ export class TranscriptView extends ItemView {
 		const lineNoun = lines.some((l) => l.endSec !== undefined) ? "captions" : "lines";
 		controls.createSpan({
 			cls: "perplexity-saver-transcript-count",
-			text: this.mode === "lines" ? `${rows.length} ${lineNoun}`
+			text: this.mode === "readable-paragraphs" ? `${rows.filter((row) => row.paragraphStart).length} paragraphs · ${rows.length} sentences`
+				: this.mode === "lines" ? `${rows.length} ${lineNoun}`
 				: !comparison && this.mode === "paragraphs" ? `${rows.length} paragraphs`
 				: `${rows.length} ${COMPARISON_MODES[this.mode]}`,
 		});
+		const formats = comparison ? COMPARISON_MODES : {
+			lines: COMPARISON_MODES.lines,
+			paragraphs: COMPARISON_MODES.paragraphs,
+			"readable-paragraphs": COMPARISON_MODES["readable-paragraphs"],
+		};
+		const format = new DropdownComponent(controls).addOptions(formats).setValue(this.mode)
+			.onChange((mode) => {
+				if (isTranscriptMode(mode)) this.setMode(mode);
+				format.setValue(this.mode);
+			});
+		format.selectEl.setAttribute("aria-label", "Transcript segmentation");
+		format.selectEl.addClass("perplexity-saver-transcript-segmentation");
 		if (comparison) {
-			const format = new DropdownComponent(controls).addOptions(COMPARISON_MODES).setValue(this.mode)
-				.onChange((mode) => {
-					if (isTranscriptMode(mode)) this.setMode(mode);
-					format.setValue(this.mode);
-				});
-			format.selectEl.setAttribute("aria-label", "Transcript segmentation");
-			format.selectEl.addClass("perplexity-saver-transcript-segmentation");
 			const compare = controls.createEl("button", { text: "Compare", attr: { "aria-label": "Compare segmentations" } });
 			compare.disabled = !this.alignmentCache || (this.mode !== "sentences" && this.mode !== "aligned-sentences");
 			compare.addEventListener("click", () => {
@@ -749,13 +758,6 @@ export class TranscriptView extends ItemView {
 				const cancel = controls.createEl("button", { text: "Cancel alignment" });
 				cancel.addEventListener("click", () => this.host.cancelAlignment?.());
 			}
-		} else {
-			const toggle = controls.createEl("button", {
-				cls: "perplexity-saver-transcript-format",
-				text: this.mode === "lines" ? "Paragraphs" : lineNoun === "captions" ? "Captions" : "Lines",
-				attr: { "aria-label": this.mode === "lines" ? "Format as paragraphs" : `Show original ${lineNoun}` },
-			});
-			toggle.addEventListener("click", () => this.setMode(this.mode === "lines" ? "paragraphs" : "lines"));
 		}
 		if (alignmentEnabled) header.createDiv({ cls: "perplexity-saver-transcript-experiment-status", text: this.alignmentStatus });
 		this.iconButton(controls, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
@@ -824,14 +826,18 @@ export class TranscriptView extends ItemView {
 			const idx = this.rendered.findIndex((r) => r.el === evt.target);
 			if (idx >= 0) this.setFocusRow(idx);
 		});
+		let parent = list;
+		let previousText = "";
 		for (const row of rows) {
-			const rowEl = list.createDiv({
+			if (row.paragraphStart) parent = list.createDiv({ cls: "perplexity-saver-transcript-paragraph", attr: { role: "group" } });
+			else if (this.mode === "readable-paragraphs" && needsSpaceBetween(previousText, row.text)) parent.appendText(" ");
+			const rowEl = parent.createEl(this.mode === "readable-paragraphs" ? "span" : "div", {
 				cls: "perplexity-saver-transcript-row",
 				// No aria-label: Obsidian shows aria-labels as hover tooltips; the row's own text is its accessible name.
 				attr: { tabindex: "-1", role: "option" },
 			});
 			const stamp = `${row.timingUncertain ? "≈ " : ""}${formatShortTimestamp(row.startSec * 1000)}`;
-			if (row.timingUncertain) rowEl.setAttribute("title", "Approximate timing: some words were not acoustically aligned.");
+			if (row.timingUncertain) rowEl.setAttribute("title", "Approximate sentence start: the first word has no accepted timing.");
 			if (row.url) {
 				rowEl.createEl("a", {
 					cls: "perplexity-saver-transcript-time external-link",
@@ -842,9 +848,10 @@ export class TranscriptView extends ItemView {
 			} else {
 				rowEl.createSpan({ cls: "perplexity-saver-transcript-time", text: stamp });
 			}
-			const textEl = rowEl.createDiv({ cls: "perplexity-saver-transcript-text", text: row.text });
+			const textEl = rowEl.createEl(this.mode === "readable-paragraphs" ? "span" : "div", { cls: "perplexity-saver-transcript-text", text: row.text });
 			this.rendered.push({ row, el: rowEl, textEl, highlighted: false, ranges: [] });
 			this.rowStarts.push(row.startSec);
+			previousText = row.text;
 		}
 
 		this.focusRow = Math.min(this.focusRow, this.rendered.length - 1);

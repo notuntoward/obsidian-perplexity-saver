@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	buildTranscriptParagraphs,
 	groupCuesIntoParagraphs,
+	groupSentencesIntoParagraphs,
 	joinCueTexts,
 	needsSpaceBetween,
 	type TranscriptCue,
@@ -129,5 +130,50 @@ describe("buildTranscriptParagraphs", () => {
 			{ startSec: 0, text: "w0 w1" },
 			{ startSec: 10, text: "b0 b1" },
 		]);
+	});
+
+	describe("readable sentence paragraphs", () => {
+		const orchard = "Orchard apples ripen beside orchard trees where farmers harvest fresh apples.";
+		const bonds = "Bond yields rise as central banks adjust interest rates and markets.";
+
+		it("prefers a vocabulary transition over an arbitrary equal-length split", () => {
+			const sentences = [...Array<string>(7).fill(orchard), ...Array<string>(11).fill(bonds)]
+				.map((text, index) => ({ text, startSec: index * 3 }));
+			const groups = groupSentencesIntoParagraphs(sentences);
+			expect(groups.map((group) => group.length)).toEqual([7, 11]);
+			expect(groups.flat()).toEqual(sentences);
+			expect(groups[1][0]).toBe(sentences[7]);
+		});
+
+		it("balances continuous discussion into readable sizes without a short leftover tail", () => {
+			const sentences = Array.from({ length: 30 }, () => ({ text: orchard }));
+			const groups = groupSentencesIntoParagraphs(sentences);
+			expect(groups.length).toBeGreaterThan(1);
+			expect(groups.every((group) => {
+				const words = group.reduce((sum, sentence) => sum + sentence.text.split(/\s+/).length, 0);
+				return words >= 80 && words <= 160;
+			})).toBe(true);
+			expect(groups.flat()).toEqual(sentences);
+		});
+
+		it("keeps an example with its preceding explanation when a nearby break is possible", () => {
+			const sentences = Array.from({ length: 18 }, (_, i) => ({ text: `${i === 9 ? "For example, " : ""}${orchard}` }));
+			const groups = groupSentencesIntoParagraphs(sentences);
+			expect(groups.length).toBeGreaterThan(1);
+			expect(groups.every((group) => !group[0].text.startsWith("For example"))).toBe(true);
+			expect(groups.flat()).toEqual(sentences);
+		});
+
+		it("never splits a long sentence or treats sentence-start spacing as silence", () => {
+			const sentences = [{ text: "One. \"Two?\" Three!", startSec: 0 },
+				{ text: Array<string>(200).fill("unbroken").join(" ") + ".", startSec: 1 },
+				{ text: orchard, startSec: 2 }];
+			const groups = groupSentencesIntoParagraphs(sentences);
+			expect(groups.flat()).toEqual(sentences);
+			expect(groups.some((group) => group.length === 1 && group[0] === sentences[1])).toBe(true);
+			expect(groupSentencesIntoParagraphs(sentences.map((sentence, i) => ({ ...sentence, startSec: i * 1000 })))
+				.map((group) => group.map((sentence) => sentence.text))).toEqual(groups.map((group) => group.map((sentence) => sentence.text)));
+			expect(groupSentencesIntoParagraphs([])).toEqual([]);
+		});
 	});
 });

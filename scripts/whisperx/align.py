@@ -1,4 +1,4 @@
-"""Use YouTube word offsets first; force-align missing words inside caption anchors."""
+"""Use native sentence-start offsets; align only missing starts inside caption anchors."""
 
 import argparse
 import contextlib
@@ -140,6 +140,13 @@ def run(request):
     expected = [word["text"] for word in request["words"]]
     if any(not word or re.search(r"\s", word) for word in expected):
         raise ValueError("Invalid transcript words.")
+    sentence_starts = request.get("sentenceStarts")
+    if (not isinstance(sentence_starts, list)
+            or any(not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(expected)
+                   for index in sentence_starts)
+            or sentence_starts != sorted(set(sentence_starts))
+            or (expected and (not sentence_starts or sentence_starts[0] != 0))):
+        raise ValueError("Invalid sentence-start word indices. Reload the updated plugin.")
     import yt_dlp
 
     url = f'https://www.youtube.com/watch?v={request["videoId"]}'
@@ -167,18 +174,22 @@ def run(request):
     sources = ["youtube" if result is not None else "unmatched" for result in results]
     for caption in captions:
         sources[caption["first"]] = "caption"
-    missing = [caption for caption in captions if any(result is None for result in results[caption["first"]:caption["last"]])]
+    missing_starts = {index for index in sentence_starts if results[index] is None}
+    print(f"Sentence starts: {len(sentence_starts) - len(missing_starts)}/{len(sentence_starts)} native; "
+          f"{len(missing_starts)} require acoustic alignment.", file=sys.stderr, flush=True)
+    missing = [caption for caption in captions
+               if any(caption["first"] <= index < caption["last"] for index in missing_starts)]
     audio_hash = None
     if missing:
         if any(caption["end"] - caption["start"] > 120 for caption in missing):
             raise ValueError("Caption interval exceeds the bounded 120-second alignment limit.")
         if importlib.metadata.version("whisperx") != "3.8.6":
-            raise ValueError("Install scripts/whisperx/requirements.txt for missing word timings.")
+            raise ValueError("Install scripts/whisperx/requirements.txt for missing sentence-start timings.")
         import torch
         import whisperx
         device = "cuda" if torch.cuda.is_available() else "cpu"
         torch.set_num_threads(min(4, torch.get_num_threads()))
-        print(f"Aligning audio: {len(missing)} captions have missing word offsets ({device})",
+        print(f"Aligning audio: {len(missing)} captions have missing sentence-start offsets ({device})",
               file=sys.stderr, flush=True)
         with tempfile.TemporaryDirectory(prefix="caption-audio-", dir=request["workDir"]) as directory:
             print("Downloading matching video audio once; caption clips will be decoded locally...",

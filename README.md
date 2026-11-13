@@ -74,8 +74,9 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 - **"Jump to turn response"** - opens a fuzzy-searchable popup of the current dialog's headings, instantly jumping your cursor to the start of the AI's response for the selected turn. The turn you are currently reading is marked with a subtle box.
 - **"Relink sources with Zotero"** - manually relinks the current note's `# Sources` section. Shows a live progress notice and reports how many sources were matched (split into Zotero items vs. literature notes). If nothing new matches, the note is left untouched.
 - **"Get literature note link"** - inserts a literature note link at your cursor in any note. Opens a fuzzy-searchable picker of your literature notes (scoped to the *Literature notes folder* setting, ranked with recently opened notes first), then a second picker for the link description built from the note's aliases or title. The inserted wikilink looks like `[[Smith 2020 - Topic|smith2020: Topic]] `, with the citekey's year-disambiguation suffix stripped and a bare citekey description used when the note has no aliases.
-- **"Video: show or hide transcript"** - closes this note's visible transcript, or opens its stored transcript (the section under the *Transcript heading* setting) using *Default transcript panel location*, one row per stored timestamp. The command, viewer's captions button and C key share the same toggle, including an explicitly sidebar-placed transcript associated with a pop-out video. Each timestamp links to that moment in the video. The compact **Paragraphs** button regroups the lines into timestamped paragraphs using the same rules as the Media Extended plugin's "Transcript (paragraphs)" mode (split at sentence ends after pauses, and at the sentence end nearest 60 seconds); **Captions** (or **Lines** for older 5-caption-block notes) switches back. Paragraphs match Media Extended most closely for notes stored with *Transcript detail* set to every caption, because those keep each caption's exact start and end time. The panel follows when you open another note that has a transcript; a panel whose note already has a loaded player, in any window, stays with that player instead.
-  - **Placement**: click the labeled **Layout** button beside **Paragraphs** in the transcript toolbar. Its menu contains only **Show pane tabs and navigation** and **Toggle transcript below / beside video**. The **Transcript: toggle below / beside video** command flips the current orientation too, including restored panes; from the sidebar it first moves below the video. Right-sidebar placement remains available through *Default transcript panel location* or an existing bound legacy sidebar shortcut, not the Layout menu. Moving preserves formatting, filtering preference and last-search recall; the viewer opens paused if needed. The choice applies to this note for the current plugin session, including closing/reopening its panel, without changing the saved default. Obsidian restores open panes normally; restarting Saver clears its per-note session choices.
+- **"Video: show or hide transcript"** - closes this note's visible transcript, or opens its stored transcript (the section under the *Transcript heading* setting) using *Default transcript panel location*, one row per stored timestamp. The command, viewer's captions button and C key share the same toggle, including an explicitly sidebar-placed transcript associated with a pop-out video. Each timestamp links to that moment in the video. The format selector offers **Original captions / lines**, **Original paragraphs** and **Readable paragraphs**; timing comparison modes appear when *Caption word timing* is enabled. **Original paragraphs** keeps the Media Extended-style cue-gap and roughly one-minute grouping, most faithfully with notes stored using *Every caption*. The panel follows when you open another note that has a transcript; a panel whose note already has a loaded player, in any window, stays with that player instead.
+  - **Readable paragraphs**: groups complete punctuation-derived sentences into flowing English prose, favoring local vocabulary/topic transitions and readable lengths around 80–160 words. Small discourse-cue adjustments keep examples with their explanations; global length balancing avoids a tiny leftover tail. A single longer sentence is never split. This is a local formatting heuristic, not semantic understanding or an acoustic pause detector: sentence-start spacing and caption display durations are not used as silence. No extra downloads, Python, models or API calls; the note is not rewritten. Every sentence retains its timestamp, playback highlighting, keyboard navigation, search and filtering. With *Caption word timing* enabled, matching saved timings are reused offline; otherwise caption anchors are used and starts inside a caption are marked **≈**. Switching formats preserves source position without seeking. Successful timing still initially selects **Word-timed sentences**; choose **Readable paragraphs** whenever preferred.
+  - **Placement**: click the labeled **Layout** button beside the format selector in the transcript toolbar. Its menu contains only **Show pane tabs and navigation** and **Toggle transcript below / beside video**. The **Transcript: toggle below / beside video** command flips the current orientation too, including restored panes; from the sidebar it first moves below the video. Right-sidebar placement remains available through *Default transcript panel location* or an existing bound legacy sidebar shortcut, not the Layout menu. Moving preserves formatting, filtering preference and last-search recall; the viewer opens paused if needed. The choice applies to this note for the current plugin session, including closing/reopening its panel, without changing the saved default. Obsidian restores open panes normally; restarting Saver clears its per-note session choices.
   - **Pane chrome**: in a non-top, non-stacked tab group containing only the transcript, its redundant tab strip and native title/navigation header are hidden. The transcript remains a normal Obsidian pane with its split divider and workspace restoration. Tabs/header reappear when another tab joins the group; top-of-window controls and stacked tabs stay intact. For native tab dragging or pane menu access, enable **Show pane tabs and navigation** in the layout menu (for this pane's lifetime). The toolbar's **X** closes the transcript and returns focus to its associated viewer.
   - **Search**: the search row is hidden when idle. The magnifying-glass button, Ctrl/Cmd+F, **Video: search transcript**, row Escape or a directional search command reveals it. Accepting/cancelling hides it again. Leaving the transcript cancels without stealing focus and retains last-query recall. Clicking search controls or browsing filtered rows within the transcript keeps search open. By default, rows containing all words in any order are matched case-insensitively. *Transcript matching* can instead require a literal phrase. Enter / Shift+Enter (or the arrow buttons) go to the next / previous match in the default Obsidian-style mode; F3 / Shift+F3 work in either mode. **Tab or the checkmark button accepts the selected match without playing**: it clears the search, restores all transcript rows even with filtering enabled, and focuses that row so ↑/↓ browse the surrounding transcript. Ctrl/Cmd+Enter (or the play button) still plays the selected match. The filter button shows only matching rows while searching; the X button cancels.
   - **Keyboard behavior**: choose *Obsidian-style* (Enter next, Shift+Enter previous, Esc accepts) or *Emacs-style* (Enter accepts, Esc cancels), as in Incremental Search. Directional search commands first focus search when a transcript row or toolbar control has focus, then navigate matches on subsequent presses in the search box. In Emacs-style mode, accepting or cancelling remembers the panel's last non-empty query: the next search starts empty, and repeating a directional command before typing recalls that query and selects the next/previous matching row from where search started, wrapping at the ends. The repeat command's direction wins, and typed text is never replaced. Recall uses the same `commons/search` policy as Incremental Search's note/PDF search. They work in either mode and in pop-outs. Ctrl/Cmd+G cancels in either mode, restoring the pre-search row and scroll position; Tab accepts in either mode.
@@ -153,8 +154,9 @@ Jev note data is not deleted automatically. Timing quality does not establish
 UI/storage safety.
 
 Keep the existing **Punctuation sentences**, but time them against the actual audio.
-Use YouTube's existing word offsets first; reserve WhisperX for missing internal
-timings. No API key, paid inference or generated punctuation is involved.
+Use YouTube's existing word offsets at punctuation-derived sentence starts;
+reserve WhisperX for missing sentence-start timings, not missing internal words.
+No API key, paid inference or generated punctuation is involved.
 Saved words stay unchanged unless you explicitly accept replacement with
 current YouTube captions after a discrepancy prompt. English, desktop only.
 
@@ -162,10 +164,12 @@ current YouTube captions after a discrepancy prompt. English, desktop only.
 2. Open the lecture's usual transcript panel and click **Time words**, or run
    **Transcript: time words from captions (experiment)**.
 3. Confirm **Check captions and save timings**. First download matching English
-   JSON3 captions, not audio. If all words have native starts, no model is loaded
-   and no audio is downloaded. If internal timings are missing, download the video's
-   full audio once with yt-dlp, then decode and align only short caption intervals
-   locally. This avoids repeated remote FFmpeg requests, which can fail intermittently
+   JSON3 captions, not audio. Check the first word of each punctuation-defined
+   sentence against native YouTube timestamps. If every sentence start is covered,
+   no model is loaded and no audio is downloaded, even if internal word offsets
+   are missing. Otherwise download the video's full audio once with yt-dlp, then
+   decode and align only the short caption intervals containing missing sentence
+   starts locally. This avoids repeated remote FFmpeg requests, which can fail intermittently
    with YouTube HTTP 403 errors. Only one caption interval is decoded into memory
    at a time; the temporary audio file is removed after the job. Continue only
    for audio you have permission to download and process.
@@ -178,15 +182,23 @@ current YouTube captions after a discrepancy prompt. English, desktop only.
    section and other note properties are preserved; failure leaves the old
    transcript intact. An unrecognized stored format can be recovered when the
    note has a valid YouTube `url` property and a transcript heading.
-4. Select **Word-timed sentences**. **Compare** toggles between these and
+4. Successful timing automatically switches matching open transcript panels to
+   **Word-timed sentences**, without seeking or starting playback. Cancelled or
+   failed runs do not switch modes. **Compare** toggles between these and
    **Punctuation sentences**, preserving source-text position without seeking.
    Text, sentence boundaries, search, filtering, keyboard navigation and playback
    controls are shared; only the timing changes.
+   The initial notice says **Checking YouTube sentence-start timestamps**;
+   the completed-result notice explicitly distinguishes **YouTube timestamps only;
+   no audio download or WhisperX inference** from actual acoustic fallback.
+   Running the Python caption-fetching helper does not itself mean WhisperX ran.
 
 **Already set up on this Windows ARM development machine:** an isolated x64
 Python 3.12 environment in `.venv-whisperx`, WhisperX 3.8.6, yt-dlp and the English
 acoustic model. Leave **WhisperX Python executable** blank for that environment.
 The existing ARM Python is untouched. No install command is needed to try it here.
+Native-only runs still use Python and yt-dlp to fetch captions, but do not load
+WhisperX/PyTorch or invoke FFmpeg. Dependencies are not installed automatically.
 
 For another checkout/machine, install FFmpeg and Node.js on PATH, then install
 [`scripts/whisperx/requirements.txt`](./scripts/whisperx/requirements.txt) into an
@@ -209,9 +221,11 @@ their timing (case/punctuation differences are permitted). Changed, added or
 missing words, including equal-length but differently worded transcripts, require
 the explicit cancel-or-replace decision above; timings are never silently applied
 to different words. A JSON3 segment's offset times its first word, not every word in a
-multiword segment. The first word of each original caption retains the caption's
-exact start. For missing internal offsets only, force-align the caption inside its
-own audio interval, ending no later than the next caption's start or the caption's
+multiword segment. Derive sentence-start word indices with the same
+`Intl.Segmenter` used for punctuation sentences, and recompute them if the user
+accepts replacement text. The first word of each original caption retains the
+caption's exact start. Only if a sentence's first word lacks a native offset,
+force-align its caption inside its own audio interval, ending no later than the next caption's start or the caption's
 declared end. Existing internal word offsets remain trusted anchors too. Reject
 cross-boundary, reversed and low-score acoustic results instead of clipping them.
 Native word starts can tie the next caption's start: YouTube sometimes assigns
@@ -221,11 +235,17 @@ There is no broad search, greedy retranscription or drift across captions. Older
 five-caption note blocks regain original caption anchors from the matched JSON3
 track without changing their words. Existing punctuation still defines sentences.
 
-On the GARCH lecture used for this experiment, native starts covered 11,327 of
+In the earlier all-word GARCH benchmark, native starts covered 11,327 of
 11,328 words across 1,902 captions. Only one 1.84-second caption needed an audio
 clip; its one uncertain word remained unmatched. The full run took 44 seconds
 on this machine. All caption-start anchors and interval bounds were preserved;
 this is not a manually annotated measurement of acoustic accuracy.
+
+The saved Wolfers example has 209 sentence starts, all with native timestamps,
+including 80 starts inside captions. Its 58 missing native word offsets are all
+inside sentences, so the sentence-start precheck requires no acoustic alignment.
+This coverage was verified offline from saved timing provenance, not a new
+YouTube download. Existing matching caches work immediately without recomputation.
 
 **Saved once, reused offline, without large Properties.** Each existing transcript
 timestamp link gains a small `w=` suffix in its optional title:
@@ -246,7 +266,7 @@ times. No second transcript is written.
 `?` means an unmatched word. Native timestamps have no invented ends or scores.
 Rare acoustic matches use `aSTART:END:SCORE` instead of a plain number; START and
 END are relative millisecond offsets and SCORE is the accepted acoustic score.
-This keeps sentence ends and uncertainty intact. Original-caption and internal
+This preserves accepted acoustic spans and scores. Original-caption and internal
 YouTube starts are both stored as native numbers. The helper still validates
 all original caption anchors and provenance before saving, but compact notes do
 not retain the bulky caption-interval arrays, model configuration or download
@@ -271,8 +291,10 @@ temporary audio is removed when the job ends.
 **Uncertainty and limits.** Native word offsets are source timestamps, not model
 confidence scores or inferred acoustic word ends. Acoustic scores are not calibrated probabilities.
 Words with absent scores, scores below 0.3, numeric spellings or invalid/reversed
-timings are marked unmatched. Sentences containing any unmatched words show
-**approximately (`≈`)**; they use the available aligned words, or the preceding
+timings are marked unmatched. Only sentences whose first word has no accepted
+timestamp show **approximately (`≈`)**; missing internal word timings do not make
+a known sentence start approximate. Estimated starts use the first available
+timed word in that sentence, or the preceding
 sentence's end if none matched. These are explicitly estimates, not successful
 alignments. Mismatched words offer cancel or replacement, not guessed
 correspondences. Missing or unusable original English captions still stop the run
@@ -285,8 +307,8 @@ requires network access.
 To manually discard compact results, remove the `saver-word-timing` comment and
 the `; w=...` suffixes, keeping the timestamp ranges and caption text. For an
 unmigrated note remove only `whisperx_transcript`. Then **Time words** can compute
-them again. Disable **Caption word timing** to restore the original toolbar
-without deleting saved results. This storage improvement is not a proven fix
+them again. Disable **Caption word timing** to hide timing controls
+without deleting saved results; local **Readable paragraphs** remains available. This storage improvement is not a proven fix
 for the separately reported Properties freeze. WhisperX uses BSD-2-Clause; the selected
 [`WAV2VEC2_ASR_BASE_960H` model is MIT-licensed](https://docs.pytorch.org/audio/2.8.0/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html).
 

@@ -1,9 +1,9 @@
 import { getFrontMatterInfo, Notice, parseYaml, type App, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
-import { prepareTranscript, type PreparedTranscript } from "./transcriptSentences";
+import { prepareTranscript, sentenceRows, type PreparedTranscript } from "./transcriptSentences";
 import { findTranscriptRange, parseStoredTranscript } from "./transcriptSection";
 import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage";
-import { ALIGNMENT_CACHE_KEY, readAlignmentCache, readCaptionReplacement, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
+import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, readCaptionReplacement, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
 import { runWhisperx, type WhisperxProcessOptions } from "./whisperxProcess";
 import { formatTranscriptCues } from "./youtubeTranscript";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
@@ -76,19 +76,23 @@ export async function runWhisperxExperiment(
 			return cached;
 		}
 		const consent = await askNoteDecision(app, "Use caption word timing?",
-			`Check YouTube captions for ${videoId}${transcript.words.length ? ` and time these ${transcript.words.length} words` : " and recover the unrecognized transcript format"}?\n\nUse native word offsets first, without audio downloads or inference. If internal timings are missing, download the video's full audio once, then decode and align only short caption intervals locally with WhisperX. This avoids separate remote FFmpeg downloads for every caption. The first word of each original caption stays fixed; no word may cross the next caption's start. If the stored transcript differs or its format is unrecognized, you can cancel or explicitly replace only the transcript section.\n\nContinue only if you have permission to download/process the audio. Your note and transcript are not uploaded; no API charge. Save compact word offsets in existing transcript links for offline comparison, not in Properties. Text and punctuation remain unchanged unless you separately confirm replacement.`,
+			`Check YouTube captions for ${videoId}${transcript.words.length ? ` and time these ${sentenceRows(transcript).length} sentence starts` : " and recover the unrecognized transcript format"}?\n\nUse native YouTube word offsets at punctuation-derived sentence starts first, without audio downloads or inference. Missing internal word timings do not require alignment. Only if a sentence's first word lacks a timestamp, download the video's full audio once, then decode and align its short caption interval locally with WhisperX. The first word of each original caption stays fixed; no word may cross the next caption's start. If the stored transcript differs or its format is unrecognized, you can cancel or explicitly replace only the transcript section.\n\nContinue only if you have permission to download/process the audio. Your note and transcript are not uploaded; no API charge. Save compact word offsets in existing transcript links for offline comparison, not in Properties. Text and punctuation remain unchanged unless you separately confirm replacement.`,
 			[{ label: "Check captions and save timings", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 		if (consent !== "create") return null;
 		assertActive();
-		const notice = new Notice("Starting local WhisperX alignment...", 0);
+		const notice = new Notice("Checking YouTube sentence-start timestamps...", 0);
 		try {
-			const align = (prepared: PreparedTranscript) => runWhisperx({
-				version: 2, sourceHash: prepared.hash, videoId,
-				words: prepared.words.map((word) => {
-					const line = prepared.lines[word.cue];
-					return { text: word.text, start: line.startSec, ...(line.endSec === undefined ? {} : { end: line.endSec }) };
-				}),
-			}, { ...options, onProgress: (message) => { notice.setMessage(message); options.onProgress?.(message); } });
+			const align = (prepared: PreparedTranscript) => {
+				const starts = new Set(sentenceRows(prepared).map((row) => row.sourceStart));
+				return runWhisperx({
+					version: 2, sourceHash: prepared.hash, videoId,
+					sentenceStarts: prepared.words.flatMap((word, index) => starts.has(word.start) ? [index] : []),
+					words: prepared.words.map((word) => {
+						const line = prepared.lines[word.cue];
+						return { text: word.text, start: line.startSec, ...(line.endSec === undefined ? {} : { end: line.endSec }) };
+					}),
+				}, { ...options, onProgress: (message) => { notice.setMessage(message); options.onProgress?.(message); } });
+			};
 			let prepared = transcript;
 			let sourceSection = section;
 			let result = await align(prepared);
@@ -115,8 +119,12 @@ export async function runWhisperxExperiment(
 			if (!cache) throw new Error("WhisperX returned results for a different transcript or helper version.");
 			if (!cache.words.some((word) => word !== null)) throw new Error("WhisperX could not align any words; no results were saved.");
 			await save(cache, sourceSection);
-			const unmatched = cache.words.filter((word) => word === null).length;
-			new Notice(`Caption timings saved in transcript links (${cache.engine}). ${unmatched}/${cache.words.length} words uncertain. Select Word-timed sentences and Compare.`);
+			const sentences = alignedSentenceRows(prepared, cache);
+			const approximate = sentences.filter((sentence) => sentence.timingUncertain).length;
+			const method = cache.engine === "youtube-json3"
+				? "YouTube timestamps only; no audio download or WhisperX inference."
+				: "WhisperX acoustic fallback ran for missing sentence starts.";
+			new Notice(`Sentence timings saved in transcript links. ${method} ${sentences.length - approximate}/${sentences.length} sentence starts timed; ${approximate} approximate. Use Compare to compare with caption timing.`);
 			return cache;
 		} finally {
 			notice.hide();

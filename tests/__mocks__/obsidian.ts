@@ -82,6 +82,20 @@ export class Setting {
 	}
 }
 
+export class DropdownComponent {
+	selectEl: HTMLSelectElement;
+	constructor(parent: HTMLElement) { this.selectEl = parent.createEl("select"); }
+	addOptions(options: Record<string, string>): this {
+		for (const [value, text] of Object.entries(options)) this.selectEl.createEl("option", { text }).value = value;
+		return this;
+	}
+	setValue(value: string): this { this.selectEl.value = value; return this; }
+	onChange(callback: (value: string) => void): this {
+		this.selectEl.addEventListener("change", () => callback(this.selectEl.value));
+		return this;
+	}
+}
+
 export class Notice {
 	message: string;
 	timeout?: number;

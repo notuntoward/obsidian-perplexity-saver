@@ -77,6 +77,10 @@ class CaptionTimingTests(unittest.TestCase):
 
     def test_native_timing_or_discrepancy_does_not_load_models_or_download_audio(self):
         data = self.data()
+        data["events"][0]["segs"] = [
+            {"utf8": "We left."}, {"utf8": " We", "tOffsetMs": 900},
+            {"utf8": " stayed.", "tOffsetMs": 1100},
+        ]
         info = {"id": "abcdefghijk", "duration": 16,
                 "subtitles": {"en": [{"ext": "json3", "url": "captions"}]}}
 
@@ -98,27 +102,42 @@ class CaptionTimingTests(unittest.TestCase):
         with patch.dict("sys.modules", {"yt_dlp": SimpleNamespace(YoutubeDL=lambda _: Downloader())}):
             with patch("align.importlib.metadata.version", side_effect=AssertionError("Must not load WhisperX")):
                 result = run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64,
+                              "sentenceStarts": [0, 2, 4],
                               "words": [{"text": word} for word in ["We", "left.", "We", "stayed.", "Next."]]})
                 mismatch = run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64,
+                                "sentenceStarts": [0],
                                 "words": [{"text": word} for word in ["Different", "stored", "words."]]})
-                unsupported = run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64, "words": []})
+                unsupported = run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64,
+                                   "sentenceStarts": [], "words": []})
         self.assertEqual(result["engine"], "youtube-json3")
         self.assertIsNone(result["audioSha256"])
-        self.assertEqual(result["wordSources"], ["caption", "youtube", "youtube", "youtube", "caption"])
+        self.assertEqual(result["wordSources"], ["caption", "unmatched", "youtube", "youtube", "caption"])
+        self.assertIsNone(result["words"][1])
         self.assertEqual(mismatch["status"], "transcript-mismatch")
         self.assertEqual((mismatch["expectedWords"], mismatch["actualWords"]), (3, 5))
         self.assertEqual(mismatch["captions"][0]["text"], "We left. We stayed.")
         self.assertNotIn("engine", mismatch)
         self.assertEqual(unsupported["reason"], "format")
 
+    def test_rejects_missing_or_invalid_sentence_start_indices_before_downloading(self):
+        with patch.dict("sys.modules", {"yt_dlp": SimpleNamespace(
+            YoutubeDL=Mock(side_effect=AssertionError("Invalid requests must not access the network")),
+        )}):
+            for starts in (None, [], [0, 9], [0, True]):
+                with self.subTest(starts=starts):
+                    with self.assertRaisesRegex(ValueError, "sentence-start"):
+                        run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64,
+                             "sentenceStarts": starts, "words": [{"text": "We"}, {"text": "left."}]})
+
     def test_missing_captions_share_one_download_and_decode_only_their_local_intervals(self):
         import numpy as np
 
         data = {"events": [
-            {"tStartMs": 1250, "dDurationMs": 2250, "segs": [{"utf8": "One missing."}]},
-            {"tStartMs": 3500, "dDurationMs": 1500, "segs": [{"utf8": "More missing."}]},
+            {"tStartMs": 1250, "dDurationMs": 2250, "segs": [{"utf8": "One. Missing."}]},
+            {"tStartMs": 3500, "dDurationMs": 1500, "segs": [{"utf8": "More. Missing."}]},
+            {"tStartMs": 5000, "dDurationMs": 1000, "segs": [{"utf8": "Still internal."}]},
         ]}
-        info = {"id": "abcdefghijk", "duration": 6,
+        info = {"id": "abcdefghijk", "duration": 7,
                 "subtitles": {"en": [{"ext": "json3", "url": "captions"}]}}
         downloads = []
 
@@ -147,8 +166,8 @@ class CaptionTimingTests(unittest.TestCase):
                 return BytesIO(json.dumps(data).encode())
 
         acoustic = Mock(side_effect=[
-            {"word_segments": [{"word": "One"}, {"word": "missing.", "start": 0.25, "end": 0.5, "score": 0.9}]},
-            {"word_segments": [{"word": "More"}, {"word": "missing.", "start": 0.25, "end": 0.5, "score": 0.9}]},
+            {"word_segments": [{"word": "One."}, {"word": "Missing.", "start": 0.25, "end": 0.5, "score": 0.9}]},
+            {"word_segments": [{"word": "More."}, {"word": "Missing.", "start": 0.25, "end": 0.5, "score": 0.9}]},
         ])
         whisperx = SimpleNamespace(load_align_model=Mock(return_value=("model", {})), align=acoustic,
                                    load_audio=Mock(side_effect=AssertionError("Must not decode full audio")))
@@ -165,12 +184,13 @@ class CaptionTimingTests(unittest.TestCase):
                         SimpleNamespace(stdout=audio.tobytes()) for audio in decoded
                     ]) as decode:
                         result = run({"version": 2, "videoId": "abcdefghijk", "sourceHash": "b" * 64,
-                                      "workDir": directory,
-                                      "words": [{"text": word} for word in ["One", "missing.", "More", "missing."]]})
+                                      "workDir": directory, "sentenceStarts": [0, 1, 2, 3, 4],
+                                      "words": [{"text": word} for word in
+                                                ["One.", "Missing.", "More.", "Missing.", "Still", "internal."]]})
             self.assertEqual(len(downloads), 1)
             self.assertEqual(result["words"], [[1.25, None, None], [1.5, 1.75, 0.9],
-                                               [3.5, None, None], [3.75, 4.0, 0.9]])
-            self.assertEqual(result["wordSources"], ["caption", "acoustic", "caption", "acoustic"])
+                                               [3.5, None, None], [3.75, 4.0, 0.9], [5, None, None], None])
+            self.assertEqual(result["wordSources"], ["caption", "acoustic", "caption", "acoustic", "caption", "unmatched"])
             for call, start, duration in zip(decode.call_args_list, [1.25, 3.5], [2.25, 1.5]):
                 command = call.args[0]
                 self.assertEqual(float(command[command.index("-ss") + 1]), start)

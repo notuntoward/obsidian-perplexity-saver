@@ -7,6 +7,8 @@ import { runWhisperx } from "../../src/litNote/whisperxProcess";
 import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
 import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
+import { createdNotices } from "../__mocks__/obsidian";
+import type { AlignmentCache } from "../../src/litNote/transcriptAlignment";
 
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
 vi.mock("../../src/litNote/whisperxProcess", () => ({ runWhisperx: vi.fn() }));
@@ -39,6 +41,7 @@ function mismatchFor(value: unknown) {
 
 beforeEach(() => {
 	vi.resetAllMocks();
+	createdNotices.length = 0;
 	body = "# Transcript\n[0:00](https://youtu.be/abcdefghijk?t=0 \"0-12\") we finished the experiment we checked the results\n";
 	frontmatter = { title: "Keep me" };
 	const content = () => `---\n${JSON.stringify(frontmatter)}\n---\n${body}`;
@@ -76,6 +79,29 @@ beforeEach(() => {
 });
 
 describe("local word timing consent and offline persistence", () => {
+	it("does not claim WhisperX ran when the helper returns native YouTube timings", async () => {
+		const transcript = prepareTranscript(parseStoredTranscript(body));
+		const native: AlignmentCache = {
+			version: 2, sourceHash: transcript.hash, videoId: "abcdefghijk",
+			engine: "youtube-json3", model: null, paddingSeconds: 0,
+			createdAt: "2026-11-13T00:00:00Z", audioSha256: null, audioDuration: 100,
+			captionSha256: "b".repeat(64),
+			captions: [{ first: 0, last: transcript.words.length, start: 0, end: 12 }],
+			wordSources: transcript.words.map((_, i) => i === 0 ? "caption" : "youtube"),
+			words: transcript.words.map((_, i) => [i, null, null]),
+		};
+		vi.mocked(runWhisperx).mockResolvedValueOnce(native);
+		await runWhisperxExperiment(app, file, "Transcript", options);
+		expect(createdNotices[0].message).toBe("Checking YouTube sentence-start timestamps...");
+		expect(createdNotices.at(-1)?.message).toContain("YouTube timestamps only; no audio download or WhisperX inference.");
+	});
+
+	it("requests only punctuation-derived sentence-start word indices, including starts inside a caption", async () => {
+		body = '# Transcript\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-12") We left. We stayed. Then we returned.\n';
+		await runWhisperxExperiment(app, file, "Transcript", options);
+		expect(runWhisperx).toHaveBeenCalledWith(expect.objectContaining({ sentenceStarts: [0, 2, 4] }), expect.any(Object));
+	});
+
 	it.each([3, 8])("offers cancellation without changing the existing transcript or cache (current words=%s)", async (count) => {
 		const original = body;
 		frontmatter.whisperx_transcript = { version: 1 };
@@ -102,7 +128,7 @@ describe("local word timing consent and offline persistence", () => {
 	it("replaces only the transcript after explicit confirmation and saves fresh compact timings", async () => {
 		const prefix = "# Summary\nWritten content stays here.\n\n";
 		const suffix = "\n# Notes\nMy comments.\n";
-		body = prefix + body + suffix;
+		body = prefix + body.replace("finished the", "finished. The") + suffix;
 		frontmatter.whisperx_transcript = { version: 1 };
 		vi.mocked(runWhisperx).mockImplementationOnce(async (value) => mismatchFor(value));
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("create").mockResolvedValueOnce("overwrite");
@@ -117,6 +143,8 @@ describe("local word timing consent and offline persistence", () => {
 		expect(runWhisperx).toHaveBeenCalledTimes(2);
 		const request = vi.mocked(runWhisperx).mock.calls[1][0] as { words: { text: string }[] };
 		expect(request.words.map((word) => word.text)).toEqual(["A", "fresh", "transcript."]);
+		expect(runWhisperx).toHaveBeenNthCalledWith(1, expect.objectContaining({ sentenceStarts: [0, 2] }), expect.any(Object));
+		expect(runWhisperx).toHaveBeenNthCalledWith(2, expect.objectContaining({ sentenceStarts: [0] }), expect.any(Object));
 	});
 
 	it("offers the same safe replacement for an unrecognized transcript format using the note video URL", async () => {
@@ -158,6 +186,7 @@ describe("local word timing consent and offline persistence", () => {
 	it("confirms before downloading, preserves the note and reuses saved timings offline", async () => {
 		const original = body;
 		await runWhisperxExperiment(app, file, "Transcript", options);
+		expect(createdNotices.at(-1)?.message).toContain("WhisperX acoustic fallback ran for missing sentence starts.");
 		expect(askNoteDecision).toHaveBeenCalledOnce();
 		expect(frontmatter.whisperx_transcript).toBeUndefined();
 		expect(frontmatter.title).toBe("Keep me");

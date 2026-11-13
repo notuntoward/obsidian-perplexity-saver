@@ -41,19 +41,6 @@ vi.mock("obsidian", async (importOriginal) => {
 				scopeHandlers.set(key, callback);
 			}
 		},
-		DropdownComponent: class {
-			selectEl: HTMLSelectElement;
-			constructor(parent: HTMLElement) { this.selectEl = parent.createEl("select"); }
-			addOptions(options: Record<string, string>): this {
-				for (const [value, text] of Object.entries(options)) this.selectEl.createEl("option", { text }).value = value;
-				return this;
-			}
-			setValue(value: string): this { this.selectEl.value = value; return this; }
-			onChange(callback: (value: string) => void): this {
-				this.selectEl.addEventListener("change", () => callback(this.selectEl.value));
-				return this;
-			}
-		},
 		SearchComponent: class {
 			inputEl: HTMLInputElement;
 			constructor(parent: HTMLElement) { this.inputEl = parent.createEl("input"); }
@@ -78,6 +65,7 @@ beforeEach(() => {
 	scopeHandlers.clear();
 	menuChoices.length = 0;
 	HTMLElement.prototype.createDiv = function (opts) { return this.createEl("div", opts); };
+	HTMLElement.prototype.appendText = function (text) { this.append(text); };
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
 	HTMLElement.prototype.isShown = function () {
 		return !this.parentElement?.classList.contains("is-filtered") || this.classList.contains("is-match");
@@ -125,6 +113,76 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("local acoustic alignment comparison", () => {
+	it.each([[false, false], [false, true], [true, false], [true, true]])(
+		"groups offline sentences into readable prose with sentence search/playback (popout=%s, timed=%s)", async (popout, timed) => {
+			const doc = popout ? document.implementation.createHTMLDocument() : document;
+			if (popout) stubPopout(doc);
+			const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
+			const transcript = prepareTranscript(parseStoredTranscript(section));
+			const timings: WordTimings = {
+				sourceHash: transcript.hash, videoId: "abcdefghijk",
+				wordSources: ["caption", "unmatched", "youtube", "unmatched"],
+				words: [[0, null, null], null, [2, null, null], null],
+			};
+			const align = vi.fn(async () => {});
+			const view = await panel(doc, { getAlignmentEnabled: () => timed, alignTranscript: align },
+				undefined, "abcdefghijk", "# Transcript" + (timed ? writeInlineTimings(section, timings) : section));
+			const select = view.contentEl.querySelector("select")!;
+			expect(select).not.toBeNull();
+			select.value = "readable-paragraphs";
+			select.dispatchEvent(new Event("change"));
+			expect(view.getState().mode).toBe("readable-paragraphs");
+			const paragraphs = view.contentEl.querySelectorAll(".perplexity-saver-transcript-paragraph");
+			expect(paragraphs).toHaveLength(1);
+			expect(rows(view)).toHaveLength(2);
+			expect(rows(view).every((row) => row.parentElement === paragraphs[0] && row.tagName === "SPAN")).toBe(true);
+			expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", timed ? "0:02" : "≈ 0:00"]);
+			rows(view)[1].focus();
+			if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
+			select.value = "lines";
+			select.dispatchEvent(new Event("change"));
+			const restored = view.contentEl.querySelector("select")!;
+			restored.value = "readable-paragraphs";
+			restored.dispatchEvent(new Event("change"));
+			expect(rows(view)[1].tabIndex).toBe(0);
+			expect(play).not.toHaveBeenCalled();
+			const input = search(view, "stayed");
+			key(input, "Tab");
+			if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
+			key(rows(view)[1], "Enter");
+			expect(play).toHaveBeenLastCalledWith("note.md", expect.any(String), timed ? 2 : 0, true);
+			await view.reload();
+			expect(view.getState().mode).toBe("readable-paragraphs");
+			expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-text").length).toBe(2);
+			expect(align).not.toHaveBeenCalled();
+		});
+
+	it.each([false, true])("switches completed timing to word-timed sentences without seeking (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
+		const transcript = prepareTranscript(parseStoredTranscript(section));
+		const timings: WordTimings = {
+			sourceHash: transcript.hash, videoId: "abcdefghijk",
+			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
+			words: [[0, null, null], null, [2, null, null], null],
+		};
+		const view = await panel(doc, { getAlignmentEnabled: () => true }, undefined, "abcdefghijk", "# Transcript" + section);
+		const select = view.contentEl.querySelector("select")!;
+		select.value = "paragraphs";
+		select.dispatchEvent(new Event("change"));
+		await view.reload({ showWordTimedSentences: true });
+		expect(view.getState().mode).toBe("paragraphs");
+		vi.spyOn(view.app.vault, "cachedRead").mockResolvedValue("# Transcript" + writeInlineTimings(section, timings));
+		await view.reload();
+		expect(view.getState().mode).toBe("paragraphs");
+		await view.reload({ showWordTimedSentences: true });
+		expect(view.getState().mode).toBe("aligned-sentences");
+		expect(view.contentEl.querySelector("select")!.value).toBe("aligned-sentences");
+		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:02"]);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each([false, true])("loads compact timings offline and compares sentence starts (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
@@ -132,14 +190,15 @@ describe("local acoustic alignment comparison", () => {
 		const transcript = prepareTranscript(parseStoredTranscript(section));
 		const timings: WordTimings = {
 			sourceHash: transcript.hash, videoId: "abcdefghijk",
-			wordSources: ["caption", "youtube", "youtube", "youtube"],
-			words: [[0, null, null], [0.2, null, null], [2, null, null], [2.2, null, null]],
+			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
+			words: [[0, null, null], null, [2, null, null], null],
 		};
 		const align = vi.fn(async () => {});
 		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align },
 			undefined, "abcdefghijk", "# Transcript" + writeInlineTimings(section, timings));
 		expect(view.contentEl.textContent).not.toContain("Time words");
 		expect(view.contentEl.textContent).not.toContain("Compact saved timings");
+		expect(view.contentEl.textContent).toContain("2/2 sentence starts timed");
 		const select = view.contentEl.querySelector("select")!;
 		select.value = "aligned-sentences";
 		select.dispatchEvent(new Event("change"));
@@ -1067,7 +1126,9 @@ describe("transcript search settings", () => {
 		const scrolled = vi.mocked(HTMLElement.prototype.scrollIntoView);
 		scrolled.mockClear();
 		view["userScrollAt"] = Date.now();
-		view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-format")!.click();
+		const format = view.contentEl.querySelector("select")!;
+		format.value = "paragraphs";
+		format.dispatchEvent(new Event("change"));
 		expect(view.contentEl.querySelectorAll(".is-playing")).toHaveLength(1);
 		expect(rows(view)[0].classList.contains("is-playing")).toBe(true);
 		expect(scrolled).toHaveBeenCalled();
@@ -1075,7 +1136,9 @@ describe("transcript search settings", () => {
 
 	it("accepts a search after paragraph formatting without playing", async () => {
 		const view = await panel();
-		view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-controls button")!.click();
+		const format = view.contentEl.querySelector("select")!;
+		format.value = "paragraphs";
+		format.dispatchEvent(new Event("change"));
 		const input = search(view);
 		key(input, "Tab");
 		expect(input.value).toBe("");

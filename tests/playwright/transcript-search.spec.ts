@@ -1,6 +1,48 @@
 import { expect, test } from "@playwright/test";
 import path from "node:path";
 
+test("readable paragraphs flow inline, retain sentence controls and hide empty filtered paragraphs", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			* { box-sizing: border-box; }
+			body { margin: 0; font: 14px/20px sans-serif; }
+			:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --font-ui-smaller: 12px; --line-height-normal: 1.5; }
+			.view-content { padding: 12px; width: 700px; }
+		</style>
+		<div class="view-content perplexity-saver-transcript-view">
+			<div class="perplexity-saver-transcript-list is-readable-paragraphs" role="listbox">
+				<div class="perplexity-saver-transcript-paragraph" role="group">
+					<span class="perplexity-saver-transcript-row" tabindex="0" role="option"><a class="perplexity-saver-transcript-time">0:00</a><span class="perplexity-saver-transcript-text">Orchard apples are ready.</span></span>
+					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:04</a><span class="perplexity-saver-transcript-text">Farmers pick ripe fruit.</span></span>
+				</div>
+				<div class="perplexity-saver-transcript-paragraph" role="group">
+					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:08</a><span class="perplexity-saver-transcript-text">Bond prices respond to interest rates.</span></span>
+					<span class="perplexity-saver-transcript-row is-match" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:12</a><span class="perplexity-saver-transcript-text">Markets adjust their expectations.</span></span>
+				</div>
+			</div>
+		</div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const text = page.locator(".perplexity-saver-transcript-text");
+	const first = await text.nth(0).boundingBox();
+	const second = await text.nth(1).boundingBox();
+	expect(Math.abs(first!.y - second!.y)).toBeLessThanOrEqual(1);
+	const paragraphs = page.locator(".perplexity-saver-transcript-paragraph");
+	const a = await paragraphs.nth(0).boundingBox();
+	const b = await paragraphs.nth(1).boundingBox();
+	expect(b!.y - (a!.y + a!.height)).toBeGreaterThanOrEqual(8);
+	for (const width of [240, 320, 700]) {
+		await page.locator(".view-content").evaluate((el, width) => { (el as HTMLElement).style.width = width + "px"; }, width);
+		expect(await page.locator(".view-content").evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+	}
+	await page.getByRole("option").nth(1).focus();
+	await expect(page.getByRole("option").nth(1)).toBeFocused();
+	await page.locator(".perplexity-saver-transcript-list").evaluate((el) => el.classList.add("is-filtered"));
+	await expect(paragraphs.nth(0)).toBeHidden();
+	await expect(page.locator(".perplexity-saver-transcript-row").nth(2)).toBeHidden();
+	await expect(page.locator(".perplexity-saver-transcript-row").nth(3)).toBeVisible();
+});
+
 test("experimental sentence comparison controls and saved-results status fit narrow transcript panes", async ({ page }) => {
 	await page.setContent(`
 		<style>
@@ -22,7 +64,7 @@ test("experimental sentence comparison controls and saved-results status fit nar
 					<button>Time words</button><button>Cancel alignment</button><button class="clickable-icon">S</button><button>Layout</button>
 				</div>
 				<div class="perplexity-saver-transcript-experiment-status">
-					WhisperX: saved offline timings; 123/12345 words uncertain. ≈ marks sentences with uncertain timing.
+					Sentence timing: 123/125 sentence starts timed; 2 approximate. Saved offline. ≈ marks estimated starts.
 				</div>
 			</div>
 			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">A sentence.</div></div>
@@ -56,7 +98,9 @@ test("browsing has a compact toolbar, no idle search/hints and substantially mor
 				<div class="perplexity-saver-transcript-controls">
 					<a class="perplexity-saver-transcript-title">Kashlak21garchProcess with a very long title</a>
 					<span class="perplexity-saver-transcript-count">381 lines</span>
-					<button class="perplexity-saver-transcript-format">Paragraphs</button>
+					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
+						<option>Original captions / lines</option><option>Original paragraphs</option><option>Readable paragraphs</option>
+					</select>
 					<button class="clickable-icon" aria-label="Search">S</button>
 					<button aria-label="Transcript layout">Layout</button>
 					<button class="clickable-icon" aria-label="Help">?</button>
@@ -106,7 +150,9 @@ test("transcript-only playback controls remain reachable in narrow panes", async
 				<div class="perplexity-saver-transcript-controls">
 					<a class="perplexity-saver-transcript-title">A long literature note title</a>
 					<span class="perplexity-saver-transcript-count">381 lines</span>
-					<button class="perplexity-saver-transcript-format">Paragraphs</button>
+					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
+						<option>Original captions / lines</option><option>Original paragraphs</option><option>Readable paragraphs</option>
+					</select>
 					<button class="clickable-icon">S</button><button>Layout</button>
 					<div class="perplexity-saver-transcript-playback">
 						<button class="clickable-icon" aria-label="Play">P</button>

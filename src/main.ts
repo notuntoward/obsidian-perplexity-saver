@@ -797,13 +797,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 			throw new Error("Local WhisperX alignment requires a desktop filesystem vault.");
 		}
 		const root = path.join(this.app.vault.adapter.getBasePath(), this.manifest.dir);
-		await runWhisperxExperiment(this.app, file, this.settings.transcriptHeading, {
+		const timings = await runWhisperxExperiment(this.app, file, this.settings.transcriptHeading, {
 			pythonPath: this.settings.whisperxPythonPath.trim() || path.join(root, ".venv-whisperx", Platform.isWin ? "Scripts\\python.exe" : "bin/python"),
 			helperPath: path.join(root, "scripts", "whisperx", "align.py"),
 			signal: this.whisperxAbort.signal,
 		});
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
-			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === file.path) await leaf.view.reload();
+			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === file.path) {
+				await leaf.view.reload({ showWordTimedSentences: timings !== null });
+			}
 		}
 	}
 
@@ -2091,7 +2093,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Caption word timing",
-						desc: "Use YouTube word offsets first; local WhisperX fills only missing timings inside caption anchors. Time words asks before network access. Compact offsets in transcript links reopen offline without large Properties. Compact saved timings migrates old caches offline. See the README for helper setup.",
+						desc: "Use native YouTube word offsets at punctuation-derived sentence starts. Only missing sentence starts need local WhisperX inside caption anchors; missing internal words do not. Time words asks before network access. Compact saved timings migrates old caches offline. See the README for helper setup.",
 						control: { type: "toggle", key: "whisperxEnabled" },
 					},
 					{

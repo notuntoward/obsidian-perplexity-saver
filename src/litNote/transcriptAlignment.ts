@@ -150,7 +150,7 @@ export function alignedSentenceRows(transcript: PreparedTranscript, cache: WordT
 		const known = timings.filter((word) => word !== null);
 		const startSec = known[0]?.[0] ?? previousEnd;
 		const endSec = known.at(-1)?.[1] ?? undefined;
-		const timingUncertain = timings.some((word) => word === null);
+		const timingUncertain = cache.words[first] === null;
 		first = last + 1;
 		previousEnd = endSec ?? known.at(-1)?.[0] ?? startSec;
 		return { ...sentence, startSec, endSec, timingUncertain, url: watchUrl(cache.videoId, startSec) };

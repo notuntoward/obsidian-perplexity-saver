@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MarkdownView, Platform, type App, type TFile, type WorkspaceLeaf } from "obsidian";
+import { FileSystemAdapter, MarkdownView, Platform, type App, type TFile, type WorkspaceLeaf } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import PerplexitySaverPlugin from "../../src/main";
 import { TranscriptView } from "../../src/litNote/transcriptView";
@@ -11,12 +11,16 @@ import { createdNotices } from "../__mocks__/obsidian";
 import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
 import "commons/testing";
 import * as workspaceApi from "commons/workspace";
+import { runWhisperxExperiment } from "../../src/litNote/whisperxExperiment";
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	debounce: (callback: () => void) => callback,
 	Scope: class { register(): void {} },
 	Platform: { isDesktopApp: false },
+	FileSystemAdapter: class {
+		getBasePath(): string { return "C:\\plugin-test"; }
+	},
 	setIcon: (el: HTMLElement, icon: string) => { el.dataset.icon = icon; },
 	SearchComponent: class {
 		inputEl: HTMLInputElement;
@@ -33,6 +37,7 @@ vi.mock("commons/windows", async (original) => ({
 vi.mock("../../src/video/focusIndicator", () => ({ registerVideoNoteFocusIndicator: () => () => {} }));
 vi.mock("../../src/litNote/transcriptFolding", () => ({ registerTranscriptFolding: () => () => {} }));
 vi.mock("../../src/litNote/litNoteServer", () => ({ startLitNoteServer: () => null, stopLitNoteServer: () => {} }));
+vi.mock("../../src/litNote/whisperxExperiment", () => ({ runWhisperxExperiment: vi.fn() }));
 vi.mock("commons/workspace", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	getActiveLeafInFocusedWindow: (app: App) => app.workspace.activeLeaf ?? null,
@@ -151,6 +156,31 @@ async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = docum
 }
 
 describe("transcript playback state", () => {
+	it.each([true, false])("only requests automatic sentence mode after successful timing (completed=%s)", async (completed) => {
+		const h = await harness();
+		h.plugin.settings.whisperxEnabled = true;
+		h.plugin.manifest.dir = ".obsidian\\plugins\\perplexity-saver";
+		h.app.vault.adapter = new FileSystemAdapter();
+		h.leaves.push(h.transcriptLeaf);
+		const other = Object.create(TranscriptView.prototype) as TranscriptView;
+		vi.spyOn(other, "getFilePath").mockReturnValue("other.md");
+		const otherReload = vi.spyOn(other, "reload").mockResolvedValue();
+		h.leaves.push({ view: other } as unknown as WorkspaceLeaf);
+		const reload = vi.spyOn(h.transcript, "reload").mockResolvedValue();
+		vi.mocked(runWhisperxExperiment).mockResolvedValueOnce(completed ? {
+			sourceHash: "a".repeat(64), videoId: "abcdefghijk", wordSources: ["caption"], words: [[0, null, null]],
+		} : null);
+		await h.plugin["alignWhisperxTranscript"](h.file as TFile);
+		expect(reload).toHaveBeenCalledWith({ showWordTimedSentences: completed });
+		expect(otherReload).not.toHaveBeenCalled();
+		if (!completed) {
+			reload.mockClear();
+			vi.mocked(runWhisperxExperiment).mockRejectedValueOnce(new Error("Caption timing failed"));
+			await expect(h.plugin["alignWhisperxTranscript"](h.file as TFile)).rejects.toThrow("Caption timing failed");
+			expect(reload).not.toHaveBeenCalled();
+		}
+	});
+
 	it("tracks toolbar, commands, transcript rows and background updates without moving focus", async () => {
 		const h = await harness();
 		h.leaves.length = 0;

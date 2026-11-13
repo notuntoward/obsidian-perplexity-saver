@@ -48,7 +48,7 @@ export async function runWhisperx(
 					.split(/\r?\n/)
 					.reverse()
 					.find((line) =>
-						/^(Checking YouTube|Downloading matching|Decoding audio|Aligning audio:)/.test(line)
+						/^(Checking YouTube|Sentence starts:|Downloading matching|Decoding audio|Aligning audio:)/.test(line)
 					);
 				if (progress) options.onProgress?.(progress);
 			});

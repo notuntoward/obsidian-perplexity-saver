@@ -163,8 +163,9 @@ describe("transcriptRows", () => {
 		text: i === 4 ? `sentence ${i}.` : `words ${i}`,
 	}));
 
-	it("shows stored lines unchanged in lines mode", () => {
-		expect(transcriptRows(lines, "lines")).toEqual(lines);
+	it("preserves stored lines and includes source offsets in lines mode", () => {
+		const starts = [0, 8, 16, 24, 32, 44, 52, 60, 68, 76];
+		expect(transcriptRows(lines, "lines")).toEqual(lines.map((line, i) => ({ ...line, sourceStart: starts[i] })));
 	});
 
 	it("groups lines into timestamped paragraphs in paragraphs mode", () => {

@@ -65,6 +65,19 @@ describe("acoustically aligned punctuation sentences", () => {
 		expect(() => readAlignmentCache({ ...native, words: [...native.words.slice(0, 3), [31, null, null]] }, transcript)).toThrow("anchor");
 	});
 
+	it("does not mark precise sentence starts approximate when only internal word timings are missing", () => {
+		const native: AlignmentCache = {
+			...cacheForTest(), engine: "youtube-json3", model: null, audioSha256: null,
+			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
+			words: [[21, null, null], null, [25, null, null], null],
+		};
+		const cache = readAlignmentCache(native, transcript)!;
+		const rows = alignedSentenceRows(transcript, cache);
+		expect(rows.map((row) => row.startSec)).toEqual([21, 25]);
+		expect(rows.map((row) => row.timingUncertain)).toEqual([false, false]);
+		expect(rows.map((row) => row.text)).toEqual(["We left.", "We stayed."]);
+	});
+
 	it("allows native starts tied at the next caption boundary but not acoustic spans across it", () => {
 		const prepared = prepareTranscript([...transcript.lines, {
 			startSec: 30, endSec: 31, url: "https://youtu.be/abcdefghijk?t=30", text: "Next.",
