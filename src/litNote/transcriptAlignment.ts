@@ -1,5 +1,6 @@
 import { sentenceRows, type BoundaryRow, type PreparedTranscript } from "./transcriptSentences";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
+import type { StoredTranscriptLine } from "./transcriptSection";
 
 export const ALIGNMENT_CACHE_KEY = "whisperx_transcript";
 export const ALIGNMENT_ENGINE = "whisperx-3.8.6";
@@ -19,6 +20,34 @@ export interface AlignmentCache {
 	captions: { first: number; last: number; start: number; end: number }[];
 	wordSources: ("caption" | "youtube" | "acoustic" | "unmatched")[];
 	words: ([number, number | null, number | null] | null)[];
+}
+
+export type WordTimings = Pick<AlignmentCache, "sourceHash" | "videoId" | "wordSources" | "words">;
+
+export function readCaptionReplacement(value: unknown, transcript: PreparedTranscript, videoId: string): {
+	reason: "format" | "wording"; expectedWords: number; actualWords: number; captions: (StoredTranscriptLine & { endSec: number })[];
+} | null {
+	if (typeof value !== "object" || value === null || !("status" in value) || value.status !== "transcript-mismatch") return null;
+	const raw = value as Record<string, unknown>;
+	if (raw.version !== 2 || raw.sourceHash !== transcript.hash || raw.videoId !== videoId ||
+		(raw.reason !== "format" && raw.reason !== "wording") || raw.expectedWords !== transcript.words.length ||
+		typeof raw.actualWords !== "number" || !Number.isInteger(raw.actualWords) || raw.actualWords <= 0 ||
+		typeof raw.audioDuration !== "number" || !Number.isFinite(raw.audioDuration) || raw.audioDuration <= 0 ||
+		!Array.isArray(raw.captions) || !raw.captions.length) throw new Error("Invalid transcript replacement metadata.");
+	let previousEnd = 0;
+	const duration = raw.audioDuration;
+	const captions = raw.captions.map((value: unknown): StoredTranscriptLine & { endSec: number } => {
+		if (typeof value !== "object" || value === null) throw new Error("Invalid replacement caption.");
+		const { startSec, endSec, text } = value as Record<string, unknown>;
+		if (typeof startSec !== "number" || !Number.isFinite(startSec) || startSec < previousEnd ||
+			typeof endSec !== "number" || !Number.isFinite(endSec) || endSec <= startSec || endSec > duration ||
+			typeof text !== "string" || !text.trim()) throw new Error("Invalid replacement caption bounds or text.");
+		previousEnd = endSec;
+		return { startSec, endSec, text, url: watchUrl(videoId, startSec) };
+	});
+	const actualWords = captions.reduce((count, caption) => count + (caption.text.match(/\S+/g)?.length ?? 0), 0);
+	if (actualWords !== raw.actualWords) throw new Error("Invalid replacement caption word count.");
+	return { reason: raw.reason, expectedWords: transcript.words.length, actualWords, captions };
 }
 
 export interface AlignedRow extends BoundaryRow {
@@ -90,7 +119,7 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 		for (let i = position; i < last; i++) {
 			const word = words[i];
 			if (word) {
-				if (word[0] < boundary || word[0] >= end || (word[1] !== null && word[1] > end)) throw new Error("Word timing crosses a caption anchor.");
+				if (word[0] < boundary || word[0] > end || (word[1] !== null && word[1] > end)) throw new Error("Word timing exceeds a caption anchor or is non-monotonic.");
 				boundary = word[1] ?? word[0];
 			}
 		}
@@ -107,9 +136,9 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 	};
 }
 
-export function alignedSentenceRows(transcript: PreparedTranscript, value: AlignmentCache): AlignedRow[] {
-	const cache = readAlignmentCache(value, transcript);
-	if (!cache) throw new Error("WhisperX results are unavailable for this transcript.");
+export function alignedSentenceRows(transcript: PreparedTranscript, cache: WordTimings): AlignedRow[] {
+	if (cache.sourceHash !== transcript.hash || cache.videoId !== transcriptVideoId(transcript) ||
+		cache.words.length !== transcript.words.length) throw new Error("Word timings are unavailable for this transcript.");
 	const sentences = sentenceRows(transcript);
 	let first = 0;
 	let previousEnd = 0;

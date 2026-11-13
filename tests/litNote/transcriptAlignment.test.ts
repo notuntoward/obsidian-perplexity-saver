@@ -64,4 +64,23 @@ describe("acoustically aligned punctuation sentences", () => {
 		expect(() => readAlignmentCache({ ...native, words: [[22, null, null], ...native.words.slice(1)] }, transcript)).toThrow("anchor");
 		expect(() => readAlignmentCache({ ...native, words: [...native.words.slice(0, 3), [31, null, null]] }, transcript)).toThrow("anchor");
 	});
+
+	it("allows native starts tied at the next caption boundary but not acoustic spans across it", () => {
+		const prepared = prepareTranscript([...transcript.lines, {
+			startSec: 30, endSec: 31, url: "https://youtu.be/abcdefghijk?t=30", text: "Next.",
+		}]);
+		const native: AlignmentCache = {
+			...cacheForTest(), sourceHash: prepared.hash, engine: "youtube-json3", model: null, audioSha256: null,
+			captions: [{ first: 0, last: 4, start: 21, end: 30 }, { first: 4, last: 5, start: 30, end: 31 }],
+			wordSources: ["caption", "youtube", "youtube", "youtube", "caption"],
+			words: [[21, null, null], [21.4, null, null], [25, null, null], [30, null, null], [30, null, null]],
+		};
+		expect(readAlignmentCache(native, prepared)?.words).toEqual(native.words);
+		const acoustic: AlignmentCache = {
+			...native, engine: "whisperx-3.8.6", model: "WAV2VEC2_ASR_BASE_960H", audioSha256: "a".repeat(64),
+			wordSources: ["caption", "youtube", "youtube", "acoustic", "caption"],
+			words: [...native.words.slice(0, 3), [30, 30.1, 0.9], native.words[4]],
+		};
+		expect(() => readAlignmentCache(acoustic, prepared)).toThrow("anchor");
+	});
 });

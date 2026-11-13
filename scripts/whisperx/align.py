@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -27,14 +28,15 @@ def parse_captions(data, duration):
     for index, event in enumerate(events):
         start = event["tStartMs"] / 1000
         following = events[index + 1]["tStartMs"] / 1000 if index + 1 < len(events) else duration
-        end = min(duration, following, start + event.get("dDurationMs", (following - start) * 1000) / 1000)
+        declared_end = (event["tStartMs"] + event["dDurationMs"]) / 1000 if "dDurationMs" in event else following
+        end = min(duration, following, declared_end)
         if not finite(start) or not finite(end) or not 0 <= start < end:
             raise ValueError("Invalid or overlapping caption-start anchors.")
         text, segments = "", []
         for position, segment in enumerate(event["segs"]):
             part = segment.get("utf8", "")
             offset = segment.get("tOffsetMs", 0 if position == 0 else None)
-            time = start + offset / 1000 if finite(offset) else None
+            time = (event["tStartMs"] + offset) / 1000 if finite(offset) else None
             segments.append((len(text), len(text) + len(part), time))
             text += part
         first = len(words)
@@ -45,7 +47,8 @@ def parse_captions(data, duration):
             time = segment[2] if not leading else None
             if len(words) == first:
                 time = start
-            if time is not None and not start <= time < end:
+            # Native starts may tie the next caption's first word.
+            if time is not None and not start <= time <= end:
                 raise ValueError("YouTube word offset crosses its caption boundary.")
             words.append({"text": match.group(), "time": time})
         captions.append({"first": first, "last": len(words), "start": start, "end": end})
@@ -85,13 +88,34 @@ def merge_alignment(words, aligned, caption):
     return results
 
 
-def fetch_matching_captions(downloader, info, expected):
+def load_caption_audio(audio_path, caption):
+    import numpy as np
+
+    start, end = caption["start"], caption["end"]
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin", "-threads", "1",
+        "-ss", str(start), "-i", str(audio_path), "-t", str(end - start),
+        "-f", "f32le", "-ac", "1", "-ar", "16000", "-",
+    ]
+    try:
+        output = subprocess.run(command, capture_output=True, check=True, timeout=60).stdout
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"Failed to decode caption {start:.3f}-{end:.3f}: {detail}") from error
+    audio = np.frombuffer(output, dtype="<f4")
+    if not len(audio):
+        raise RuntimeError(f"No audio decoded for caption {start:.3f}-{end:.3f}. Nothing was saved.")
+    return audio[:round((end - start) * 16000)]
+
+
+def fetch_captions(downloader, info, expected):
     candidates = []
     for collection in ("subtitles", "automatic_captions"):
         tracks = info.get(collection, {})
         for language in ("en-orig", "en"):
             candidates.extend(track for track in tracks.get(language, []) if track["ext"] == "json3")
     seen = set()
+    replacement = None
     for track in candidates:
         if track["url"] in seen:
             continue
@@ -99,9 +123,14 @@ def fetch_matching_captions(downloader, info, expected):
         with downloader.urlopen(track["url"]) as response:
             raw = response.read()
         words, captions = parse_captions(json.loads(raw), info["duration"])
+        candidate = words, captions, hashlib.sha256(raw).hexdigest()
         if match_captions(expected, words):
-            return words, captions, hashlib.sha256(raw).hexdigest()
-    raise ValueError("No matching original English JSON3 captions. Caption anchors cannot safely be recovered; nothing was saved.")
+            return candidate
+        if words and replacement is None:
+            replacement = candidate
+    if replacement is not None:
+        return replacement
+    raise ValueError("No original English JSON3 captions are available. Nothing was saved.")
 
 
 def run(request):
@@ -109,7 +138,7 @@ def run(request):
             or not re.fullmatch(r"[a-f0-9]{64}", request.get("sourceHash", ""))):
         raise ValueError("Invalid caption-timing request. Reload the updated plugin.")
     expected = [word["text"] for word in request["words"]]
-    if not expected or any(not word or re.search(r"\s", word) for word in expected):
+    if any(not word or re.search(r"\s", word) for word in expected):
         raise ValueError("Invalid transcript words.")
     import yt_dlp
 
@@ -123,7 +152,17 @@ def run(request):
         info = downloader.extract_info(url, download=False)
         if info.get("id") != request["videoId"] or not finite(info.get("duration")):
             raise ValueError("Caption video identity/duration could not be verified.")
-        words, captions, caption_hash = fetch_matching_captions(downloader, info, expected)
+        words, captions, caption_hash = fetch_captions(downloader, info, expected)
+    if not match_captions(expected, words):
+        return {
+            "version": 2, "status": "transcript-mismatch",
+            "sourceHash": request["sourceHash"], "videoId": request["videoId"],
+            "reason": "wording" if expected else "format",
+            "expectedWords": len(expected), "actualWords": len(words), "audioDuration": info["duration"],
+            "captions": [{"startSec": caption["start"], "endSec": caption["end"],
+                          "text": " ".join(word["text"] for word in words[caption["first"]:caption["last"]])}
+                         for caption in captions],
+        }
     results = [[word["time"], None, None] if word["time"] is not None else None for word in words]
     sources = ["youtube" if result is not None else "unmatched" for result in results]
     for caption in captions:
@@ -131,6 +170,8 @@ def run(request):
     missing = [caption for caption in captions if any(result is None for result in results[caption["first"]:caption["last"]])]
     audio_hash = None
     if missing:
+        if any(caption["end"] - caption["start"] > 120 for caption in missing):
+            raise ValueError("Caption interval exceeds the bounded 120-second alignment limit.")
         if importlib.metadata.version("whisperx") != "3.8.6":
             raise ValueError("Install scripts/whisperx/requirements.txt for missing word timings.")
         import torch
@@ -139,26 +180,25 @@ def run(request):
         torch.set_num_threads(min(4, torch.get_num_threads()))
         print(f"Aligning audio: {len(missing)} captions have missing word offsets ({device})",
               file=sys.stderr, flush=True)
-        model, metadata = whisperx.load_align_model(language_code="en", device=device, model_name=MODEL)
-        digest = hashlib.sha256()
-        for index, caption in enumerate(missing):
-            start, end = caption["start"], caption["end"]
-            if end - start > 120:
-                raise ValueError("Caption interval exceeds the bounded 120-second alignment limit.")
-            first, last = caption["first"], caption["last"]
-            print(f"Aligning audio: caption {index + 1}/{len(missing)}, fixed interval {start:.3f}-{end:.3f}",
+        with tempfile.TemporaryDirectory(prefix="caption-audio-", dir=request["workDir"]) as directory:
+            print("Downloading matching video audio once; caption clips will be decoded locally...",
                   file=sys.stderr, flush=True)
-            with tempfile.TemporaryDirectory(prefix="caption-", dir=request["workDir"]) as directory:
-                with yt_dlp.YoutubeDL({
-                    **settings, "outtmpl": str(Path(directory) / "audio.%(ext)s"),
-                    "download_ranges": yt_dlp.utils.download_range_func(None, [(start, end)]),
-                    "force_keyframes_at_cuts": True,
-                }) as downloader:
-                    section = downloader.extract_info(url, download=True)
-                    audio_path = downloader.prepare_filename(section)
-                with open(audio_path, "rb") as audio_file:
-                    digest.update(audio_file.read())
-                audio = whisperx.load_audio(str(audio_path))
+            with yt_dlp.YoutubeDL({
+                **settings, "outtmpl": str(Path(directory) / "audio.%(ext)s"),
+            }) as downloader:
+                section = downloader.extract_info(url, download=True)
+                if section.get("id") != request["videoId"] or section.get("duration") != info["duration"]:
+                    raise ValueError("YouTube video changed while downloading audio. Nothing was saved.")
+                audio_path = Path(downloader.prepare_filename(section))
+            with open(audio_path, "rb") as audio_file:
+                audio_hash = hashlib.file_digest(audio_file, "sha256").hexdigest()
+            model, metadata = whisperx.load_align_model(language_code="en", device=device, model_name=MODEL)
+            for index, caption in enumerate(missing):
+                start, end = caption["start"], caption["end"]
+                first, last = caption["first"], caption["last"]
+                print(f"Aligning audio: caption {index + 1}/{len(missing)}, fixed interval {start:.3f}-{end:.3f}",
+                      file=sys.stderr, flush=True)
+                audio = load_caption_audio(audio_path, caption)
                 local_end = min(end - start, len(audio) / 16000)
                 aligned = whisperx.align(
                     [{"start": 0, "end": local_end, "text": " ".join(word["text"] for word in words[first:last])}],
@@ -171,7 +211,6 @@ def run(request):
                 for position in range(first, last):
                     if words[position]["time"] is None and results[position] is not None:
                         sources[position] = "acoustic"
-        audio_hash = digest.hexdigest()
     return {
         "version": 2, "sourceHash": request["sourceHash"], "videoId": request["videoId"],
         "engine": ENGINE if missing else "youtube-json3", "model": MODEL if missing else None,

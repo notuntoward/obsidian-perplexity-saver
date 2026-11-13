@@ -1,15 +1,18 @@
 import { getFrontMatterInfo, Notice, parseYaml, type App, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
-import { loadTranscriptLines } from "./transcriptView";
-import { prepareTranscript } from "./transcriptSentences";
-import { ALIGNMENT_CACHE_KEY, readAlignmentCache, transcriptVideoId, type AlignmentCache } from "./transcriptAlignment";
+import { prepareTranscript, type PreparedTranscript } from "./transcriptSentences";
+import { findTranscriptRange, parseStoredTranscript } from "./transcriptSection";
+import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage";
+import { ALIGNMENT_CACHE_KEY, readAlignmentCache, readCaptionReplacement, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
 import { runWhisperx, type WhisperxProcessOptions } from "./whisperxProcess";
+import { formatTranscriptCues } from "./youtubeTranscript";
+import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
 
 const running = new WeakMap<App, Set<TFile>>();
 
 export async function runWhisperxExperiment(
 	app: App, file: TFile, heading: string, options: WhisperxProcessOptions
-): Promise<AlignmentCache | null> {
+): Promise<WordTimings | null> {
 	const files = running.get(app) ?? new Set<TFile>();
 	if (files.size) throw new Error("WhisperX alignment is already running. Wait or cancel it before starting another note.");
 	running.set(app, files);
@@ -25,42 +28,95 @@ export async function runWhisperxExperiment(
 		const frontmatter: unknown = info.exists ? parseYaml(info.frontmatter) : {};
 		const raw = typeof frontmatter === "object" && frontmatter !== null
 			? (frontmatter as Record<string, unknown>)[ALIGNMENT_CACHE_KEY] : undefined;
-		const lines = await loadTranscriptLines(app, file, heading);
-		if (!lines?.length) throw new Error("This note has no timestamped transcript.");
+		const range = findTranscriptRange(content, app.metadataCache.getFileCache(file)?.headings, heading);
+		const section = range ? content.slice(range.start, range.end) : "";
+		const lines = parseStoredTranscript(section);
+		if (!range) throw new Error("This note has no transcript heading to replace safely.");
 		const transcript = prepareTranscript(lines);
-		const videoId = transcriptVideoId(transcript);
-		const cached = readAlignmentCache(raw, transcript);
+		const noteUrl = typeof frontmatter === "object" && frontmatter !== null
+			? (frontmatter as Record<string, unknown>).url : undefined;
+		const videoId = lines.length ? transcriptVideoId(transcript) : typeof noteUrl === "string" ? parseYouTubeUrl(noteUrl)?.videoId : undefined;
+		if (!videoId) throw new Error("This note needs a YouTube URL to replace an unrecognized transcript format.");
+		const save = async (timings: WordTimings, sourceSection = section): Promise<void> => {
+			if (!range) throw new Error("The transcript section is unavailable.");
+			const start = range.start - info.contentStart;
+			const end = range.end - info.contentStart;
+			const compact = writeInlineTimings(sourceSection, timings);
+			const expectedBody = body.slice(0, start) + compact + body.slice(end);
+			assertActive();
+			await app.vault.process(file, (current) => {
+				assertActive();
+				const currentBodyStart = getFrontMatterInfo(current).contentStart;
+				if (current.slice(currentBodyStart) !== body) {
+					throw new Error("The note body changed during alignment. Results were not applied to edited text.");
+				}
+				return current.slice(0, currentBodyStart) + expectedBody;
+			});
+			const saved = await app.vault.cachedRead(file);
+			const savedBody = saved.slice(getFrontMatterInfo(saved).contentStart);
+			if (savedBody !== expectedBody ||
+				!readInlineTimings(prepareTranscript(parseStoredTranscript(savedBody.slice(start, start + compact.length))))) {
+				throw new Error("Compact timing verification failed after saving. The old timing property was not removed.");
+			}
+			if (raw !== undefined) {
+				await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+					if (JSON.stringify(fm[ALIGNMENT_CACHE_KEY]) !== JSON.stringify(raw)) {
+						throw new Error("The old timing property changed while saving. Both copies were retained.");
+					}
+					delete fm[ALIGNMENT_CACHE_KEY];
+				});
+			}
+		};
+		const cached = lines.length ? readInlineTimings(transcript) ?? readAlignmentCache(raw, transcript) : null;
 		if (cached) {
-			new Notice("WhisperX timings already saved. Comparison works offline; no download or alignment was run.");
+			if (raw !== undefined) {
+				await save(cached);
+				new Notice("Saved word timings moved into transcript links. No download or inference was run.");
+			} else new Notice("Word timings already saved in transcript links. Comparison works offline; no download or alignment was run.");
 			return cached;
 		}
 		const consent = await askNoteDecision(app, "Use caption word timing?",
-			`Check YouTube captions for ${videoId} and time these ${transcript.words.length} words?\n\nUse native word offsets first, without audio downloads or inference. Only missing internal timings need local WhisperX and short audio clips. The first word of each original caption stays fixed; no word may cross the next caption's start. Caption text must match the note before any results are applied.\n\nContinue only if you have permission to download/process the needed audio. Your note and transcript are not uploaded; no API charge. Save versioned timings/provenance for offline comparison. Original text and punctuation remain unchanged.`,
+			`Check YouTube captions for ${videoId}${transcript.words.length ? ` and time these ${transcript.words.length} words` : " and recover the unrecognized transcript format"}?\n\nUse native word offsets first, without audio downloads or inference. If internal timings are missing, download the video's full audio once, then decode and align only short caption intervals locally with WhisperX. This avoids separate remote FFmpeg downloads for every caption. The first word of each original caption stays fixed; no word may cross the next caption's start. If the stored transcript differs or its format is unrecognized, you can cancel or explicitly replace only the transcript section.\n\nContinue only if you have permission to download/process the audio. Your note and transcript are not uploaded; no API charge. Save compact word offsets in existing transcript links for offline comparison, not in Properties. Text and punctuation remain unchanged unless you separately confirm replacement.`,
 			[{ label: "Check captions and save timings", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 		if (consent !== "create") return null;
 		assertActive();
 		const notice = new Notice("Starting local WhisperX alignment...", 0);
 		try {
-			const result = await runWhisperx({
-				version: 2, sourceHash: transcript.hash, videoId,
-				words: transcript.words.map((word) => {
-					const line = transcript.lines[word.cue];
+			const align = (prepared: PreparedTranscript) => runWhisperx({
+				version: 2, sourceHash: prepared.hash, videoId,
+				words: prepared.words.map((word) => {
+					const line = prepared.lines[word.cue];
 					return { text: word.text, start: line.startSec, ...(line.endSec === undefined ? {} : { end: line.endSec }) };
 				}),
 			}, { ...options, onProgress: (message) => { notice.setMessage(message); options.onProgress?.(message); } });
+			let prepared = transcript;
+			let sourceSection = section;
+			let result = await align(prepared);
 			assertActive();
-			const cache = readAlignmentCache(result, transcript);
+			const replacement = readCaptionReplacement(result, prepared, videoId);
+			if (replacement) {
+				const choice = await askNoteDecision(app, "Transcript differs from YouTube captions",
+					`${replacement.reason === "format" ? "The stored transcript format is unrecognized." : "The stored transcript wording does not match the current YouTube captions."}\n\n${replacement.reason === "format" ? "Stored word count unavailable" : `${replacement.expectedWords} stored words`}; ${replacement.actualWords} current words. Even equal word counts can contain different wording.\n\nCancel leaves the existing transcript and saved timings unchanged. Replace transcript uses the current captions and their punctuation, then saves new word timings. Only content under the transcript heading is replaced; your other written content and note properties are preserved. Nothing is replaced unless timing succeeds.`,
+					[{ label: "Cancel", value: "cancel" }, { label: "Replace transcript", value: "overwrite", warning: true }]);
+				if (choice !== "overwrite") return null;
+				assertActive();
+				const newline = section.includes("\r\n") ? "\r\n" : "\n";
+				sourceSection = newline + newline + formatTranscriptCues(replacement.captions.map((caption) => ({
+					text: caption.text, offset: caption.startSec * 1000, duration: (caption.endSec - caption.startSec) * 1000,
+				})), watchUrl(videoId)).replace(/\n/g, newline) + newline + newline;
+				prepared = prepareTranscript(parseStoredTranscript(sourceSection));
+				result = await align(prepared);
+				assertActive();
+				if (readCaptionReplacement(result, prepared, videoId)) {
+					throw new Error("YouTube captions changed again while refreshing. The old transcript was not changed; please retry.");
+				}
+			}
+			const cache = readAlignmentCache(result, prepared);
 			if (!cache) throw new Error("WhisperX returned results for a different transcript or helper version.");
 			if (!cache.words.some((word) => word !== null)) throw new Error("WhisperX could not align any words; no results were saved.");
-			const current = await app.vault.cachedRead(file);
-			if (current.slice(getFrontMatterInfo(current).contentStart) !== body) {
-				throw new Error("The note body changed during alignment. Results were not applied to edited text.");
-			}
-			await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-				fm[ALIGNMENT_CACHE_KEY] = cache;
-			});
+			await save(cache, sourceSection);
 			const unmatched = cache.words.filter((word) => word === null).length;
-			new Notice(`Caption timings saved (${cache.engine}). ${unmatched}/${cache.words.length} words uncertain. Select Word-timed sentences and Compare.`);
+			new Notice(`Caption timings saved in transcript links (${cache.engine}). ${unmatched}/${cache.words.length} words uncertain. Select Word-timed sentences and Compare.`);
 			return cache;
 		} finally {
 			notice.hide();

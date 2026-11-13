@@ -5,6 +5,8 @@
  * text is the `transcriptHeading` setting, one line per caption cue (default)
  * or one line per block of cues:
  *   [m:ss](https://youtu.be/ID?t=SECONDS "START–END") caption text
+ * Optional word timings append `; w=...` to that title, with one version/hash
+ * comment for the section. A start-only title keeps legacy block text escaping.
  *   [mm:ss](https://youtube.com/watch?v=ID&t=SECONDS) caption text ...
  * Notes written by earlier versions may use per-cue lines of the form
  *   [mm:ss.mmm → mm:ss.mmm](https://youtube.com/watch?v=ID&t=SECONDS) caption text
@@ -24,6 +26,8 @@ export interface StoredTranscriptLine {
 	/** Link target of the timestamp (may be empty when the line had none). */
 	url: string;
 	text: string;
+	wordTimings?: string;
+	timingMarker?: string;
 }
 
 /**
@@ -82,7 +86,7 @@ export function findTranscriptRange(
 const TIME = String.raw`\d{1,2}(?::\d{1,2}){1,2}(?:\.\d{1,3})?`;
 const SECONDS = String.raw`\d+(?:\.\d+)?`;
 const COMPACT_CUE_LINE = new RegExp(
-	String.raw`^\s*\[(${TIME})\]\(([^)\s]*)\s+"(${SECONDS})\s*[–-]\s*(${SECONDS})"\)\s?(.*)$`
+	String.raw`^\s*\[(${TIME})\]\(([^)\s]*)\s+"(${SECONDS})(?:\s*[–-]\s*(${SECONDS}))?(?:;\s*w=([^"]*))?"\)\s?(.*)$`
 );
 const CUE_LINE = new RegExp(
 	String.raw`^\s*\[(${TIME})\s*(?:→|->|-->)\s*(${TIME})\]\(([^)\s]*)\)\s?(.*)$`
@@ -108,13 +112,22 @@ export function parseTimestamp(stamp: string): number {
  */
 export function parseStoredTranscript(section: string): StoredTranscriptLine[] {
 	const lines: StoredTranscriptLine[] = [];
+	const markers: string[] = [];
 	for (const raw of section.split(/\r?\n/)) {
 		if (!raw.trim()) continue;
+		if (raw.trim().startsWith("<!-- saver-word-timing:")) {
+			markers.push(raw.trim());
+			continue;
+		}
 		const compact = raw.match(COMPACT_CUE_LINE);
 		if (compact) {
 			const startSec = Number(compact[3]);
-			const endSec = Number(compact[4]);
-			lines.push({ startSec, endSec, url: compact[2], text: unescapeCueText(compact[5].trim()) });
+			lines.push({
+				startSec, url: compact[2],
+				...(compact[4] === undefined ? {} : { endSec: Number(compact[4]) }),
+				...(compact[5] === undefined ? {} : { wordTimings: compact[5] }),
+				text: compact[4] === undefined ? compact[6].trim() : unescapeCueText(compact[6].trim()),
+			});
 			continue;
 		}
 		const cue = raw.match(CUE_LINE);
@@ -139,7 +152,7 @@ export function parseStoredTranscript(section: string): StoredTranscriptLine[] {
 			previous.text = previous.text ? `${previous.text} ${raw.trim()}` : raw.trim();
 		}
 	}
-	return lines;
+	return markers.length ? lines.map((line) => ({ ...line, timingMarker: markers.join("\n") })) : lines;
 }
 
 export type StoredTranscriptCue = StoredTranscriptLine & TranscriptCue;

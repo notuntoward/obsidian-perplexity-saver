@@ -2091,7 +2091,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Caption word timing",
-						desc: "Use YouTube word offsets first. Only missing timings use local WhisperX inside original caption anchors, never beyond the next caption. Time words asks before network access. Saved results reopen offline. Requires the helper setup in the README; old broad-window results are not reused.",
+						desc: "Use YouTube word offsets first; local WhisperX fills only missing timings inside caption anchors. Time words asks before network access. Compact offsets in transcript links reopen offline without large Properties. Compact saved timings migrates old caches offline. See the README for helper setup.",
 						control: { type: "toggle", key: "whisperxEnabled" },
 					},
 					{

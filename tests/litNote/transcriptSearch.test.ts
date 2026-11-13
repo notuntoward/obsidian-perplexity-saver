@@ -5,6 +5,9 @@ import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
 import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
 import { prepareTranscript } from "../../src/litNote/transcriptSentences";
+import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
+import { writeInlineTimings } from "../../src/litNote/transcriptTimingStorage";
+import type { WordTimings } from "../../src/litNote/transcriptAlignment";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
 const menuChoices = vi.hoisted(() => [] as { title: string; checked: boolean; run?: () => void }[]);
@@ -92,12 +95,12 @@ function stubPopout(doc: Document): void {
 	vi.stubGlobal("activeWindow", win);
 }
 
-async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, alignment?: unknown, videoId = "abc"): Promise<TranscriptView> {
+async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, alignment?: unknown, videoId = "abc", content?: string): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
 		vault: {
 			getFileByPath: () => file,
-			cachedRead: async () => `# Transcript\n[00:00](https://youtu.be/${videoId}?t=0) start\n[00:01](https://youtu.be/${videoId}?t=1) target first\n[00:02](https://youtu.be/${videoId}?t=2) context\n[00:03](https://youtu.be/${videoId}?t=3) target last\n`,
+			cachedRead: async () => content ?? `# Transcript\n[00:00](https://youtu.be/${videoId}?t=0) start\n[00:01](https://youtu.be/${videoId}?t=1) target first\n[00:02](https://youtu.be/${videoId}?t=2) context\n[00:03](https://youtu.be/${videoId}?t=3) target last\n`,
 		},
 		metadataCache: {
 			getFileCache: () => ({ frontmatter: { whisperx_transcript: alignment }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
@@ -122,6 +125,35 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("local acoustic alignment comparison", () => {
+	it.each([false, true])("loads compact timings offline and compares sentence starts (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
+		const transcript = prepareTranscript(parseStoredTranscript(section));
+		const timings: WordTimings = {
+			sourceHash: transcript.hash, videoId: "abcdefghijk",
+			wordSources: ["caption", "youtube", "youtube", "youtube"],
+			words: [[0, null, null], [0.2, null, null], [2, null, null], [2.2, null, null]],
+		};
+		const align = vi.fn(async () => {});
+		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align },
+			undefined, "abcdefghijk", "# Transcript" + writeInlineTimings(section, timings));
+		expect(view.contentEl.textContent).not.toContain("Time words");
+		expect(view.contentEl.textContent).not.toContain("Compact saved timings");
+		const select = view.contentEl.querySelector("select")!;
+		select.value = "aligned-sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:02"]);
+		rows(view)[1].focus();
+		if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
+		key(rows(view)[1], "Enter");
+		expect(play).toHaveBeenLastCalledWith("note.md", expect.any(String), 2, true);
+		Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compare")!.click();
+		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:00"]);
+		expect(rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent)).toEqual(["We left.", "We stayed."]);
+		expect(align).not.toHaveBeenCalled();
+	});
+
 	it("anchors toolbar sentence comparisons to visible text after scrolling", async () => {
 		const view = await panel(document, { getAlignmentEnabled: () => true });
 		vi.spyOn(view.app.vault, "cachedRead").mockResolvedValue("# Transcript\n" +
@@ -178,6 +210,10 @@ describe("local acoustic alignment comparison", () => {
 		key(rows(view)[0], "Enter");
 		expect(play).toHaveBeenLastCalledWith("note.md", "https://www.youtube.com/watch?v=abcdefghijk", 0, true);
 		expect(align).not.toHaveBeenCalled();
+		const migrate = Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compact saved timings");
+		expect(migrate).toBeDefined();
+		migrate!.click();
+		expect(align).toHaveBeenCalledWith("note.md");
 	});
 });
 

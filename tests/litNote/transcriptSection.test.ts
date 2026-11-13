@@ -96,6 +96,17 @@ describe("findTranscriptSection", () => {
 });
 
 describe("parseStoredTranscript", () => {
+	it("keeps compact word offsets out of the caption text and ignores its fingerprint comment", () => {
+		const lines = parseStoredTranscript(
+			'[0:12](https://youtu.be/abcdefghijk?t=12 "12-14; w=0,200,900,1100") We left. We stayed.\n' +
+			"<!-- saver-word-timing:1 " + "a".repeat(64) + " -->"
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe("We left. We stayed.");
+		expect(lines[0].startSec).toBe(12);
+		expect(lines[0].endSec).toBe(14);
+	});
+
 	it("round-trips the format written at note creation", () => {
 		const section = formatTranscript(
 			[

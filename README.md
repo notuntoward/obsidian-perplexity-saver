@@ -154,18 +154,30 @@ UI/storage safety.
 
 Keep the existing **Punctuation sentences**, but time them against the actual audio.
 Use YouTube's existing word offsets first; reserve WhisperX for missing internal
-timings. No API key, paid inference, generated
-punctuation, or replacement transcript is involved. English, desktop only.
+timings. No API key, paid inference or generated punctuation is involved.
+Saved words stay unchanged unless you explicitly accept replacement with
+current YouTube captions after a discrepancy prompt. English, desktop only.
 
 1. Reload Saver and enable **Settings -> Perplexity Saver -> YouTube transcripts -> Caption word timing** (the renamed alignment toggle; existing enabled preferences are retained).
 2. Open the lecture's usual transcript panel and click **Time words**, or run
    **Transcript: time words from captions (experiment)**.
 3. Confirm **Check captions and save timings**. First download matching English
    JSON3 captions, not audio. If all words have native starts, no model is loaded
-   and no audio is downloaded. Missing internal timings use short audio clips for
-   only those captions; continue only for audio you have permission to process.
+   and no audio is downloaded. If internal timings are missing, download the video's
+   full audio once with yt-dlp, then decode and align only short caption intervals
+   locally. This avoids repeated remote FFmpeg requests, which can fail intermittently
+   with YouTube HTTP 403 errors. Only one caption interval is decoded into memory
+   at a time; the temporary audio file is removed after the job. Continue only
+   for audio you have permission to download and process.
    The progress notice identifies fallback captions. **Cancel alignment**, the cancel
    command, disabling the setting, or unloading Saver stops the helper.
+   If the saved transcript's wording or format differs, a second popup explains
+   the discrepancy and shows both word counts. **Cancel** changes nothing.
+   **Replace transcript** uses current YouTube captions and saves new compact
+   timings only after successful alignment. Content outside the transcript
+   section and other note properties are preserved; failure leaves the old
+   transcript intact. An unrecognized stored format can be recovered when the
+   note has a valid YouTube `url` property and a transcript heading.
 4. Select **Word-timed sentences**. **Compare** toggles between these and
    **Punctuation sentences**, preserving source-text position without seeking.
    Text, sentence boundaries, search, filtering, keyboard navigation and playback
@@ -193,16 +205,21 @@ shell arguments or quotes. This source-checkout experiment also needs
 the usual three-file release bundle alone does not include the helper.
 
 **How timing works.** Match the downloaded caption words to the note before using
-their timing (case/punctuation differences are permitted; changed, added or missing
-words are not). A JSON3 segment's offset times its first word, not every word in a
+their timing (case/punctuation differences are permitted). Changed, added or
+missing words, including equal-length but differently worded transcripts, require
+the explicit cancel-or-replace decision above; timings are never silently applied
+to different words. A JSON3 segment's offset times its first word, not every word in a
 multiword segment. The first word of each original caption retains the caption's
 exact start. For missing internal offsets only, force-align the caption inside its
 own audio interval, ending no later than the next caption's start or the caption's
 declared end. Existing internal word offsets remain trusted anchors too. Reject
 cross-boundary, reversed and low-score acoustic results instead of clipping them.
+Native word starts can tie the next caption's start: YouTube sometimes assigns
+adjacent words the same timestamp. Preserve those ties without shifting either
+word; starts strictly beyond the bound and acoustic spans crossing it are rejected.
 There is no broad search, greedy retranscription or drift across captions. Older
 five-caption note blocks regain original caption anchors from the matched JSON3
-track without rewriting the note. Existing punctuation still defines sentences.
+track without changing their words. Existing punctuation still defines sentences.
 
 On the GARCH lecture used for this experiment, native starts covered 11,327 of
 11,328 words across 1,902 captions. Only one 1.84-second caption needed an audio
@@ -210,21 +227,46 @@ clip; its one uncertain word remained unmatched. The full run took 44 seconds
 on this machine. All caption-start anchors and interval bounds were preserved;
 this is not a manually annotated measurement of acoustic accuracy.
 
-**Saved once, reused offline.** `whisperx_transcript` in the note's frontmatter
-contains a version-2 source-text/URL/timing SHA-256 fingerprint, video ID, caption
-SHA-256, optional audio-clip SHA-256, duration, engine/model identity, caption
-intervals, per-word provenance and one
-`[startSeconds, endSeconds, acousticScore]` tuple per whitespace-separated word.
-Native starts have `null` ends and scores: those values are not invented. Word
-origins are `caption`, `youtube`, `acoustic` or `unmatched`; unmatched words are
-`null`. Matching results reopen without downloading audio,
-running Python or loading models. Editing source text, URLs or caption times
-invalidates the cache; recomputation always requires confirmation. Other note
-properties and source captions are preserved. A body edit during a
-run prevents saving against edited text. Old version-1 broad-window results are
-stale automatically; **Time words** replaces them only after a successful,
-confirmed run. Failed/cancelled runs do not save partial
-results and must restart; temporary audio is removed when the job ends.
+**Saved once, reused offline, without large Properties.** Each existing transcript
+timestamp link gains a small `w=` suffix in its optional title:
+
+```markdown
+[0:12](https://youtu.be/abcdefghijk?t=12 "12-14; w=0,200,900,1100") We left. We stayed.
+```
+
+The numbers are word-start offsets in milliseconds from the precise start (`12`).
+Standard and timed captions can use the same section format; ordinary captions
+omit `w=`. The title is hidden in Reading view and Live Preview except on hover
+or while editing the link. Source mode shows the extra numbers on the existing
+caption lines, not hundreds of lines at the top of the note. One short
+`<!-- saver-word-timing:1 SOURCE_SHA256 -->` comment under the transcript heading
+records the format version and fingerprint of the original text, links and cue
+times. No second transcript is written.
+
+`?` means an unmatched word. Native timestamps have no invented ends or scores.
+Rare acoustic matches use `aSTART:END:SCORE` instead of a plain number; START and
+END are relative millisecond offsets and SCORE is the accepted acoustic score.
+This keeps sentence ends and uncertainty intact. Original-caption and internal
+YouTube starts are both stored as native numbers. The helper still validates
+all original caption anchors and provenance before saving, but compact notes do
+not retain the bulky caption-interval arrays, model configuration or download
+hashes used during that validation.
+
+**Existing notes:** open the usual transcript panel and click **Compact saved
+timings**, or run **Transcript: time words from captions (experiment)**. A matching
+version-2 `whisperx_transcript` property migrates entirely offline, without Python,
+downloads, inference or another consent prompt. Only after the compact copy is
+saved and verified is that property removed. Unrelated frontmatter, including any
+old `jev_transcript`, is left alone. There is no automatic bulk migration.
+If cleanup fails, the old property remains and the same action can be retried.
+
+Matching compact results reopen without network, Python or models. Editing
+transcript text, links or cue times invalidates the fingerprint; **Time words**
+asks before recomputing. Other note sections and properties are preserved.
+A body edit during a run prevents applying results to edited text. Superseded
+version-1 broad-window results are stale automatically and replaced only after
+a successful, confirmed run. Failed/cancelled inference saves no partial results;
+temporary audio is removed when the job ends.
 
 **Uncertainty and limits.** Native word offsets are source timestamps, not model
 confidence scores or inferred acoustic word ends. Acoustic scores are not calibrated probabilities.
@@ -232,16 +274,20 @@ Words with absent scores, scores below 0.3, numeric spellings or invalid/reverse
 timings are marked unmatched. Sentences containing any unmatched words show
 **approximately (`≈`)**; they use the available aligned words, or the preceding
 sentence's end if none matched. These are explicitly estimates, not successful
-alignments. Mismatched/missing original English captions stop the run with an error
-instead of aligning different words. Inaccurate original anchors, music, other
+alignments. Mismatched words offer cancel or replacement, not guessed
+correspondences. Missing or unusable original English captions still stop the run
+with an error. Inaccurate original anchors, music, other
 languages and large transcript omissions can fail.
 The helper has a three-hour timeout; no accuracy guarantee is implied by a
 successful run. Cached timing comparison works offline; YouTube playback still
 requires network access.
 
-To discard/recompute results, remove only `whisperx_transcript` in the note's
-source mode and click **Time words** again. Disable **Caption word timing** to restore
-the original toolbar. WhisperX uses BSD-2-Clause; the selected
+To manually discard compact results, remove the `saver-word-timing` comment and
+the `; w=...` suffixes, keeping the timestamp ranges and caption text. For an
+unmigrated note remove only `whisperx_transcript`. Then **Time words** can compute
+them again. Disable **Caption word timing** to restore the original toolbar
+without deleting saved results. This storage improvement is not a proven fix
+for the separately reported Properties freeze. WhisperX uses BSD-2-Clause; the selected
 [`WAV2VEC2_ASR_BASE_960H` model is MIT-licensed](https://docs.pytorch.org/audio/2.8.0/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html).
 
 ### YouTube video viewer

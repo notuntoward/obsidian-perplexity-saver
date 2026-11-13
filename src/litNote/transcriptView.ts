@@ -31,7 +31,8 @@ import {
 import { buildTranscriptParagraphs } from "./transcriptParagraphs";
 import { prepareTranscript, sentenceRows } from "./transcriptSentences";
 import { formatShortTimestamp } from "./youtubeTranscript";
-import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type AlignmentCache } from "./transcriptAlignment";
+import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
+import { readInlineTimings } from "./transcriptTimingStorage";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
 
@@ -110,7 +111,7 @@ export async function loadTranscriptLines(
 export function transcriptRows(
 	lines: StoredTranscriptLine[],
 	mode: TranscriptViewMode,
-	alignment?: AlignmentCache | null
+	alignment?: WordTimings | null
 ): TranscriptRow[] {
 	const prepared = alignment || mode === "aligned-sentences" || mode === "sentences" ? prepareTranscript(lines) : null;
 	const offsets = prepared ? new Map(prepared.lines.map((line, i) => [line, prepared.cueStarts[i]])) : null;
@@ -270,7 +271,8 @@ export class TranscriptView extends ItemView {
 	private pinned = false;
 	private mode: TranscriptViewMode = "lines";
 	private lines: StoredTranscriptLine[] | null = null;
-	private alignmentCache: AlignmentCache | null = null;
+	private alignmentCache: WordTimings | null = null;
+	private needsTimingMigration = false;
 	private alignmentStatus = "Caption timing: not computed.";
 	private aligning = false;
 	private comparisonSourceStart: number | null = null;
@@ -471,16 +473,22 @@ export class TranscriptView extends ItemView {
 
 	private loadAlignmentCache(file: TFile | null, lines: StoredTranscriptLine[] | null): void {
 		this.alignmentCache = null;
+		this.needsTimingMigration = false;
 		this.alignmentStatus = "Caption timing: not computed.";
 		if (!file || !lines?.length || !this.host.getAlignmentEnabled?.()) return;
 		const raw: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.[ALIGNMENT_CACHE_KEY];
 		try {
-			this.alignmentCache = readAlignmentCache(raw, prepareTranscript(lines));
+			const transcript = prepareTranscript(lines);
+			this.alignmentCache = readInlineTimings(transcript) ?? readAlignmentCache(raw, transcript);
+			this.needsTimingMigration = raw !== undefined && this.alignmentCache !== null;
 			if (this.alignmentCache) {
 				const missing = this.alignmentCache.words.filter((word) => word === null).length;
 				const native = this.alignmentCache.wordSources.filter((source) => source === "caption" || source === "youtube").length;
-				this.alignmentStatus = `Caption timing: ${native}/${this.alignmentCache.words.length} original timestamps; ${missing} uncertain. Saved offline. ≈ marks estimates.`;
-			} else if (raw !== undefined) this.alignmentStatus = "Caption timing: saved timings are stale. Click Time words to recompute with caption anchors.";
+				this.alignmentStatus = `Caption timing: ${native}/${this.alignmentCache.words.length} original timestamps; ${missing} uncertain. Saved offline. ≈ marks estimates.` +
+					(this.needsTimingMigration ? " Compact saved timings moves the old Properties cache into transcript links, offline." : "");
+			} else if (raw !== undefined || lines.some((line) => line.timingMarker !== undefined || line.wordTimings !== undefined)) {
+				this.alignmentStatus = "Caption timing: saved timings are stale. Click Time words to recompute with caption anchors.";
+			}
 		} catch (error: unknown) {
 			console.error("Perplexity Saver: invalid WhisperX cache", error);
 			this.alignmentStatus = error instanceof Error ? error.message : "Invalid WhisperX transcript cache.";
@@ -717,8 +725,9 @@ export class TranscriptView extends ItemView {
 				const next = counterpart[this.mode];
 				if (next) this.setMode(next);
 			});
-			if (alignmentEnabled && this.host.alignTranscript && !this.alignmentCache) {
-				const align = controls.createEl("button", { text: this.aligning ? "Timing words..." : "Time words" });
+			if (alignmentEnabled && this.host.alignTranscript && (!this.alignmentCache || this.needsTimingMigration)) {
+				const align = controls.createEl("button", { text: this.aligning ? "Saving timings..." :
+					this.needsTimingMigration ? "Compact saved timings" : "Time words" });
 				align.disabled = this.aligning;
 				align.addEventListener("click", () => {
 					if (!this.filePath || this.aligning) return;
