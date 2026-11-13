@@ -159,6 +159,50 @@ describe("transcript-only playback controls", () => {
 		expect(button.dataset.icon).toBe("play");
 	});
 
+	it.each([false, true])("re-centers the playing row when playback resumes after scrolling away (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let playing = false;
+		const view = await panel(doc, {
+			isVideoVisible: () => false,
+			isPlaybackPlaying: () => playing,
+			runPlaybackControl: vi.fn(),
+		} as Partial<TranscriptViewHost>);
+		const scroll = vi.spyOn(view as unknown as {
+			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
+		}, "scrollToRow");
+		view.showPlayback(1.2, true, true);
+		expect(rows(view)[1].classList.contains("is-playing")).toBe(true);
+		scroll.mockClear();
+		rows(view)[1].focus();
+		view["userScrollAt"] = Date.now();
+		view.showPlayback(1.2, true, false);
+		expect(scroll).not.toHaveBeenCalled();
+		playing = true;
+		view.showPlayback(1.2, true, true);
+		expect(scroll).toHaveBeenLastCalledWith(rows(view)[1], false);
+		scroll.mockClear();
+		view.showPlayback(1.2, true, true);
+		expect(scroll).not.toHaveBeenCalled();
+	});
+
+	it("does not force the playing row back into view when playback pauses", async () => {
+		let playing = true;
+		const view = await panel(document, {
+			isVideoVisible: () => false,
+			isPlaybackPlaying: () => playing,
+			runPlaybackControl: vi.fn(),
+		} as Partial<TranscriptViewHost>);
+		view.showPlayback(1.2, true, true);
+		const scroll = vi.spyOn(view as unknown as {
+			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
+		}, "scrollToRow");
+		rows(view)[1].focus();
+		view["userScrollAt"] = Date.now();
+		playing = false;
+		view.showPlayback(1.2, true, true);
+		expect(scroll).not.toHaveBeenCalled();
+	});
+
 	it.each([[false, false], [false, true], [true, false], [true, true]] as const)("skips workspace lookups for unchanged playback state (popout=%s, player visible=%s)", async (popout, visible) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);

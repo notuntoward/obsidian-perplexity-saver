@@ -270,6 +270,7 @@ export class TranscriptView extends ItemView {
 	private follow = true;
 	private currentRow = -1;
 	private userScrollAt = 0;
+	private lastPlaying = false;
 
 	constructor(leaf: WorkspaceLeaf, private readonly host: TranscriptViewHost) {
 		super(leaf);
@@ -336,6 +337,7 @@ export class TranscriptView extends ItemView {
 					this.stopBackgroundPlayback(false);
 					this.filePath = null;
 					this.lines = null;
+					this.lastPlaying = false;
 					this.render();
 				}
 			})
@@ -359,7 +361,10 @@ export class TranscriptView extends ItemView {
 	async setState(state: unknown, result: ViewStateResult): Promise<void> {
 		const s = (state ?? {}) as TranscriptViewState;
 		if (typeof s.file === "string") {
-			if (s.file !== this.filePath) this.stopBackgroundPlayback();
+			if (s.file !== this.filePath) {
+				this.stopBackgroundPlayback();
+				this.lastPlaying = false;
+			}
 			this.filePath = s.file;
 		}
 		if (s.mode === "lines" || s.mode === "paragraphs") this.mode = s.mode;
@@ -400,6 +405,7 @@ export class TranscriptView extends ItemView {
 			this.focusRow = -1;
 			this.query = "";
 			this.searchOrigin = null;
+			this.lastPlaying = false;
 		}
 		this.filePath = path;
 		await this.reload();
@@ -433,7 +439,13 @@ export class TranscriptView extends ItemView {
 	showPlayback(seconds: number | null, follow = true, stateChanged = true, reveal = false): void {
 		this.playbackSec = seconds;
 		this.follow = follow;
-		if (stateChanged) this.refreshPlaybackControls();
+		let resumed = false;
+		if (stateChanged) {
+			const playing = this.playbackIsPlaying();
+			resumed = playing && !this.lastPlaying;
+			this.lastPlaying = playing;
+			this.refreshPlaybackControls(playing);
+		}
 		const idx = seconds === null ? -1 : currentRowIndex(this.rowStarts, seconds);
 		const changed = idx !== this.currentRow;
 		if (changed) {
@@ -442,8 +454,8 @@ export class TranscriptView extends ItemView {
 			this.rendered[idx]?.el.addClass("is-playing");
 		}
 		const current = this.rendered[idx];
-		if (!current || (!changed && !reveal)) return;
-		if (reveal) {
+		if (!current || (!changed && !reveal && !resumed)) return;
+		if (reveal || resumed) {
 			this.scrollToRow(current.el, false);
 		} else if (follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
 			this.scrollToRow(current.el, true);
@@ -475,6 +487,7 @@ export class TranscriptView extends ItemView {
 		this.focusRow = -1;
 		this.query = "";
 		this.searchOrigin = null;
+		this.lastPlaying = false;
 		this.filePath = file.path;
 		this.setSearchOpen(false);
 		this.lines = lines;
@@ -659,18 +672,21 @@ export class TranscriptView extends ItemView {
 		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow);
 	}
 
-	refreshPlaybackControls(): void {
+	refreshPlaybackControls(playing = this.playbackIsPlaying()): void {
 		const controls = this.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback");
 		if (!controls) return;
 		controls.hidden = !this.filePath || !!this.host.isVideoVisible?.(this.filePath, this.leaf);
 		const button = controls.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle");
 		if (!button) return;
-		const playing = !!this.filePath && !!this.host.isPlaybackPlaying?.(this.filePath);
 		const label = playing ? "Pause" : "Play";
 		if (button.getAttribute("aria-label") !== label) {
 			setIcon(button, playing ? "pause" : "play");
 			button.setAttribute("aria-label", label);
 		}
+	}
+
+	private playbackIsPlaying(): boolean {
+		return !!this.filePath && !!this.host.isPlaybackPlaying?.(this.filePath);
 	}
 
 	private buildSearch(header: HTMLElement): void {
