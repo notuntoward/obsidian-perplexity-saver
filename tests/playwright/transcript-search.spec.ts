@@ -1,6 +1,45 @@
 import { expect, test } from "@playwright/test";
 import path from "node:path";
 
+test("experimental sentence comparison controls and saved-results status fit narrow transcript panes", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			* { box-sizing: border-box; }
+			body { margin: 0; font: 14px/20px sans-serif; }
+			:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --font-ui-smaller: 12px; }
+			.view-content { padding: 12px; width: 700px; height: 400px; overflow: auto; }
+			.clickable-icon { width: 28px; height: 28px; }
+		</style>
+		<div class="view-content perplexity-saver-transcript-view">
+			<div class="perplexity-saver-transcript-header">
+				<div class="perplexity-saver-transcript-controls">
+					<a class="perplexity-saver-transcript-title">A long literature note title</a>
+					<span class="perplexity-saver-transcript-count">1234 Punctuation sentences</span>
+					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
+						<option>Original captions / lines</option><option>Punctuation sentences</option><option>Jev sentences</option>
+					</select>
+					<button aria-label="Compare segmentations">Compare</button>
+					<button>Classify with Jev</button><button class="clickable-icon">S</button><button>Layout</button>
+				</div>
+				<div class="perplexity-saver-transcript-experiment-status">
+					jev-1.14.0: 12345 boundaries, 987654 input tokens. Saved for offline comparison.
+				</div>
+			</div>
+			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">A sentence.</div></div>
+		</div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const panel = page.locator(".view-content");
+	for (const width of [240, 320, 700]) {
+		await panel.evaluate((el, value) => { (el as HTMLElement).style.width = value + "px"; }, width);
+		expect(await panel.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+		await expect(page.getByRole("combobox")).toBeVisible();
+		await expect(page.getByRole("button", { name: "Compare segmentations" })).toBeVisible();
+		expect(await page.locator(".perplexity-saver-transcript-row").evaluate((el) => el.getBoundingClientRect().top))
+			.toBeLessThan(350);
+	}
+});
+
 test("browsing has a compact toolbar, no idle search/hints and substantially more transcript space", async ({ page }) => {
 	await page.setViewportSize({ width: 1152, height: 768 });
 	await page.setContent(`

@@ -139,6 +139,35 @@ These are suggestions, not plugin defaults; assign them in **Settings → Hotkey
 
 `Alt+P`, `Alt+T`, and `Alt+S` already have other assignments in the Main vault, so these suggestions avoid those collisions. Unmodified `Alt+Left/Right` continue to navigate Obsidian history there.
 
+### Jev transcript experiment
+
+This is opt-in and leaves the source captions unchanged. It classifies each space between transcript words, including spaces inside a caption, rather than generating or rewriting text.
+
+1. Reload Saver, then enable **Settings -> Perplexity Saver -> YouTube transcripts -> Jev transcript experiment**.
+2. Obtain a TypeSafe API key from [the TypeSafe console](https://console.typesafe.ai/). In **TypeSafe API key**, create/select an Obsidian secret containing that key. Plugin settings store only the secret reference; notes never contain the key.
+3. Open a note with a stored YouTube transcript and use the usual **Video: show or hide transcript** command.
+4. Click **Classify with Jev**, or run **Transcript: classify boundaries (experiment)**. Confirm the paid request. Only transcript words and available caption gaps are sent to TypeSafe, not the rest of your note or audio. There are no background or automatic classification requests.
+5. Select a format in the panel:
+
+   | Format | Purpose |
+   |---|---|
+   | Original captions / lines | Unchanged source chunks |
+   | Punctuation sentences | Native `Intl.Segmenter` sentence segmentation of existing punctuation; no inferred punctuation |
+   | Jev sentences | One row per inferred sentence |
+   | Original paragraphs | Existing pause/60-second algorithm |
+   | Jev paragraphs | Accepted sentence boundaries plus paragraph probabilities and a soft 100-word target |
+
+6. Click **Compare** repeatedly to alternate punctuation/Jev sentences or original/Jev paragraphs. The panel retains its source-text reading position through coarser groupings. Search, filtering, timestamp links, row keyboard controls and playback following are shared by all formats. Comparing does not seek or start playback.
+7. Adjust **Jev sentence threshold** and **Jev paragraph threshold** in settings if desired (both default to 0.80). This reuses the saved probabilities offline, with no new charge.
+
+**Persistence and recovery.** The note's `jev_transcript` frontmatter property contains versioned sentence/paragraph probability arrays, a SHA-256 fingerprint of source text/URLs/timing, the pinned model (`jev-1.14.0`), prompt version, creation time and cumulative billable input tokens. Each successful batch is saved immediately. **Resume Jev** evaluates only remaining batches after a network/API failure. A complete matching cache needs no API key or network to reopen. Editing source text, URLs or timing makes the cache stale; reclassification requires another explicit confirmation. An edit to the note body during classification stops saving results against that edited body.
+
+**Cost.** TypeSafe advertises $0.042 per million input tokens, with output tokens free ([current model documentation](https://docs.typesafe.ai/models)). The completion notice reports actual cumulative input tokens and an estimate at that rate. Requests contain at most 32 candidate boundaries, two binary questions per boundary, and up to 32 context words on either side. Request sizes are bounded; there are no automatic retries.
+
+**Limitations.** This initial experiment uses whitespace-separated words and English sentence-segmentation conventions for the punctuation baseline. Unpunctuated captions can therefore produce one long baseline sentence. No punctuation, capitalization or words are synthesized, including in Jev paragraph mode. Only caption-level timing is available: multiple sentences within one caption share its start timestamp. Caption gaps are not measured silence, and Jev receives no acoustic features. Its advertised calibration is not established for this task; quality needs comparison on real transcripts.
+
+**Abandoning or recording the experiment.** Turn **Jev transcript experiment** off to restore the original toolbar and stop any remaining batches; an already-issued HTTP request cannot be recalled. Saved results remain available if you enable it again. To record your judgment, add an ordinary note property such as `jev_transcript_review` with the thresholds and what improved or failed; Saver leaves that property alone. Remove `jev_transcript` in source mode only if you intentionally want to discard the cache and pay for a fresh run. No source-caption restoration or Git rollback is needed.
+
 ### YouTube video viewer
 
 The picture area stays 16:9 instead of stretching to fill a tall pane; controls sit directly below it. Whole-picture screenshots capture this area, not unused pane space. Letterboxing or black backgrounds inherent to the video remain intact; non-16:9 videos may still have bars inside the YouTube player.

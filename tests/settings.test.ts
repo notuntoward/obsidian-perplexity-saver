@@ -9,6 +9,34 @@ vi.mock("obsidian", async (original) => ({
 }));
 
 describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
+	it("keeps Jev opt-in, stores only a secret reference and rejects invalid thresholds", async () => {
+		const app = { workspace: { getLeavesOfType: () => [] } } as unknown as App;
+		const plugin = new PerplexitySaverPlugin(app, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.jevExperimentEnabled).toBe(false);
+		expect(plugin.settings.jevApiKeySecret).toBe("");
+		const tab = new PerplexitySaverSettingTab(app, plugin);
+		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
+			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
+		expect(group?.items).toContainEqual(expect.objectContaining({
+			name: "TypeSafe API key", control: expect.objectContaining({ type: "secret", key: "jevApiKeySecret" }),
+		}));
+		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
+		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
+		await tab.setControlValue("jevApiKeySecret", "typesafe");
+		expect(plugin.settings.jevApiKeySecret).toBe("typesafe");
+		await tab.setControlValue("jevSentenceThreshold", 0.95);
+		await tab.setControlValue("jevSentenceThreshold", Number.NaN);
+		expect(plugin.settings.jevSentenceThreshold).toBe(0.95);
+		await tab.setControlValue("jevExperimentEnabled", true);
+		await tab.setControlValue("jevExperimentEnabled", false);
+		expect(plugin.settings.jevExperimentEnabled).toBe(false);
+	});
+
 	it("defaults transcript folding on and preserves an explicit off setting", async () => {
 		const plugin = new PerplexitySaverPlugin({} as App, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",

@@ -4,6 +4,7 @@ import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
 import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
+import { createJevCache, prepareTranscript } from "../../src/litNote/jevTranscript";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
 const menuChoices = vi.hoisted(() => [] as { title: string; checked: boolean; run?: () => void }[]);
@@ -35,6 +36,19 @@ vi.mock("obsidian", async (importOriginal) => {
 		Scope: class {
 			register(_modifiers: string[], key: string, callback: (event: KeyboardEvent) => unknown): void {
 				scopeHandlers.set(key, callback);
+			}
+		},
+		DropdownComponent: class {
+			selectEl: HTMLSelectElement;
+			constructor(parent: HTMLElement) { this.selectEl = parent.createEl("select"); }
+			addOptions(options: Record<string, string>): this {
+				for (const [value, text] of Object.entries(options)) this.selectEl.createEl("option", { text }).value = value;
+				return this;
+			}
+			setValue(value: string): this { this.selectEl.value = value; return this; }
+			onChange(callback: (value: string) => void): this {
+				this.selectEl.addEventListener("change", () => callback(this.selectEl.value));
+				return this;
 			}
 		},
 		SearchComponent: class {
@@ -78,7 +92,7 @@ function stubPopout(doc: Document): void {
 	vi.stubGlobal("activeWindow", win);
 }
 
-async function panel(doc = document, host: Partial<TranscriptViewHost> = {}): Promise<TranscriptView> {
+async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cache?: unknown): Promise<TranscriptView> {
 	const file = { path: "note.md", basename: "note", extension: "md" };
 	const app = {
 		vault: {
@@ -86,7 +100,7 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}): Pr
 			cachedRead: async () => "# Transcript\n[00:00](https://youtu.be/abc?t=0) start\n[00:01](https://youtu.be/abc?t=1) target first\n[00:02](https://youtu.be/abc?t=2) context\n[00:03](https://youtu.be/abc?t=3) target last\n",
 		},
 		metadataCache: {
-			getFileCache: () => ({ headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
+			getFileCache: () => ({ frontmatter: { jev_transcript: cache }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
 		},
 		workspace: { requestSaveLayout: vi.fn() },
 		hotkeyManager: {
@@ -105,6 +119,78 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}): Pr
 	await view.setState({ file: file.path }, { history: false });
 	return view;
 }
+
+describe("opt-in Jev sentence and paragraph comparison", () => {
+	it.each(["main", "pop-out"])("compares baseline/Jev without playback and disables cleanly in the %s document", async (windowType) => {
+		const doc = windowType === "main" ? document : document.implementation.createHTMLDocument();
+		if (windowType === "pop-out") stubPopout(doc);
+		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
+			startSec: i, url: `https://youtu.be/abc?t=${i}`, text,
+		}));
+		const cache = createJevCache(prepareTranscript(lines));
+		cache.sentence.fill(0);
+		cache.paragraph.fill(0);
+		cache.sentence[2] = 0.9;
+		cache.paragraph[2] = 0.9;
+		let enabled = true;
+		let sentenceThreshold = 0.8;
+		const classify = vi.fn(async () => {});
+		const view = await panel(doc, {
+			getJevSettings: () => ({ enabled, sentenceThreshold, paragraphThreshold: 0.8 }),
+			classifyTranscript: classify,
+		}, cache);
+		const select = view.contentEl.querySelector("select")!;
+		select.value = "jev-sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(2);
+		expect(view.contentEl.querySelector(".perplexity-saver-transcript-count")?.textContent).toContain("Jev sentences");
+		const second = view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1];
+		if (windowType === "pop-out") Object.defineProperty(doc, "activeElement", { configurable: true, value: second });
+		else second.focus();
+		const compare = Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!;
+		compare.click();
+		expect(view.getState().mode).toBe("sentences");
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
+		if (windowType === "pop-out") Object.defineProperty(doc, "activeElement", {
+			configurable: true, value: view.contentEl.querySelector(".perplexity-saver-transcript-row"),
+		});
+		Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!.click();
+		expect(view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1].tabIndex).toBe(0);
+		sentenceThreshold = 0.95;
+		view.refreshSearchSettings();
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
+		sentenceThreshold = 0.8;
+		view.refreshSearchSettings();
+		const paragraphs = view.contentEl.querySelector("select")!;
+		paragraphs.value = "jev-paragraphs";
+		paragraphs.dispatchEvent(new Event("change"));
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(2);
+		Array.from(view.contentEl.querySelectorAll("button")).find((b) => b.textContent === "Compare")!.click();
+		expect(view.getState().mode).toBe("paragraphs");
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row")).toHaveLength(1);
+		expect(play).not.toHaveBeenCalled();
+		expect(classify).not.toHaveBeenCalled();
+		search(view, "target");
+		expect(view.contentEl.querySelector("input")?.value).toBe("target");
+		enabled = false;
+		view.refreshSearchSettings();
+		expect(view.contentEl.querySelector("select")).toBeNull();
+		expect(view.getState().mode).toBe("paragraphs");
+	});
+
+	it("reports unavailable results instead of silently showing original text as Jev output", async () => {
+		const view = await panel(document, {
+			getJevSettings: () => ({ enabled: true, sentenceThreshold: 0.8, paragraphThreshold: 0.8 }),
+			classifyTranscript: vi.fn(async () => {}),
+		});
+		const select = view.contentEl.querySelector("select")!;
+		select.value = "jev-sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(view.getState().mode).toBe("lines");
+		expect(view.contentEl.textContent).toContain("not classified");
+		expect(play).not.toHaveBeenCalled();
+	});
+});
 
 function search(view: TranscriptView, query = "target"): HTMLInputElement {
 	const input = view.contentEl.querySelector("input")!;

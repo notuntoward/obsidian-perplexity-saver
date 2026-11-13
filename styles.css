@@ -333,9 +333,20 @@
 }
 
 .perplexity-saver-transcript-count,
+.perplexity-saver-transcript-experiment-status,
 .perplexity-saver-transcript-empty {
 	color: var(--text-muted);
 	font-size: var(--font-ui-smaller);
+}
+
+.perplexity-saver-transcript-segmentation {
+	min-width: 0;
+	max-width: 100%;
+	font-size: var(--font-ui-smaller);
+}
+
+.perplexity-saver-transcript-experiment-status {
+	overflow-wrap: anywhere;
 }
 
 .perplexity-saver-transcript-row {
