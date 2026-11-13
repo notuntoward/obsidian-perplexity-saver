@@ -78,8 +78,8 @@ import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, type PreferredVideoWorkspa
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
 import { isVisiblePart, loadedPlayers, mediaWindowFor, playerForNote, primaryPlayer, transcriptsForNote, visiblePlayers, visibleTranscripts, type VisiblePart } from "./video/session";
-import { buildNavigationModel, closePopoutWindowIfEmpty, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
-import { setTimeoutIn, readClipboardIn } from "commons/windows";
+import { buildNavigationModel, closePopoutWindowIfEmpty, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, loadLeafIfDeferred, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
+import { setTimeoutIn, readClipboardIn, type CancelTimer } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { getCommandHotkeyLabel } from "commons/modal";
 
@@ -188,6 +188,9 @@ export interface PerplexitySaverSettings {
 	transcriptSearchHighlights: TranscriptSearchSettings["highlights"];
 }
 
+/** How long a timestamp click waits for the YouTube embed to answer before revealing the transcript instead. */
+const TRANSCRIPT_FALLBACK_DELAY_MS = 3000;
+
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	searchesFolder: "ai-searches",
 	generatedTag: "ai-generated",
@@ -249,6 +252,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private litNoteServer: http.Server | null = null;
 	private refreshVideoNoteFocusIndicator: (() => void) | null = null;
 	private transcriptLocations = new Map<string, TranscriptPanelLocation>();
+	/** Pending "open the transcript if the video cannot start" checks, keyed by note path. */
+	private transcriptFallbacks = new Map<string, CancelTimer>();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -748,6 +753,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		for (const cancel of this.transcriptFallbacks.values()) cancel();
+		this.transcriptFallbacks.clear();
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			if (leaf.view instanceof TranscriptView) leaf.view.stopBackgroundPlayback();
 		}
@@ -785,7 +792,20 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private forMatchingTranscripts(videoId: string, filePath: string | null, update: (view: TranscriptView) => void): void {
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			const view = leaf.view;
-			if (view instanceof TranscriptView && view.showsVideo(filePath, videoId)) update(view);
+			if (view instanceof TranscriptView) {
+				if (view.showsVideo(filePath, videoId)) update(view);
+				continue;
+			}
+			// A deferred view has no TranscriptView yet, but its saved state names the
+			// note. Load it so a timestamp click still centers the right row offline.
+			if (!filePath || getLeafFileKey(leaf) !== filePath) continue;
+			void loadLeafIfDeferred(leaf).then(() => {
+				if (!this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).includes(leaf)) return;
+				const loaded = leaf.view;
+				if (loaded instanceof TranscriptView && loaded.showsVideo(filePath, videoId)) update(loaded);
+			}).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not load the transcript pane", error);
+			});
 		}
 	}
 
@@ -939,9 +959,72 @@ export default class PerplexitySaverPlugin extends Plugin {
 			);
 			return;
 		}
-		await this.playSession(file, request.videoId, request.seconds, true);
+		let playbackError: unknown;
+		try {
+			await this.playSession(file, request.videoId, request.seconds, true);
+		} catch (error) {
+			playbackError = error;
+		}
+		// Revealing the transcript must never depend on YouTube being reachable.
 		// Clicking a link is explicit navigation: reveal the chunk even if the user
 		// recently scrolled the panel or keyboard focus is still on a transcript row.
+		this.showPlayback(request.videoId, file.path, request.seconds, false, true);
+		await this.revealTranscriptIfVideoUnavailable(file, request).catch((error: unknown) => {
+			console.error("Perplexity Saver: could not reveal the transcript", error);
+		});
+		if (playbackError) throw playbackError;
+	}
+
+	/**
+	 * Offline, the video pane cannot play anything, so make the stored transcript the
+	 * visible fallback. When the player merely has not answered yet, wait briefly so
+	 * a normal online load does not open a transcript pane unnecessarily.
+	 */
+	private async revealTranscriptIfVideoUnavailable(file: TFile, request: TimestampRequest): Promise<void> {
+		if (this.hasTranscriptPanel(file.path)) return;
+		const win = request.target.ownerDocument.defaultView ?? getMainWindow(this.app);
+		const offline = win?.navigator.onLine === false;
+		// Online with a visible player means the user chose to watch, not read: a
+		// timestamp click must not reopen a transcript pane they deliberately closed.
+		if (!offline && this.hasVisiblePlayer(file)) return;
+		if (!offline && this.notePlaybackReady(file)) return;
+		const lines = await loadTranscriptLines(this.app, file, this.settings.transcriptHeading);
+		if (!lines?.length) return;
+		if (offline) {
+			await this.showTimestampTranscript(file, request);
+			return;
+		}
+		if (!win) return;
+		const existing = this.transcriptFallbacks.get(file.path);
+		existing?.();
+		this.transcriptFallbacks.set(file.path, setTimeoutIn(win, () => {
+			this.transcriptFallbacks.delete(file.path);
+			if (this.hasTranscriptPanel(file.path) || this.hasVisiblePlayer(file) || this.notePlaybackReady(file)) return;
+			void this.showTimestampTranscript(file, request).catch((error: unknown) => {
+				console.error("Perplexity Saver: could not open the transcript", error);
+			});
+		}, TRANSCRIPT_FALLBACK_DELAY_MS));
+	}
+
+	private hasVisiblePlayer(file: TFile): boolean {
+		return visiblePlayers(this.app).some((part) => part.view.getFilePath() === file.path);
+	}
+
+	private hasTranscriptPanel(filePath: string): boolean {
+		return this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE).some((leaf) =>
+			leaf.view instanceof TranscriptView ? leaf.view.getFilePath() === filePath : getLeafFileKey(leaf) === filePath);
+	}
+
+	private notePlaybackReady(file: TFile): boolean {
+		const player = playerForNote(this.app, file);
+		if (player?.view.isReady()) return true;
+		return this.existingBackgroundPlayback(file.path)?.isReady() ?? false;
+	}
+
+	/** Show the note's transcript at the clicked timestamp without taking keyboard focus from the note. */
+	private async showTimestampTranscript(file: TFile, request: TimestampRequest): Promise<void> {
+		if (this.app.vault.getFileByPath(file.path) !== file) return;
+		await this.showTranscript(file, this.partLeaves(file).video, undefined, false, false);
 		this.showPlayback(request.videoId, file.path, request.seconds, false, true);
 	}
 
@@ -1222,7 +1305,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	 * The sidebar default maps to beside a pop-out viewer; explicit moves can use
 	 * the main sidebar, below or beside without changing the saved default.
 	 */
-	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null, location?: TranscriptPanelLocation, workspaceOnly = false): Promise<void> {
+	async showTranscript(file: TFile, preferredViewer?: WorkspaceLeaf | null, location?: TranscriptPanelLocation, workspaceOnly = false, focus = true): Promise<void> {
 		let viewer = preferredViewer ?? getVideoLeaf(this.app);
 		if (!(viewer?.view instanceof VideoView) || viewer.view.getFilePath() !== file.path) viewer = this.partLeaves(file).video;
 		let placement: TranscriptPlacement | null = null;
@@ -1242,7 +1325,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement, replaceLeaf, workspaceOnly);
 		if (leaf) {
 			if (location) this.transcriptLocations.set(file.path, location);
-			await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
+			if (focus) await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);
 		}
 	}
 

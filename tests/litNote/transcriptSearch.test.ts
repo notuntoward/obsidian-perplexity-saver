@@ -566,6 +566,20 @@ describe("accepting transcript search", () => {
 		expect(scroll).toHaveBeenLastCalledWith(rows(view)[2], false);
 	});
 
+	it("keeps a reveal pending until the panel has layout, then centers it", async () => {
+		const view = await panel();
+		const row = rows(view)[2];
+		row.isShown = () => false;
+		view.showPlayback(2.5, false, false, true);
+		expect(row.classList.contains("is-playing")).toBe(true);
+		expect(view["revealSeconds"]).toBe(2.5);
+		expect(HTMLElement.prototype.scrollIntoView).not.toHaveBeenCalled();
+		row.isShown = () => true;
+		view["retryReveal"]();
+		expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "center" });
+		expect(view["revealSeconds"]).toBeNull();
+	});
+
 	it.each([false, true])("provides standalone native transcript commands with no Incremental Search installed (popout=%s)", async (popout) => {
 		settings.keyboard = "emacs";
 		const doc = popout ? document.implementation.createHTMLDocument() : document;

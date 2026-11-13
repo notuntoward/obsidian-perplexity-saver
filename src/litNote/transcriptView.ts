@@ -269,6 +269,10 @@ export class TranscriptView extends ItemView {
 	private playbackSec: number | null = null;
 	private follow = true;
 	private currentRow = -1;
+	/** Timestamp whose row must be centered as soon as the panel can scroll. */
+	private revealSeconds: number | null = null;
+	private revealObserver: ResizeObserver | null = null;
+	private observedRevealEl: HTMLElement | null = null;
 	private userScrollAt = 0;
 	private lastPlaying = false;
 
@@ -313,7 +317,10 @@ export class TranscriptView extends ItemView {
 	}
 
 	async onOpen(): Promise<void> {
-		this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshPlaybackControls()));
+		this.registerEvent(this.app.workspace.on("layout-change", () => {
+			this.refreshPlaybackControls();
+			this.retryReveal();
+		}));
 		this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshPlaybackControls()));
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file) => {
@@ -363,6 +370,7 @@ export class TranscriptView extends ItemView {
 		if (typeof s.file === "string") {
 			if (s.file !== this.filePath) {
 				this.stopBackgroundPlayback();
+				this.revealSeconds = null;
 				this.lastPlaying = false;
 			}
 			this.filePath = s.file;
@@ -402,6 +410,7 @@ export class TranscriptView extends ItemView {
 			this.stopBackgroundPlayback();
 			this.setSearchOpen(false);
 			this.playbackSec = null;
+			this.revealSeconds = null;
 			this.focusRow = -1;
 			this.query = "";
 			this.searchOrigin = null;
@@ -454,12 +463,37 @@ export class TranscriptView extends ItemView {
 			this.rendered[idx]?.el.addClass("is-playing");
 		}
 		const current = this.rendered[idx];
-		if (!current || (!changed && !reveal && !resumed)) return;
+		if (!current) {
+			// The transcript can still be loading, hidden in a collapsed sidebar, or
+			// in a deferred view. Keep the request until layout makes the row usable.
+			if (reveal || resumed) this.revealSeconds = seconds;
+			return;
+		}
 		if (reveal || resumed) {
-			this.scrollToRow(current.el, false);
-		} else if (follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
+			this.revealSeconds = seconds;
+			this.retryReveal();
+		} else if (changed && follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
 			this.scrollToRow(current.el, true);
 		}
+		this.retryReveal();
+	}
+
+	/** Center the pending timestamp row once the panel has a scrollable layout. */
+	private retryReveal(): void {
+		if (this.revealSeconds === null) return;
+		const idx = currentRowIndex(this.rowStarts, this.revealSeconds);
+		const row = this.rendered[idx];
+		if (!row) return;
+		if (this.scrollToRow(row.el, false)) this.revealSeconds = null;
+	}
+
+	/** Retry a pending reveal when the list changes size, for example when a sidebar expands. */
+	private observeRevealTarget(el: HTMLElement): void {
+		if (typeof ResizeObserver === "undefined" || this.observedRevealEl === el) return;
+		this.revealObserver?.disconnect();
+		this.observedRevealEl = el;
+		this.revealObserver = new ResizeObserver(() => this.retryReveal());
+		this.revealObserver.observe(el);
 	}
 
 	/** Explicit navigation goes to the current chunk even while paused or with following disabled. */
@@ -484,6 +518,7 @@ export class TranscriptView extends ItemView {
 		if (token !== this.loadToken || !lines?.length) return;
 		this.stopBackgroundPlayback();
 		this.playbackSec = null;
+		this.revealSeconds = null;
 		this.focusRow = -1;
 		this.query = "";
 		this.searchOrigin = null;
@@ -634,6 +669,7 @@ export class TranscriptView extends ItemView {
 			cls: `perplexity-saver-transcript-list is-${this.mode}`,
 		});
 		this.listEl = list;
+		this.observeRevealTarget(list);
 		list.setAttribute("role", "listbox");
 		list.addEventListener("keydown", (evt) => this.onListKey(evt));
 		list.addEventListener("focusin", (evt) => {
@@ -670,6 +706,7 @@ export class TranscriptView extends ItemView {
 		if (this.matches.length && keep >= 0) this.selectMatch(Math.min(keep, this.matches.length - 1), false);
 		if (searchFocused) this.focusSearch();
 		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow);
+		this.retryReveal();
 	}
 
 	refreshPlaybackControls(playing = this.playbackIsPlaying()): void {
@@ -815,6 +852,9 @@ export class TranscriptView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.stopBackgroundPlayback();
+		this.revealObserver?.disconnect();
+		this.revealObserver = null;
+		this.observedRevealEl = null;
 		this.searchNavigationCleanup?.();
 		this.searchVisibilityCleanup?.();
 		this.searchVisibilityCleanup = null;
@@ -1064,21 +1104,23 @@ export class TranscriptView extends ItemView {
 	 * Scroll `rowEl` to the middle of the list's visible area (below the sticky
 	 * header); with `onlyIfNeeded`, only when it is near an edge or hidden.
 	 */
-	private scrollToRow(rowEl: HTMLElement, onlyIfNeeded: boolean, smooth = true): void {
+	private scrollToRow(rowEl: HTMLElement, onlyIfNeeded: boolean, smooth = true): boolean {
 		const box = scrollParent(rowEl);
 		if (!box) {
+			if (typeof rowEl.isShown === "function" && !rowEl.isShown()) return false;
 			rowEl.scrollIntoView({ block: "center" });
-			return;
+			return true;
 		}
 		const b = box.getBoundingClientRect();
 		const header = this.contentEl.querySelector(".perplexity-saver-transcript-header");
 		const top = Math.max(b.top, header ? header.getBoundingClientRect().bottom : b.top);
 		const height = b.bottom - top;
 		const r = rowEl.getBoundingClientRect();
-		if (height <= 0) return;
-		if (onlyIfNeeded && r.top >= top + height * 0.25 && r.bottom <= b.bottom - height * 0.25) return;
+		if (height <= 0) return false;
+		if (onlyIfNeeded && r.top >= top + height * 0.25 && r.bottom <= b.bottom - height * 0.25) return true;
 		const delta = r.top - top - Math.max(0, (height - r.height) / 2);
 		box.scrollTo({ top: box.scrollTop + delta, behavior: smooth ? "smooth" : "auto" });
+		return true;
 	}
 }
 

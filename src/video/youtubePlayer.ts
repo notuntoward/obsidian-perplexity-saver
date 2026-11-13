@@ -191,6 +191,11 @@ export class YouTubeEmbed {
 		return this.info.playerState === PLAYER_STATE.playing || this.info.playerState === PLAYER_STATE.buffering;
 	}
 
+	/** True once the embed has answered, so it can accept commands and report real playback. */
+	isReady(): boolean {
+		return this.ready;
+	}
+
 	// Updates the state optimistically so the controls keep working if the player's replies are lost.
 	play(): void {
 		if (!this.ready) this.autoplay = true;

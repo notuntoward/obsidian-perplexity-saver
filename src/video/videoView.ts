@@ -219,6 +219,12 @@ export class VideoView extends ItemView {
 		return state === PLAYER_STATE.playing || state === PLAYER_STATE.buffering;
 	}
 
+	/** True once the embed can accept commands and report real playback (false while offline). */
+	isReady(): boolean {
+		const player = this.player as { isReady?: () => boolean } | null;
+		return !!player && (typeof player.isReady !== "function" || player.isReady());
+	}
+
 	/** Give the viewer keyboard focus, so its keys (Space, arrows, …) work. */
 	focusKeys(): void {
 		this.contentEl.focus({ preventScroll: true });

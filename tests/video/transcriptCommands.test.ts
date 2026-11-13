@@ -39,7 +39,7 @@ vi.mock("commons/workspace", async (original) => ({
 	getMainWindow: () => globalThis.window,
 	getWindowForLeaf: (leaf: WorkspaceLeaf | null) => (leaf?.view as unknown as { testWindow?: Window } | undefined)?.testWindow ?? leaf?.view.containerEl.ownerDocument.defaultView ?? globalThis.window,
 	focusLeafAndWindow: (app: App, leaf: WorkspaceLeaf) => app.workspace.setActiveLeaf(leaf, { focus: true }),
-	loadLeafIfDeferred: async () => {},
+	loadLeafIfDeferred: vi.fn(async () => {}),
 }));
 
 beforeEach(() => {
@@ -1168,6 +1168,102 @@ describe("transcript activation commands", () => {
 		expect(h.transcript.getBackgroundPlayback()?.isPlaying()).toBe(true);
 		expect(reveal).toHaveBeenLastCalledWith(73, true, false, true);
 		expect(h.app.workspace.getLeavesOfType("perplexity-saver-video")).toHaveLength(0);
+		await h.transcript.onClose();
+	});
+
+	it("reveals the clicked transcript row even when starting playback fails", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const reveal = vi.spyOn(h.transcript, "showPlayback");
+		vi.spyOn(h.plugin as unknown as { playSession(): Promise<void> }, "playSession")
+			.mockRejectedValueOnce(new Error("offline"));
+		const target = note.view.containerEl.createEl("a");
+		await expect(h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target }))
+			.rejects.toThrow("offline");
+		expect(reveal).toHaveBeenLastCalledWith(73, true, false, true);
+		await h.transcript.onClose();
+	});
+
+	it("opens the transcript and reveals the timestamp when offline without a transcript pane", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		Object.assign(h.viewerLeaf, { setViewState: vi.fn(async () => {}) });
+		vi.spyOn(h.viewerLeaf.view as VideoView, "isReady").mockReturnValue(false);
+		const show = vi.spyOn(h.plugin, "showTranscript").mockImplementation(async () => {
+			h.leaves.push(h.transcriptLeaf);
+		});
+		const reveal = vi.spyOn(h.transcript, "showPlayback");
+		const descriptor = Object.getOwnPropertyDescriptor(window.navigator, "onLine");
+		Object.defineProperty(window.navigator, "onLine", { configurable: true, value: false });
+		try {
+			const target = note.view.containerEl.createEl("a");
+			await h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target });
+		} finally {
+			if (descriptor) Object.defineProperty(window.navigator, "onLine", descriptor);
+			else delete (window.navigator as { onLine?: boolean }).onLine;
+		}
+		expect(show).toHaveBeenLastCalledWith(h.file, expect.anything(), undefined, false, false);
+		expect(reveal).toHaveBeenLastCalledWith(73, true, false, true);
+		await h.transcript.onClose();
+	});
+
+	it("does not reopen a closed transcript when online and the player is visible", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = await harness();
+			const note = addNote(h);
+			Object.assign(h.viewerLeaf, { setViewState: vi.fn(async () => {}) });
+			vi.spyOn(h.viewerLeaf.view as VideoView, "isReady").mockReturnValue(false);
+			const show = vi.spyOn(h.plugin, "showTranscript");
+			const target = note.view.containerEl.createEl("a");
+			await h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target });
+			await vi.advanceTimersByTimeAsync(3000);
+			expect(show).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("falls back to the transcript when no player is visible and the player never becomes ready", async () => {
+		vi.useFakeTimers();
+		try {
+			const h = await harness();
+			const note = addNote(h);
+			Object.assign(h.viewerLeaf, { setViewState: vi.fn(async () => {}) });
+			vi.spyOn(h.viewerLeaf.view as VideoView, "isReady").mockReturnValue(false);
+			h.viewerLeaf.view.containerEl.isShown = () => false;
+			const show = vi.spyOn(h.plugin, "showTranscript").mockImplementation(async () => {
+				h.leaves.push(h.transcriptLeaf);
+			});
+			const target = note.view.containerEl.createEl("a");
+			await h.plugin["openTimestamp"]({ videoId: "dQw4w9WgXcQ", seconds: 73, target });
+			expect(show).not.toHaveBeenCalled();
+			await vi.advanceTimersByTimeAsync(3000);
+			await Promise.resolve();
+			expect(show).toHaveBeenCalledWith(h.file, expect.anything(), undefined, false, false);
+			await h.transcript.onClose();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("loads a deferred transcript pane before revealing the clicked timestamp", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		const reveal = vi.spyOn(h.transcript, "showPlayback");
+		let loaded = false;
+		const deferredView = { getViewType: () => "perplexity-saver-transcript" };
+		const leaf = {
+			get view() { return loaded ? h.transcript : deferredView; },
+			getViewState: () => ({ type: "perplexity-saver-transcript", state: { file: h.file.path } }),
+		} as unknown as WorkspaceLeaf;
+		h.leaves.push(leaf);
+		vi.mocked(workspaceApi.loadLeafIfDeferred).mockImplementationOnce(async () => { loaded = true; });
+		h.plugin["showPlayback"]("dQw4w9WgXcQ", h.file.path, 73, false, true);
+		await vi.waitFor(() => expect(reveal).toHaveBeenCalledWith(73, true, false, true));
 		await h.transcript.onClose();
 	});
 
