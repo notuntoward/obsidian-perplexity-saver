@@ -121,6 +121,35 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, cac
 }
 
 describe("opt-in Jev sentence and paragraph comparison", () => {
+	it("anchors toolbar comparisons to visible text after scrolling, not to the list origin", async () => {
+		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
+			startSec: i, url: `https://youtu.be/abc?t=${i}`, text,
+		}));
+		const cache = createJevCache(prepareTranscript(lines));
+		cache.sentence.fill(0);
+		cache.paragraph.fill(0);
+		cache.sentence[2] = 0.9;
+		const view = await panel(document, {
+			getJevSettings: () => ({ enabled: true, sentenceThreshold: 0.8, paragraphThreshold: 0.8 }),
+		}, cache);
+		const rect = (top: number, bottom: number) => ({ top, bottom, left: 0, right: 300, width: 300, height: bottom - top, x: 0, y: top, toJSON: () => ({}) });
+		view.contentEl.style.overflowY = "auto";
+		Object.defineProperties(view.contentEl, { scrollHeight: { value: 800 }, clientHeight: { value: 200 } });
+		vi.spyOn(view.contentEl, "getBoundingClientRect").mockReturnValue(rect(0, 200));
+		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-list")!, "getBoundingClientRect").mockReturnValue(rect(-200, 600));
+		vi.spyOn(view.contentEl.querySelector(".perplexity-saver-transcript-header")!, "getBoundingClientRect").mockReturnValue(rect(0, 40));
+		const rows = view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row");
+		[[-200, -140], [-140, -80], [80, 130], [130, 180]].forEach(([top, bottom], i) => {
+			vi.spyOn(rows[i], "getBoundingClientRect").mockReturnValue(rect(top, bottom));
+		});
+		const select = view.contentEl.querySelector("select")!;
+		select.focus();
+		select.value = "jev-sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1].tabIndex).toBe(0);
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each(["main", "pop-out"])("compares baseline/Jev without playback and disables cleanly in the %s document", async (windowType) => {
 		const doc = windowType === "main" ? document : document.implementation.createHTMLDocument();
 		if (windowType === "pop-out") stubPopout(doc);

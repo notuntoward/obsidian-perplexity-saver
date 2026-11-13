@@ -619,8 +619,9 @@ export class TranscriptView extends ItemView {
 			this.render();
 			return;
 		}
-		const row = this.rendered[this.focusedRowIndex()] ?? this.rendered.find((entry) =>
-			entry.el.getBoundingClientRect().bottom > (this.listEl?.getBoundingClientRect().top ?? 0));
+		const { visible, onScreen } = this.visibleRows();
+		const focused = this.focusedRowIndex();
+		const row = this.rendered[onScreen.includes(focused) ? focused : onScreen[0] ?? visible[0] ?? -1];
 		const anchor = row?.row.startSec ?? this.playbackSec;
 		const source = row?.row.sourceStart;
 		const previous = this.comparisonSourceStart;
