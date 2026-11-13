@@ -22,8 +22,8 @@ function load() {
   const location = { href: "https://www.perplexity.ai/session/test", pathname: "/session/test" };
   const names = [
     "applyNativeThemeStyles", "showToast", "updateButtonPosition", "injectButton",
-    "beginExport", "finishExport", "findNativeMarkdownItem", "findNativeMenuTrigger",
-    "waitForNativeMarkdownItem", "exportFullThread", "start",
+    "setExportMenuVisible", "beginExport", "finishExport", "findNativeMarkdownItem",
+    "findNativeMenuTrigger", "waitForNativeMarkdownItem", "exportFullThread", "start",
   ];
   const api: {
     injectButton: () => void;
@@ -192,6 +192,22 @@ describe("Direct exporter controls ported from the Complexity workflow", () => {
     expect(document.getElementById("pplx-clip-toast")?.textContent).toContain("Preparing");
     api.finishExport(api.beginExport());
     expect(button().disabled).toBe(false);
+  });
+
+  it("hides the native menu while the automated export drives it, then restores it", async () => {
+    const selected = nativeMenu(150);
+    const api = load();
+    api.injectButton();
+    const run = api.exportFullThread();
+    // Drives the menu invisibly: the popup must not flash on screen.
+    expect(document.body.classList.contains("pplx-export-menu-hidden")).toBe(true);
+    expect(document.getElementById("pplx-export-menu-style")?.textContent).toContain("visibility:hidden");
+    await vi.advanceTimersByTimeAsync(250);
+    await run;
+    expect(selected).toHaveBeenCalledOnce();
+    expect(document.body.classList.contains("pplx-export-menu-hidden")).toBe(true);
+    api.finishExport(api.beginExport());
+    expect(document.body.classList.contains("pplx-export-menu-hidden")).toBe(false);
   });
 
   it("uses an already open export menu rather than toggling it closed", async () => {

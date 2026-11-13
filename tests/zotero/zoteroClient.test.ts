@@ -10,6 +10,15 @@ describe("zoteroClient - normalizeUrl", () => {
 	it("preserves query parameters and hashes", () => {
 		expect(normalizeUrl("https://example.com/article/?id=123#sec1")).toBe("https://example.com/article?id=123#sec1");
 	});
+
+	it("treats a literal space and its %20 escape as the same URL", () => {
+		// Perplexity's native Markdown can contain a raw space where its
+		// structured data (and Zotero) uses %20. The URL constructor
+		// canonicalizes both to the encoded form, so relinking still matches.
+		expect(normalizeUrl("https://example.com/scans/84 0013_April25.pdf")).toBe(
+			normalizeUrl("https://example.com/scans/84%200013_April25.pdf")
+		);
+	});
 });
 
 describe("zoteroClient - extractCitekeyFromExtra", () => {
@@ -76,6 +85,22 @@ describe("zoteroClient - findItemByUrl and findItemByTitle", () => {
 		const byTitle = client.findItemByTitle("Global Climate Warming Analysis: Report 2024", 90);
 		expect(byTitle).toBeDefined();
 		expect(byTitle?.item.zotkey).toBe("ZOT123");
+	});
+
+	it("matches a raw-space source URL against a percent-encoded Zotero item URL", async () => {
+		const client = new ZoteroClient();
+		const item = {
+			zotkey: "ZOTPDF",
+			citekey: "wa2025report",
+			title: "April 25 Report",
+			url: "https://example.com/scans/84%200013_April25.pdf",
+			normalizedUrl: normalizeUrl("https://example.com/scans/84%200013_April25.pdf"),
+		};
+		(client as any).cachedItems = [item];
+		(client as any).urlMap.set(item.normalizedUrl, item);
+
+		expect(client.findItemByUrl("https://example.com/scans/84 0013_April25.pdf")).toBe(item);
+		expect(client.findItemByUrl("https://example.com/scans/84%200013_April25.pdf")).toBe(item);
 	});
 
 	it("uses cached items without fetching when library version matches", async () => {

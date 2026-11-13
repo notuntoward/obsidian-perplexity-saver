@@ -59,7 +59,34 @@ describe("parseSourceLine", () => {
 		});
 	});
 
-	it("parses a lit-note source in bold format", () => {
+  it("parses a titled raw source whose URL contains a literal space", () => {
+    // Older notes (and hand-edited notes) can contain a raw space in a
+    // markdown link destination. It must still parse so relinking can replace
+    // it, instead of the whole source line being skipped.
+    const line = "[^1_1]: [WA report](https://example.com/scans/84 0013_April25.pdf)";
+    expect(parseSourceLine(line)).toEqual({
+      id: "1_1",
+      state: {
+        kind: "raw",
+        url: "https://example.com/scans/84 0013_April25.pdf",
+        title: "WA report",
+      },
+      turnIds: [1],
+      rawUrl: "https://example.com/scans/84 0013_April25.pdf",
+    });
+  });
+
+  it("parses a bare raw source whose URL contains a literal space", () => {
+    const line = "[^2_4]: <https://example.com/scans/84 0013_April25.pdf>";
+    expect(parseSourceLine(line)).toEqual({
+      id: "2_4",
+      state: { kind: "raw", url: "https://example.com/scans/84 0013_April25.pdf" },
+      turnIds: [2],
+      rawUrl: "https://example.com/scans/84 0013_April25.pdf",
+    });
+  });
+
+  it("parses a lit-note source in bold format", () => {
 		const line = "[^3_5]: **[[smith2024]]**";
 		expect(parseSourceLine(line)).toEqual({
 			id: "3_5",

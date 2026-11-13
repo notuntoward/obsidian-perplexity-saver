@@ -281,7 +281,7 @@ To set up the automated boundary-aligning "Direct" exporter:
    - Confirm Tampermonkey is enabled.
    - Set **Site access** to **On all sites** (or explicitly permit `https://www.perplexity.ai`).
    - Turn on **Allow access to file URLs** and/or **Allow user scripts** depending on your browser.
-4. Reload your Perplexity tab. Click the floating **Copy for Obsidian** icon beside the composer. It opens Perplexity's native menu and selects **Export as Markdown** for you. You can also select **Export as Markdown** manually; both routes use the same capture pipeline.
+4. Reload your Perplexity tab. Click the floating **Copy for Obsidian** icon beside the composer. It opens Perplexity's native menu and selects **Export as Markdown** for you. That menu is deliberately hidden while the automated export drives it (version 8.19 and later), so the popup does not flash on screen. You can also select **Export as Markdown** manually; both routes use the same capture pipeline.
 
 Version 8.12 brings back the circular Obsidian icon, purple hover feedback and
 light/dark glass styling from the older Complexity script, without its extension
@@ -319,8 +319,15 @@ without reimporting them.
 If a session is still generating, Perplexity changes its internal data shape,
 or the export cannot be matched completely, the script reports an error, leaves
 the clipboard unchanged and saves the unmodified native file instead. That file
-may still lack prompts; it is not a verified complete conversation. Existing
-`/search/` exports retain their previous processing.
+may still lack prompts; it is not a verified complete conversation. Version 8.16
+and later log a single `[PPLX Session Diag]` console entry first, naming the
+failed check (source count or order, answer text, citation IDs) with short
+head/tail samples of the attempted chunks. Source URLs are compared after
+decoding percent-escapes, because Perplexity's native Markdown can contain a
+raw space where its structured data uses `%20` (for example
+`84 0013_April25.pdf`); version 8.18 writes that encoded form into the note so
+the footnote links stay clickable. Existing `/search/` exports retain their
+previous processing.
 
 ### C. Gemini Web Clipper Setup
 1. Install the official **Obsidian Web Clipper** from your browser's extension store.

@@ -27,8 +27,9 @@ function helper(name: string) {
 function load() {
   const names = [
     "buildComparableWithMap", "sessionComparable", "sessionMarkdownMarkers",
-    "sessionTurnsFromResults", "readSessionTurns", "matchSessionChunk",
-    "cleanSessionCitationLabels", "annotateSessionConversation",
+    "sessionTurnsFromResults", "readSessionTurns", "normalizeSourceUrl",
+    "displaySourceUrl", "matchSessionChunk", "cleanSessionCitationLabels",
+    "annotateSessionConversation",
   ];
   const api: {
     sessionTurnsFromResults: (results: unknown) => SessionTurn[];
@@ -164,6 +165,23 @@ describe("native session exports", () => {
     expect(output).toContain("[^1_1]: https://example.com/first");
   });
 
+  it("accepts a source URL that differs only by %-escaping and writes the encoded form", () => {
+    // Real Perplexity data: the structured value is percent-encoded while the
+    // native Markdown can contain a raw space for the same source
+    // (".../84%200013_April25.pdf" vs ".../84 0013_April25.pdf"). Requiring
+    // identical spelling failed verification for the whole turn.
+    const data = [{
+      ...turns()[0],
+      response: "An answer.[1]",
+      sources: [{ url: "https://example.com/reports/84%200013_April25.pdf" }],
+    }];
+    const native = nativeExport(data).replace("84%200013_April25.pdf", "84 0013_April25.pdf");
+    const output = load().annotateSessionConversation(native, data);
+    expect(output.warnings).toEqual([]);
+    expect(output.text).toContain("[^1_1]: https://example.com/reports/84%200013_April25.pdf");
+    expect(output.text).not.toContain("84 0013_April25.pdf");
+  });
+
   it("imports the assembled output as three complete prompt/answer pairs with sources", () => {
     const output = load().annotateSessionConversation(nativeExport(), turns());
     const dialog = parsePerplexityDialog(output.text);
@@ -199,6 +217,36 @@ describe("native session exports", () => {
     ["missing turn", (s: string) => s.slice(0, s.indexOf("\n\n---\n\n# \\<q>"))],
   ])("rejects %s instead of guessing or silently dropping content", (_label, change) => {
     expect(() => load().annotateSessionConversation(change(nativeExport()), turns())).toThrow(/verify|verified/i);
+  });
+
+  it("names the failed verification check so session drift is diagnosable", () => {
+    const data = turns();
+    // Drop one source definition: the native export no longer matches the
+    // structured source list, which is the most common Perplexity drift.
+    const native = nativeExport(data).replace("[^1_2]: https://example.com/unused", "");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => load().annotateSessionConversation(native, data)).toThrow(/verify/i);
+      const report = spy.mock.calls
+        .map((call) => String(call[0]))
+        .find((message) => message.includes("[PPLX Session Diag]"));
+      expect(report).toBeTruthy();
+      const payload = JSON.parse(String(report).slice(String(report).indexOf("{")));
+      expect(payload.failedTurn).toBe(1);
+      expect(payload.reactSources).toBe(2);
+      // The fixture answer contains an internal "---", so the first sampled
+      // chunk is truncated there (no definitions) and a later attempt covers
+      // the real turn chunk (one of the two expected definitions).
+      const sourceCounts = payload.attempts
+        .flatMap((attempt: { reasons: { reason: string; nativeSources?: number }[] }) => attempt.reasons)
+        .filter((reason: { reason: string }) => reason.reason === "source-count")
+        .map((reason: { nativeSources?: number }) => reason.nativeSources);
+      expect(sourceCounts).toContain(0);
+      expect(sourceCounts).toContain(1);
+      expect(payload.attempts[0].reasons[0].reactSources).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("reads only the known results property on a bounded ancestor chain", () => {

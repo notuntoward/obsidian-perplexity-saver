@@ -86,10 +86,13 @@ export function toBlockId(id: string): string {
 
 /**
  * Regex for parsing a rendered source line back into its parts.
- * Matches standard markdown footnote format: [^id]: <url> or [^id]: [title](url) or [^id]: [[wikilink]] or bold variants
+ * Matches standard markdown footnote format: [^id]: <url> or [^id]: [title](url) or [^id]: [[wikilink]] or bold variants.
+ * The https URL may contain a literal space (e.g. ".../84 0013_April25.pdf"),
+ * so that branch runs to the closing paren instead of stopping at whitespace;
+ * such a link is not clickable, but it must parse so relinking can replace it.
  */
 const SOURCE_LINE_RE =
-	/^\[\^(?<id>[^\]]+)\]:\s+(?:\*{0,2}\[\[(?<wikilink>[^\]]+)\]\]\*{0,2}|\*{0,2}\[(?<title>.*)\]\((?<url>https?:\/\/[^\s)]+|zotero:\/\/[^\s)]+)\)\*{0,2}|<(?<bareUrl>[^>]+)>)\s*$/;
+	/^\[\^(?<id>[^\]]+)\]:\s+(?:\*{0,2}\[\[(?<wikilink>[^\]]+)\]\]\*{0,2}|\*{0,2}\[(?<title>.*)\]\((?<url>https?:\/\/[^\n)]+|zotero:\/\/[^\s)]+)\)\*{0,2}|<(?<bareUrl>[^>]+)>)\s*$/;
 
 /**
  * Parse a "# Sources" line back into a structured object.

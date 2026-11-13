@@ -14,7 +14,11 @@ const CITENUM_RE = /\[(\d+)\]/g;
  *   1. [Title](https://example.com)
  *   [1]: https://example.com
  */
-const SOURCE_LIST_LINE_RE = /^[#*>-]?\s*(?:\[(\d+)\]|(\d+)\.)\s*:?\s*(?:\[(.*?)\]\()?(https?:\/\/\S+?)\)?(?:\s+["'(].*?["')])?\s*$/;
+// The URL is not `\S+?`: sources can contain a literal space in the path
+// (e.g. ".../2025-03/84 0013_April25.pdf"). A space-free pattern truncated or
+// dropped such a source. One URL per line, so the lazy `.+?` plus the optional
+// quoted-title tail still separates `url "Title"` correctly.
+const SOURCE_LIST_LINE_RE = /^[#*>-]?\s*(?:\[(\d+)\]|(\d+)\.)\s*:?\s*(?:\[(.*?)\]\()?(https?:\/\/.+?)\)?(?:\s+["'(].*?["')])?\s*$/;
 
 /** Divider that appears between the response and the source list in some exports. */
 const PERPLEXITY_DIVIDER_RE = /<div style="text-align: ?center">.*?<\/div>/i;
@@ -145,13 +149,17 @@ function parseAnnotatedPerplexityDialog(normalizedText: string): DialogFile {
 		const urlByNum = new Map<string, { url: string; title?: string }>();
 		if (sourcesText && sourcesText !== "(none)") {
 			const lines = sourcesText.split("\n");
-			const footnoteRe = /^\s*\[\^([^\]]+)\]:\s*(?:\[(.*?)\]\()?(https?:\/\/\S+?)\)?(?:\s+.*)?$/;
+			// Bare URLs may contain a literal space in the path (e.g.
+			// ".../2025-03/84 0013_April25.pdf"), which `\S+` silently
+			// truncated to the text before the space. Each definition is one
+			// line, so the bare form takes the whole remainder.
+			const footnoteRe = /^\s*\[\^([^\]]+)\]:\s*(?:\[(.*?)\]\((https?:\/\/.+?)\)|(https?:\/\/.+?))\s*$/;
 			for (const line of lines) {
 				const fMatch = line.match(footnoteRe);
 				if (fMatch) {
 					const num = fMatch[1]; // e.g., "4_1"
 					const title = fMatch[2] || undefined;
-					const url = fMatch[3];
+					const url = fMatch[3] || fMatch[4];
 					urlByNum.set(num, { url, title });
 				}
 			}

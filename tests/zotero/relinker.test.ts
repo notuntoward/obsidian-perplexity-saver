@@ -13,13 +13,20 @@ vi.mock("obsidian", async () => {
 					status: 200,
 					json: {
 						result: [
-							{
-								id: "http://zotero.org/users/1/items/ZOTKEY1",
-								key: "ZOTKEY1",
-								citekey: "smith2024climate",
-								title: "Climate Study Title",
-								URL: "https://example.com/climate",
-							},
+						{
+							id: "http://zotero.org/users/1/items/ZOTKEY1",
+							key: "ZOTKEY1",
+							citekey: "smith2024climate",
+							title: "Climate Study Title",
+							URL: "https://example.com/climate",
+						},
+						{
+							id: "http://zotero.org/users/1/items/ZOTKEY2",
+							key: "ZOTKEY2",
+							citekey: "wa2025report",
+							title: "Washington Excise Tax Report",
+							URL: "https://dor.wa.gov/sites/default/files/2025-03/84%200013_April25.pdf",
+						},
 						],
 					},
 				});
@@ -34,6 +41,14 @@ vi.mock("obsidian", async () => {
 								title: "Climate Study Title",
 								url: "https://example.com/climate",
 								extra: "Citation Key: smith2024climate",
+							},
+						},
+						{
+							key: "ZOTKEY2",
+							data: {
+								title: "Washington Excise Tax Report",
+								url: "https://dor.wa.gov/sites/default/files/2025-03/84%200013_April25.pdf",
+								extra: "Citation Key: wa2025report",
 							},
 						},
 					],
@@ -73,6 +88,25 @@ Climate change is real[^1_1].
 		expect(result.zoteroCount).toBe(1);
 		expect(result.litNoteCount).toBe(0);
 		expect(result.updatedText).toContain("[^1_1]: **[Climate Study Title \u2794 ZOTKEY1](zotero://select/library/items/ZOTKEY1)**");
+	});
+
+	it("relinks a raw-space source URL to the percent-encoded Zotero item URL", async () => {
+		// The relinker matches on normalizeUrl(), which canonicalizes the space,
+		// so a note written before 8.18 (raw space) still relinks to Zotero.
+		const mockApp: any = {
+			vault: {
+				getMarkdownFiles: () => [],
+			},
+		};
+
+		const sampleNote = `# Sources
+
+[^1_1]: <https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf>`;
+
+		const result = await relinkSourcesInNote(mockApp, sampleNote, { zoteroPort: 23119 });
+		expect(result.relinkedCount).toBe(1);
+		expect(result.zoteroCount).toBe(1);
+		expect(result.updatedText).toContain("zotero://select/library/items/ZOTKEY2");
 	});
 
 	it("relinks raw source to Literature Note link when vault contains citekey.md", async () => {

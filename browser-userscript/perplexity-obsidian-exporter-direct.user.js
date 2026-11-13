@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.15
+// @version      8.19
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -12,7 +12,13 @@
 
 (function () {
   "use strict";
-  console.log("[PPLX Obsidian Exporter Direct] Userscript active. Click 'Copy for Obsidian' or use 'Export as Markdown'.");
+  // Include the running version so a stale Tampermonkey copy is obvious in
+  // the console; verification failures are otherwise reported with line
+  // numbers that look plausible for any recent version.
+  const SCRIPT_VERSION = typeof GM_info !== "undefined" && GM_info?.script?.version
+    ? GM_info.script.version
+    : "unknown";
+  console.log(`[PPLX Obsidian Exporter Direct] Userscript v${SCRIPT_VERSION} active. Click 'Copy for Obsidian' or use 'Export as Markdown'.`);
 
   let pendingExport = null;
   let toolbarStarted = false;
@@ -1255,7 +1261,11 @@
       if (/^ {0,3}---[ \t]*$/.test(line)) {
         separators.push({ start: match.index, end: match.index + match[0].length });
       }
-      const definition = line.match(/^\[\^(\d+)_(\d+)\]:[ \t]+(https?:\/\/\S+)[ \t]*$/);
+      // The URL is not `\S+`: Perplexity sources can contain a literal space
+      // in the path (e.g. ".../2025-03/84 0013_April25.pdf"), and requiring a
+      // space-free URL silently dropped that definition, failing verification
+      // for the whole turn. Definitions are one per line, so take the rest.
+      const definition = line.match(/^\[\^(\d+)_(\d+)\]:[ \t]+(https?:\/\/.+?)[ \t]*$/);
       if (definition) definitions.push({
         start: match.index, end: match.index + match[0].length,
         turn: Number(definition[1]), number: Number(definition[2]), url: definition[3],
@@ -1264,20 +1274,66 @@
     return { separators, definitions };
   }
 
-  function matchSessionChunk(chunk, turn, number) {
+  // Perplexity's native Markdown and its structured data can spell the same
+  // source URL differently: the native export may contain a raw space while
+  // the structured value uses %20 (e.g. ".../84 0013_April25.pdf" vs
+  // ".../84%200013_April25.pdf"). Compare decoded values so the same source is
+  // recognized, and emit the structured spelling so note links stay clickable.
+  function normalizeSourceUrl(url) {
+    const value = String(url || "").trim();
+    try {
+      return decodeURI(value);
+    } catch (_) {
+      return value;
+    }
+  }
+
+  function displaySourceUrl(url) {
+    return String(url || "").trim().replace(/ /g, "%20");
+  }
+
+  function matchSessionChunk(chunk, turn, number, reasons = null) {
+    const fail = (reason, details = {}) => {
+      if (reasons) reasons.push({ reason, ...details });
+      return null;
+    };
     const { definitions } = sessionMarkdownMarkers(chunk);
-    if (definitions.length !== turn.sources.length || definitions.some((d, i) =>
-      d.turn !== number || d.number !== i + 1 || d.url !== turn.sources[i].url
-    )) return null;
+    if (definitions.length !== turn.sources.length) {
+      return fail("source-count", {
+        nativeSources: definitions.length,
+        reactSources: turn.sources.length,
+        nativeUrls: definitions.slice(0, 6).map((d) => d.url.slice(0, 100)),
+        reactUrls: turn.sources.slice(0, 6).map((s) => String(s.url).slice(0, 100)),
+      });
+    }
+    const firstBad = definitions.findIndex((d, i) =>
+      d.turn !== number || d.number !== i + 1 ||
+      normalizeSourceUrl(d.url) !== normalizeSourceUrl(turn.sources[i].url)
+    );
+    if (firstBad !== -1) {
+      const native = definitions[firstBad];
+      return fail("source-order", {
+        at: firstBad,
+        nativeTurn: native.turn,
+        nativeNumber: native.number,
+        nativeUrl: native.url.slice(0, 120),
+        reactUrl: String(turn.sources[firstBad].url).slice(0, 120),
+      });
+    }
 
     const sourceStart = definitions[0]?.start ?? chunk.length;
-    const sources = chunk.slice(sourceStart).trim();
+    // Rebuild the definitions from the structured URLs (already verified
+    // 1:1 and in order), so a native raw space becomes the encoded form that
+    // Obsidian can linkify.
+    const sources = definitions.map((d, i) =>
+      `[^${d.turn}_${d.number}]: ${displaySourceUrl(turn.sources[i].url)}`
+    ).join("\n\n");
     let remainder = chunk.slice(sourceStart);
     for (const d of definitions.slice().reverse()) {
       const start = d.start - sourceStart;
       remainder = remainder.slice(0, start) + remainder.slice(d.end - sourceStart);
     }
-    if (remainder.trim()) return null;
+    if (remainder.trim()) return fail("source-residue", { residue: remainder.trim().slice(0, 160) });
 
     const body = chunk.slice(0, sourceStart)
       .replace(/<span style="display:none">[\s\S]*?<\/span>/g, "")
@@ -1290,20 +1346,46 @@
     const actual = sessionComparable(body);
     const expected = sessionComparable(turn.response).stripped;
     const start = actual.stripped.indexOf(expected);
-    if (!expected || start < 0 || start + expected.length !== actual.stripped.length ||
-        actual.stripped.indexOf(expected, start + 1) !== -1) return null;
+    if (!expected) return fail("empty-answer");
+    if (start < 0) {
+      let common = 0;
+      while (common < expected.length && common < actual.stripped.length &&
+        expected[common] === actual.stripped[common]) common++;
+      return fail("answer-mismatch", {
+        expectedLength: expected.length,
+        actualLength: actual.stripped.length,
+        commonPrefix: common,
+        expectedAround: expected.slice(Math.max(0, common - 60), common + 120),
+        actualAround: actual.stripped.slice(Math.max(0, common - 60), common + 120),
+      });
+    }
+    if (start + expected.length !== actual.stripped.length) {
+      return fail("answer-extra-content", {
+        expectedLength: expected.length,
+        actualLength: actual.stripped.length,
+        extra: actual.stripped.slice(start + expected.length, start + expected.length + 160),
+      });
+    }
+    if (actual.stripped.indexOf(expected, start + 1) !== -1) return fail("answer-repeated");
     const responseStart = body.lastIndexOf("\n", actual.map[start] - 1) + 1;
     const response = body.slice(responseStart).trim();
-    if (sessionComparable(response).stripped !== expected) return null;
+    if (sessionComparable(response).stripped !== expected) return fail("answer-line-start");
 
     const references = [...response.matchAll(/\[\^(\d+)_(\d+)\]/g)];
-    if (references.some((ref) => Number(ref[1]) !== number ||
-      !definitions.some((d) => d.number === Number(ref[2])))) return null;
+    const badRef = references.find((ref) => Number(ref[1]) !== number ||
+      !definitions.some((d) => d.number === Number(ref[2])));
+    if (badRef) return fail("citation-id", { ref: badRef[0], definitions: definitions.length });
     const expectedCitations = new Set([...turn.response.matchAll(/\[(\d+)\]/g)].map((ref) => Number(ref[1])));
     const actualCitations = new Set(references.map((ref) => Number(ref[2])));
     // Native export also resolves named references such as [Publisher] into
     // footnotes. Those additional references are valid if their URLs were checked.
-    if ([...expectedCitations].some((citation) => !actualCitations.has(citation))) return null;
+    const missing = [...expectedCitations].filter((citation) => !actualCitations.has(citation));
+    if (missing.length) {
+      return fail("citation-missing", {
+        missing: missing.slice(0, 12),
+        present: [...actualCitations].slice(0, 12),
+      });
+    }
     return { prompt: turn.prompt, response: cleanSessionCitationLabels(response, turn.response), sources };
   }
 
@@ -1341,16 +1423,52 @@
     let offset = 0;
     for (const [index, turn] of turns.entries()) {
       let verified = null;
+      const attempts = [];
+      let attemptCount = 0;
       for (const boundary of boundaries) {
         if (boundary.start < offset) continue;
-        const split = matchSessionChunk(text.slice(offset, boundary.start), turn, index + 1);
+        const chunk = text.slice(offset, boundary.start);
+        const reasons = [];
+        const split = matchSessionChunk(chunk, turn, index + 1, reasons);
         if (split) {
           verified = split;
           offset = boundary.end;
           break;
         }
+        attemptCount++;
+        // Answers may contain their own "---" lines, so early attempts are
+        // often chunks truncated inside the answer. Keep a spread of the
+        // first attempts plus the most recent one; every boundary is still
+        // tried before a turn is declared bad.
+        const record = {
+          chunkLength: chunk.length,
+          head: chunk.slice(0, 140),
+          tail: chunk.slice(-140),
+          reasons: reasons.slice(0, 4),
+        };
+        if (attempts.length < 5) attempts.push(record);
+        else attempts[4] = record;
       }
-      if (!verified) throw new Error(`Could not verify session export turn ${index + 1}.`);
+      if (!verified) {
+        // Verification intentionally refuses to guess, so when Perplexity's
+        // native shape drifts this report is the only way to tell WHICH check
+        // failed (source count/order, answer text, citations) without the
+        // full conversation. One line, bounded strings.
+        console.error("[PPLX Session Diag] " + JSON.stringify({
+          version: typeof GM_info !== "undefined" && GM_info?.script?.version ? GM_info.script.version : "unknown",
+          exportLength: text.length,
+          separators: separators.length,
+          turnCount: turns.length,
+          failedTurn: index + 1,
+          offset,
+          boundaryAttempts: attemptCount,
+          prompt: String(turn.prompt).slice(0, 140),
+          reactSources: turn.sources.length,
+          reactAnswerLength: String(turn.response).length,
+          attempts,
+        }));
+        throw new Error(`Could not verify session export turn ${index + 1}.`);
+      }
       output.push(
         `<!-- PPLX-TURN ${index + 1} -->\n` +
         `<!-- PPLX-ROLE: prompt -->\n${verified.prompt}\n\n` +
@@ -1537,6 +1655,24 @@
     updateButtonPosition();
   }
 
+  // The one-click flow must open Perplexity's options menu to click "Export as
+  // Markdown", which would otherwise flash the popup on screen. Hide any open
+  // menu for the duration of the automated export (visibility, not display, so
+  // the item keeps a measurable box for findNativeMarkdownItem).
+  function setExportMenuVisible(visible) {
+    let style = document.getElementById("pplx-export-menu-style");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "pplx-export-menu-style";
+      style.textContent =
+        'body.pplx-export-menu-hidden [role="menu"],' +
+        "body.pplx-export-menu-hidden [data-radix-popper-content-wrapper]" +
+        "{visibility:hidden!important;opacity:0!important}";
+      (document.head || document.documentElement).appendChild(style);
+    }
+    document.body.classList.toggle("pplx-export-menu-hidden", !visible);
+  }
+
   function beginExport() {
     if (pendingExport) return pendingExport;
     const run = { url: location.href, cancelled: false, menuSelected: false, processing: false, timer: null };
@@ -1555,6 +1691,7 @@
     clearTimeout(run.timer);
     if (pendingExport !== run) return;
     pendingExport = null;
+    setExportMenuVisible(true);
     injectButton();
   }
 
@@ -1582,6 +1719,7 @@
   async function exportFullThread() {
     if (pendingExport) return;
     const run = beginExport();
+    setExportMenuVisible(false);
     let trigger = null;
     try {
       let item = findNativeMarkdownItem();

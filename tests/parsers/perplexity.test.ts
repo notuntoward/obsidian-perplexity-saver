@@ -248,6 +248,25 @@ Response without inline bracket numbers.
 		});
 	});
 
+	it("keeps a literal space inside a stock source-list URL instead of truncating it", () => {
+		// Real Perplexity sources can contain a literal space in the path
+		// (e.g. ".../2025-03/84 0013_April25.pdf"). A space-free capture
+		// truncated the URL or dropped the line.
+		const raw = `[Perplexity](https://www.perplexity.ai/search/123) · *2026-07-31*
+# Question?
+
+Response text[1].
+
+# Citations:  
+[1] https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf`;
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns[1].citations).toEqual([{
+			origNum: "1",
+			url: "https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf",
+			title: undefined,
+		}]);
+	});
+
 	it("handles bulleted, numbered list, or colon-formatted source lines under ## Sources:", () => {
 		const raw = `[Perplexity](https://www.perplexity.ai/search/123) · *2026-07-31*
 # Question?
@@ -444,6 +463,42 @@ Here’s a quick comparison of the main PNW states often used in the core Pacifi
 			title: undefined,
 		});
 		expect(dialog.turns[1].citations[1].url).toBe("https://www.census.gov/quickfacts/fact/table/WA/PST045225");
+	});
+
+	it("keeps a literal space inside a footnote source URL instead of truncating it", () => {
+		// Real Perplexity sources can contain a literal space in the path
+		// (e.g. ".../84 0013_April25.pdf"). A `\S+` URL capture silently
+		// truncated it to the text before the space.
+		const raw = `[Perplexity](https://www.perplexity.ai/session/091524ea-8572-45d2-8e55-c0535ef5471b) · *2026-11-12*
+
+---
+
+<!-- PPLX-TURN 1 -->
+<!-- PPLX-ROLE: prompt -->
+Comment on the Washington excise tax
+
+<!-- PPLX-ROLE: ai -->
+REET is a real, seller-paid tax.[1]
+
+<!-- PPLX-ROLE: sources -->
+[^1_1]: https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf`;
+
+		const dialog = parsePerplexityDialog(raw);
+		expect(dialog.turns[1].citations).toEqual([{
+			origNum: "1",
+			url: "https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf",
+			title: undefined,
+		}]);
+
+		const titled = raw.replace(
+			"[^1_1]: https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf",
+			"[^1_1]: [April 25 report](https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf)"
+		);
+		expect(parsePerplexityDialog(titled).turns[1].citations).toEqual([{
+			origNum: "1",
+			url: "https://dor.wa.gov/sites/default/files/2025-03/84 0013_April25.pdf",
+			title: "April 25 report",
+		}]);
 	});
 
 	it("parses annotated dialog with fenced prompt heading and text below quote without leftover triple backticks", () => {
