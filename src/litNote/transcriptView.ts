@@ -191,7 +191,7 @@ function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 const ROW_HINTS: KeyHint[][] = [
 	[
 		{ key: "↑↓ / Ctrl+N/P", action: "move" },
-		{ key: "Ctrl+Home/End", action: "first/last timestamp" },
+		{ key: "Home/End", action: "first/last timestamp" },
 		{ key: "Enter", action: "play from here" },
 		{ key: "Shift+Enter", action: "go here" },
 	],
@@ -297,8 +297,6 @@ export class TranscriptView extends ItemView {
 		});
 		this.scope.register(["Ctrl"], "N", (evt) => this.moveFocusedRow(1, evt));
 		this.scope.register(["Ctrl"], "P", (evt) => this.moveFocusedRow(-1, evt));
-		this.scope.register(["Ctrl"], "Home", (evt) => this.handleEdgeKey(evt));
-		this.scope.register(["Ctrl"], "End", (evt) => this.handleEdgeKey(evt));
 	}
 
 	getViewType(): string {
@@ -676,7 +674,6 @@ export class TranscriptView extends ItemView {
 	}
 
 	private buildSearch(header: HTMLElement): void {
-		header.addEventListener("keydown", (evt) => { this.handleEdgeKey(evt); });
 		const bar = header.createDiv({ cls: "perplexity-saver-transcript-search" });
 		this.searchBar = bar;
 		bar.hidden = !this.searchOpen;
@@ -988,8 +985,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	private onListKey(evt: KeyboardEvent): void {
-		if (evt === this.handledKey) return;
-		if (!this.handleEdgeKey(evt)) return;
+		if (evt === this.handledKey || evt.isComposing) return;
 		const index = this.focusedRowIndex();
 		if (index < 0) return;
 		const mod = evt.ctrlKey || evt.metaKey;
@@ -998,17 +994,20 @@ export class TranscriptView extends ItemView {
 			this.moveFocus(stepRow(visible, index, delta, onScreen));
 		};
 		const emacs = evt.ctrlKey && !evt.metaKey && !evt.altKey && !evt.shiftKey;
-		const edge = (last: boolean): void => {
+		const edge = (last: boolean): boolean => {
 			const { visible } = this.visibleRows();
-			this.moveFocus(visible[last ? visible.length - 1 : 0] ?? -1);
+			const target = visible[last ? visible.length - 1 : 0];
+			if (target === undefined) return false;
+			this.moveFocus(target);
+			return true;
 		};
 		let handled = true;
 		if (evt.key === "ArrowDown" && !mod) step(1);
 		else if (evt.key === "ArrowUp" && !mod) step(-1);
 		else if (emacs && evt.key.toLowerCase() === "n") step(1);
 		else if (emacs && evt.key.toLowerCase() === "p") step(-1);
-		else if (evt.key === "Home" && !mod) edge(false);
-		else if (evt.key === "End" && !mod) edge(true);
+		else if (evt.key === "Home" && !mod && !evt.shiftKey && !evt.altKey) handled = edge(false);
+		else if (evt.key === "End" && !mod && !evt.shiftKey && !evt.altKey) handled = edge(true);
 		else if (evt.key === "Enter") this.playRow(index, mod || !evt.shiftKey);
 		else if (evt.key === "Escape") this.focusSearch();
 		else if (mod && evt.key.toLowerCase() === "c" && !this.hasTextSelection()) void this.copyRowLink(index);
@@ -1018,20 +1017,6 @@ export class TranscriptView extends ItemView {
 		evt.stopPropagation();
 		this.handledKey = evt;
 		this.userScrollAt = Date.now();
-	}
-
-	private handleEdgeKey(evt: KeyboardEvent): boolean {
-		if (evt === this.handledKey) return false;
-		if (!evt.ctrlKey || evt.metaKey || evt.altKey || evt.shiftKey || (evt.key !== "Home" && evt.key !== "End")) return true;
-		const active = this.contentEl.ownerDocument.activeElement;
-		if (!active || !this.contentEl.contains(active)) return true;
-		const { visible } = this.visibleRows();
-		this.moveFocus(visible[evt.key === "Home" ? 0 : visible.length - 1] ?? -1);
-		evt.preventDefault();
-		evt.stopPropagation();
-		this.handledKey = evt;
-		this.userScrollAt = Date.now();
-		return false;
 	}
 
 	private hasTextSelection(): boolean {

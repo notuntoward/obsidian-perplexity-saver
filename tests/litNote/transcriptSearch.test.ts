@@ -418,7 +418,7 @@ describe("accepting transcript search", () => {
 		expect(play).not.toHaveBeenCalled();
 	});
 
-	it.each([false, true])("Ctrl+Home/End focus the first/last timestamp from rows and controls without playback (popout=%s)", async (popout) => {
+	it.each([false, true])("modified Home/End remain native in search, controls and rows (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		let active: Element | null = null;
 		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
@@ -430,32 +430,60 @@ describe("accepting transcript search", () => {
 			el.dispatchEvent(new FocusEvent("focus"));
 			el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
 		};
+		expect(scopeHandlers.has("Home")).toBe(false);
+		expect(scopeHandlers.has("End")).toBe(false);
 		for (const source of [rows(view)[2], input, button]) {
 			for (const name of ["Home", "End"]) {
-				if (source === input) view.focusSearch();
-				else source.focus();
-				const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, bubbles: true, cancelable: true });
-				source.dispatchEvent(event);
-				expect(event.defaultPrevented).toBe(true);
-				expect(doc.activeElement).toBe(rows(view)[name === "Home" ? 0 : 3]);
+				for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { ctrlKey: true, shiftKey: true }, { isComposing: true }]) {
+					if (source === input) view.focusSearch();
+					else source.focus();
+					const event = new KeyboardEvent("keydown", { key: name, ...modifiers, bubbles: true, cancelable: true });
+					source.dispatchEvent(event);
+					expect(event.defaultPrevented).toBe(false);
+					expect(doc.activeElement).toBe(source);
+				}
 			}
 		}
-		rows(view)[2].focus();
-		key(rows(view)[2], "Home", { ctrlKey: true, shiftKey: true });
-		expect(doc.activeElement).toBe(rows(view)[2]);
 		expect(play).not.toHaveBeenCalled();
 	});
 
-	it("reserves Ctrl+Home/End in the native scope, handles each event once and respects filtered rows", async () => {
-		const view = await panel();
-		const input = search(view);
+	it.each([false, true])("plain Home/End focus filtered edges without seeking (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		if (popout) for (const el of [view.contentEl.querySelector("input")!, ...rows(view)]) el.focus = () => {
+			active = el;
+			el.dispatchEvent(new FocusEvent("focus"));
+			el.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+		};
+		search(view);
 		view.contentEl.querySelector<HTMLElement>('button[aria-label="Show only matching lines"]')!.click();
-		for (const name of ["End", "Home"]) {
-			const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, bubbles: true, cancelable: true });
-			expect(scopeHandlers.get(name)?.(event)).toBe(false);
-			input.dispatchEvent(event);
-			expect(document.activeElement).toBe(rows(view)[name === "Home" ? 1 : 3]);
+		rows(view)[1].focus();
+		for (const [name, index] of [["End", 3], ["Home", 1]] as const) {
+			const event = new KeyboardEvent("keydown", { key: name, bubbles: true, cancelable: true });
+			(doc.activeElement as HTMLElement).dispatchEvent(event);
+			expect(event.defaultPrevented).toBe(true);
+			expect(doc.activeElement).toBe(rows(view)[index]);
+			expect(play).not.toHaveBeenCalled();
 		}
+	});
+
+	it("leaves empty filtered lists and embedded editors untouched", async () => {
+		const view = await panel();
+		search(view, "missing");
+		view.contentEl.querySelector<HTMLElement>('button[aria-label="Show only matching lines"]')!.click();
+		rows(view)[0].focus();
+		const empty = new KeyboardEvent("keydown", { key: "End", bubbles: true, cancelable: true });
+		rows(view)[0].dispatchEvent(empty);
+		expect(empty.defaultPrevented).toBe(false);
+		expect(document.activeElement).toBe(rows(view)[0]);
+		const editor = rows(view)[0].createEl("textarea");
+		editor.focus();
+		const event = new KeyboardEvent("keydown", { key: "Home", bubbles: true, cancelable: true });
+		editor.dispatchEvent(event);
+		expect(event.defaultPrevented).toBe(false);
+		expect(document.activeElement).toBe(editor);
 		expect(play).not.toHaveBeenCalled();
 	});
 
