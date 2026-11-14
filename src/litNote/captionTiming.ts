@@ -1,14 +1,72 @@
-import { getFrontMatterInfo, Notice, parseYaml, type App, type TFile } from "obsidian";
+import { getFrontMatterInfo, Notice, parseYaml, type App, type Plugin, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
-import { prepareTranscript, sentenceRows } from "./transcriptSentences";
-import { findTranscriptRange, parseStoredTranscript } from "./transcriptSection";
+import { prepareTranscript, type PreparedTranscript } from "./transcriptSentences";
+import { findTranscriptRange, parseStoredTranscript, type StoredTranscriptLine } from "./transcriptSection";
 import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
 import { fetchYouTubeCaptions, formatNativeTranscript } from "./youtubeTranscript";
-import { withTranscriptLanguage } from "./transcriptLanguage";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
 
 const running = new WeakMap<App, Set<TFile>>();
+
+function savedTimings(transcript: PreparedTranscript, raw: unknown): WordTimings | null {
+	try {
+		return readInlineTimings(transcript) ?? readAlignmentCache(raw, transcript);
+	} catch (error: unknown) {
+		console.warn("Perplexity Saver: saved transcript timings are invalid; offering a confirmed refresh", error);
+		return null;
+	}
+}
+
+export function needsCaptionTimingRepair(lines: StoredTranscriptLine[], timings: WordTimings | null): boolean {
+	if (timings || !lines.length) return false;
+	const videoId = parseYouTubeUrl(lines[0].url)?.videoId;
+	return !!videoId && lines.every((line) => parseYouTubeUrl(line.url)?.videoId === videoId);
+}
+
+/** Offer once per transcript source per session; downloading still requires the timing flow's consent. */
+export function registerCaptionTimingRepair(
+	plugin: Plugin, heading: () => string, repair: (file: TFile) => Promise<void>
+): void {
+	const { app } = plugin;
+	const offered = new WeakMap<TFile, string>();
+	let generation = 0;
+	let disposed = false;
+	let repairing = false;
+	const check = async (file: TFile | null): Promise<void> => {
+		const token = ++generation;
+		if (disposed || repairing || !file || file.extension !== "md") return;
+		const content = await app.vault.cachedRead(file);
+		if (disposed || token !== generation || app.workspace.getActiveFile() !== file) return;
+		const metadata = app.metadataCache.getFileCache(file);
+		const range = findTranscriptRange(content, metadata?.headings, heading());
+		if (!range) return;
+		const transcript = prepareTranscript(parseStoredTranscript(content.slice(range.start, range.end)));
+		if (!needsCaptionTimingRepair(transcript.lines, null) || offered.get(file) === transcript.hash) return;
+		const cached = savedTimings(transcript, metadata?.frontmatter?.[ALIGNMENT_CACHE_KEY]);
+		if (cached) return;
+		offered.set(file, transcript.hash);
+		repairing = true;
+		try {
+			await repair(file);
+		} finally {
+			repairing = false;
+		}
+	};
+	const open = (file: TFile | null): void => {
+		void check(file).catch((error: unknown) => {
+			console.error("Perplexity Saver: could not offer transcript timing repair", error);
+			new Notice(error instanceof Error ? error.message : "Could not check transcript timing.");
+		});
+	};
+	plugin.registerEvent(app.workspace.on("file-open", open));
+	plugin.registerEvent(app.workspace.on("active-leaf-change", () => open(app.workspace.getActiveFile())));
+	plugin.registerEvent(app.metadataCache.on("changed", (file) => {
+		if (app.workspace.getActiveFile() === file) open(file);
+	}));
+	app.workspace.onLayoutReady(() => open(app.workspace.getActiveFile()));
+	plugin.register(() => { disposed = true; generation++; });
+}
 
 export async function runCaptionTiming(
 	app: App, file: TFile, heading: string, options: { signal?: AbortSignal } = {}
@@ -67,7 +125,7 @@ export async function runCaptionTiming(
 				});
 			}
 		};
-		const cached = lines.length ? readInlineTimings(transcript) ?? readAlignmentCache(raw, transcript) : null;
+		const cached = lines.length ? savedTimings(transcript, raw) : null;
 		if (cached) {
 			if (raw !== undefined) {
 				await save(cached);
@@ -75,9 +133,9 @@ export async function runCaptionTiming(
 			} else new Notice("Word timings already saved in transcript links. Comparison works offline; no download or alignment was run.");
 			return cached;
 		}
-		const consent = await askNoteDecision(app, "Use caption word timing?",
-			`Check YouTube JSON3 captions for ${videoId}${transcript.words.length ? ` and time these ${sentenceRows(transcript).length} sentence starts` : " and recover the unrecognized transcript format"}?\n\nUse native caption and word timestamps only. Missing sentence-start offsets stay explicitly approximate. No audio, Python, model downloads or inference. Your note and transcript are not uploaded; no API charge.\n\nSave compact word offsets in existing transcript links for offline use. If the stored wording or caption bounds differ, you can cancel or explicitly replace only the transcript section. Other note content and properties are preserved.`,
-			[{ label: "Check captions and save timings", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
+		const consent = await askNoteDecision(app, "Transcript timing needs repair",
+			`The transcript in "${file.basename}" has missing or invalid word timings. Sentence timestamps may repeat or be inaccurate.\n\nRedownload the transcript from YouTube (${videoId}) using native JSON3 caption and word timestamps?\n\nOnly the transcript section will be updated. Your other note content and properties are preserved. If the wording or usable caption bounds differ, replacement requires a further confirmation. Cancel leaves the note unchanged.\n\nNo audio, Python, model downloads or inference. Your note is not uploaded; no API charge. Missing native timestamps remain explicitly approximate.`,
+			[{ label: "Redownload transcript", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 		if (consent !== "create") return null;
 		assertActive();
 		const notice = new Notice("Checking YouTube sentence-start timestamps...", 0);
@@ -96,25 +154,20 @@ export async function runCaptionTiming(
 				const line = transcript.lines[transcript.words[i].cue];
 				return word === null || (word[0] >= line.startSec && word[0] <= (line.endSec ?? Infinity));
 			});
-			let prepared = transcript;
-			let sourceSection = withTranscriptLanguage(section, captions.language);
-			let cache: WordTimings = { ...native, sourceHash: transcript.hash };
 			if (!sameWords || !sameBounds) {
 				const choice = await askNoteDecision(app, "Transcript differs from YouTube captions",
 					`${!transcript.words.length ? "The stored transcript format is unrecognized. Stored word count unavailable." : `The stored wording or caption bounds differ: ${transcript.words.length} stored words.`} ${fresh.words.length} current words. Even equal word counts can contain different wording.\n\nCancel leaves the note unchanged. Replace transcript uses the fetched JSON3 captions and their punctuation and native timings. Only the transcript section is replaced; your other content and properties are preserved. Missing timestamps remain approximate.`,
 					[{ label: "Cancel", value: "cancel" }, { label: "Replace transcript", value: "overwrite", warning: true }]);
 				if (choice !== "overwrite") return null;
 				assertActive();
-				const newline = section.includes("\r\n") ? "\r\n" : "\n";
-				sourceSection = newline + newline + freshSection.replace(/\n/g, newline) + newline + newline;
-				prepared = fresh;
-				cache = native;
 			}
-			await save(cache, sourceSection);
-			const sentences = alignedSentenceRows(prepared, cache);
+			const newline = section.includes("\r\n") ? "\r\n" : "\n";
+			const sourceSection = newline + newline + freshSection.replace(/\n/g, newline) + newline + newline;
+			await save(native, sourceSection);
+			const sentences = alignedSentenceRows(fresh, native);
 			const approximate = sentences.filter((sentence) => sentence.timingUncertain).length;
 			new Notice(`Native YouTube sentence timings saved. No audio or model downloads. ${sentences.length - approximate}/${sentences.length} sentence starts timed; ${approximate} approximate. Sentence and paragraph views use saved timings automatically.`);
-			return cache;
+			return native;
 		} finally {
 			notice.hide();
 		}

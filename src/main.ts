@@ -39,8 +39,7 @@ import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
-import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
-import { runCaptionTiming } from "./litNote/captionTiming";
+import { registerCaptionTimingRepair, runCaptionTiming } from "./litNote/captionTiming";
 import {
 	TRANSCRIPT_VIEW_TYPE,
 	TranscriptView,
@@ -165,12 +164,6 @@ export interface PerplexitySaverSettings {
 	transcriptHeading: string;
 	/** Fold the stored transcript once whenever its note opens. */
 	collapseTranscriptOnOpen: boolean;
-	/**
-	 * "cues": one line per caption cue with millisecond start and end times (lossless).
-	 * "blocks": one line per 5 cues with a whole-second start time only.
-	 */
-	transcriptFormat: TranscriptFormat;
-	captionWordTiming: boolean;
 	/** What a plain click on a YouTube timestamp link does; Ctrl/Cmd-click does the other. */
 	timestampClickAction: TimestampClickAction;
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
@@ -215,8 +208,6 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	downloadYoutubeTranscripts: true,
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
 	collapseTranscriptOnOpen: true,
-	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
-	captionWordTiming: false,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
 	timestampCopyFormat: "link",
@@ -268,6 +259,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.registerEditorExtension(noteInsertionAnchors);
 		registerFootnoteNavigation(this);
 		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
+		registerCaptionTimingRepair(this, () => this.settings.transcriptHeading, (file) => this.timeTranscriptFromCaptions(file));
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
 		this.viewTracker = new ViewTracker(this.settings.litNoteLastViewed);
@@ -318,7 +310,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 			authorDropVon: this.settings.authorDropVon,
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 			transcriptHeading: this.settings.transcriptHeading,
-			transcriptFormat: this.settings.transcriptFormat,
 			onNoteOpened: foldOpenedTranscript,
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
@@ -328,7 +319,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
-					getAlignmentEnabled: () => this.settings.captionWordTiming,
 					paragraphWarnings: this.paragraphWarnings,
 					insertTimestampAt: (filePath, url, seconds) => this.insertTranscriptTimestamp(filePath, url, seconds),
 					alignTranscript: async (filePath) => {
@@ -728,7 +718,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		if (!(view instanceof VideoView)) return;
 		const file = view.getFilePath();
 		const videoId = view.getVideoId();
-		const seconds = view.getPlaybackSeconds();
+		const seconds = view.getBookmarkSeconds();
 		if (file && videoId && Number.isFinite(seconds) && seconds >= 0) {
 			this.settings.videoPlayback[file] = { videoId, seconds };
 		}
@@ -740,7 +730,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			name: "Transcript: time sentences from YouTube captions",
 			checkCallback: (checking: boolean) => {
 				const file = this.activePart().file;
-				if (!this.settings.captionWordTiming || !file || file.extension !== "md") return false;
+				if (!file || file.extension !== "md") return false;
 				if (!checking) void this.timeTranscriptFromCaptions(file).catch((error: unknown) => {
 					console.error("Perplexity Saver: caption timing failed", error);
 					new Notice(error instanceof Error ? error.message : "Caption timing failed.");
@@ -818,7 +808,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	private async timeTranscriptFromCaptions(file: TFile): Promise<void> {
-		if (!this.settings.captionWordTiming) throw new Error("Enable Caption word timing in settings first.");
 		const timings = await runCaptionTiming(this.app, file, this.settings.transcriptHeading, {
 			signal: this.captionTimingAbort.signal,
 		});
@@ -943,12 +932,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/** Retarget a player and move every transcript of its previous note to the new note. */
-	private async switchPlayer(player: VisiblePart<VideoView>, file: TFile, videoId: string, seconds: number, play: boolean): Promise<void> {
+	private async switchPlayer(player: VisiblePart<VideoView>, file: TFile, videoId: string, seconds: number, play: boolean, resumeAt?: number): Promise<void> {
 		const previousPath = player.view.getFilePath();
 		this.stopBackgroundPlayback(file.path);
 		this.stopBackgroundPlaybackIn(getWindowForLeaf(player.leaf));
 		await openVideoViewer(this.app, {
-			videoId, seconds, sourcePath: file.path, autoplay: play, preferLeaf: player.leaf,
+			videoId, seconds, sourcePath: file.path, autoplay: play, resumeAt, preferLeaf: player.leaf,
 		}, this.settings.videoViewerLocation);
 		await this.alignTranscripts(previousPath, file.path);
 	}
@@ -990,7 +979,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 				const videoId = await noteVideoId(this.app, file) ?? rival.view.getVideoId();
 				if (!videoId) return;
 				const saved = this.settings.videoPlayback[file.path];
-				await this.switchPlayer(rival, file, videoId, saved?.videoId === videoId ? saved.seconds : 0, true);
+				const resumeAt = saved?.videoId === videoId && Number.isFinite(saved.seconds) && saved.seconds > 0
+					? saved.seconds : undefined;
+				await this.switchPlayer(rival, file, videoId, 0, resumeAt === undefined, resumeAt);
+				if (resumeAt !== undefined) rival.view.togglePlay();
 				return;
 			}
 			(await this.backgroundPlaybackFor(file, undefined, win))?.togglePlay();
@@ -1397,7 +1389,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const background = this.partLeaves(file).transcript?.view;
 		const playback = background instanceof TranscriptView ? background.getBackgroundPlayback() : null;
 		const sameVideo = playback?.getVideoId() === videoId;
-		const seconds = sameVideo ? playback.getPlaybackSeconds() : saved?.videoId === videoId ? saved.seconds : 0;
+		const seconds = sameVideo ? playback.getPlaybackSeconds() : 0;
+		const resumeAt = !sameVideo && saved?.videoId === videoId && Number.isFinite(saved.seconds) && saved.seconds > 0
+			? saved.seconds : undefined;
 		const playing = sameVideo ? playback.isPlaying() : autoplay;
 		const rate = sameVideo ? playback.getPlaybackRate() : null;
 		this.stopBackgroundPlayback(file.path);
@@ -1406,7 +1400,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const previousPath = target?.view.getFilePath() ?? null;
 		const leaf = await openVideoViewer(
 			this.app,
-			{ videoId, seconds, sourcePath: file.path, autoplay: playing, associatedOnly, preferLeaf: target?.leaf ?? null, preferWindow: origin },
+			{ videoId, seconds, sourcePath: file.path, autoplay: playing, resumeAt, associatedOnly, preferLeaf: target?.leaf ?? null, preferWindow: origin },
 			this.settings.videoViewerLocation
 		);
 		if (leaf.view) this.stopBackgroundPlaybackIn(getWindowForLeaf(leaf));
@@ -1569,10 +1563,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		const stored: Partial<PerplexitySaverSettings> & { whisperxEnabled?: boolean; whisperxPythonPath?: string } = await this.loadData() ?? {};
-		const { whisperxEnabled, whisperxPythonPath: _pythonPath, ...current } = stored;
+		const stored: Partial<PerplexitySaverSettings> & { captionWordTiming?: boolean; whisperxEnabled?: boolean; whisperxPythonPath?: string } = await this.loadData() ?? {};
+		const { captionWordTiming: _timing, whisperxEnabled: _whisperx, whisperxPythonPath: _pythonPath, ...current } = stored;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, current);
-		this.settings.captionWordTiming = current.captionWordTiming ?? whisperxEnabled ?? DEFAULT_SETTINGS.captionWordTiming;
 		this.settings.videoPlayback = { ...this.settings.videoPlayback };
 	}
 
@@ -1879,20 +1872,9 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		if (key === "transcriptHeading") {
 			this.plugin.applyTranscriptHeading();
 		}
-		if (key === "captionWordTiming") {
-			if (!value) this.plugin.stopCaptionTiming();
-			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
-				if (leaf.view instanceof TranscriptView) await leaf.view.reload();
-			}
-		}
 		if (key === "transcriptSearchBehavior" || key === "transcriptSearchMatching" || key === "transcriptSearchHighlights") {
 			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 				if (leaf.view instanceof TranscriptView) leaf.view.refreshSearchSettings();
-			}
-		}
-		if (key === "transcriptFormat") {
-			if (this.plugin.litNoteServerSettings) {
-				this.plugin.litNoteServerSettings.transcriptFormat = value as TranscriptFormat;
 			}
 		}
 		await this.plugin.saveSettings();
@@ -2129,7 +2111,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Download YouTube transcripts",
-						desc: "When enabled, automatically downloads the timestamped transcript and inserts it under the transcript heading when creating literature notes from YouTube video references.",
+						desc: "When enabled, downloads JSON3 captions when creating literature notes from YouTube video references. New transcripts always retain native YouTube word timings.",
 						control: {
 							type: "toggle",
 							key: "downloadYoutubeTranscripts",
@@ -2143,23 +2125,6 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							key: "transcriptHeading",
 							placeholder: DEFAULT_TRANSCRIPT_HEADING,
 						},
-					},
-					{
-						name: "Transcript detail",
-						desc: "How downloaded YouTube transcripts are written. Every caption keeps each caption as a short m:ss link, with its exact start and end time in the link title (shown on hover; lossless, and gives the best paragraph formatting in the transcript panel). 5-caption blocks are shorter but keep only a whole-second start time per block of 5 captions.",
-						control: {
-							type: "dropdown",
-							key: "transcriptFormat",
-							options: {
-								cues: "Every caption, start and end times (default)",
-								blocks: "5-caption blocks, start time only",
-							},
-						},
-					},
-					{
-						name: "Caption word timing",
-						desc: "Allow Get timings in the transcript's More menu to fetch JSON3 for older notes, after asking. Available saved timings are always used automatically; missing starts stay approximate. New per-caption downloads include timings. No Python, audio or model downloads.",
-						control: { type: "toggle", key: "captionWordTiming" },
 					},
 				],
 			},

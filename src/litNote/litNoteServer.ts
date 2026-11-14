@@ -40,7 +40,6 @@ import type {
 } from "./types";
 
 import type { NameStyle } from "./bibtexName";
-import type { TranscriptFormat } from "./youtubeTranscript";
 
 export interface LitNoteServerSettings {
 	litNotesFolder: string; // vault-relative path, e.g. "lit/lit_notes"
@@ -50,8 +49,6 @@ export interface LitNoteServerSettings {
 	downloadYoutubeTranscripts?: boolean;
 	/** Text of the heading the YouTube transcript is stored under. */
 	transcriptHeading?: string;
-	/** Per-cue (lossless) or 5-cue block transcript lines. */
-	transcriptFormat?: TranscriptFormat;
 	/** Called after note loading and final cursor/ephemeral state placement. */
 	onNoteOpened?: (file: TFile) => void;
 }

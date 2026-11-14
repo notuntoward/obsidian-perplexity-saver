@@ -38,7 +38,9 @@ vi.mock("commons/windows", async (original) => ({
 vi.mock("../../src/video/focusIndicator", () => ({ registerVideoNoteFocusIndicator: () => () => {} }));
 vi.mock("../../src/litNote/transcriptFolding", () => ({ registerTranscriptFolding: () => () => {} }));
 vi.mock("../../src/litNote/litNoteServer", () => ({ startLitNoteServer: () => null, stopLitNoteServer: () => {} }));
-vi.mock("../../src/litNote/captionTiming", () => ({ runCaptionTiming: vi.fn() }));
+vi.mock("../../src/litNote/captionTiming", async (original) => ({
+	...await original<Record<string, unknown>>(), runCaptionTiming: vi.fn(),
+}));
 vi.mock("commons/workspace", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	getActiveLeafInFocusedWindow: (app: App) => app.workspace.activeLeaf ?? null,
@@ -64,7 +66,7 @@ async function harness() {
 	const leaves: WorkspaceLeaf[] = [];
 	const app = {
 		vault: { getFileByPath: () => file, cachedRead: async () => "# Transcript\n[0:00](https://youtu.be/abc?t=0) start\n[0:25](https://youtu.be/abc?t=25) current" },
-		metadataCache: { getFileCache: () => ({ headings: [{ heading: "Transcript", level: 1, position: { end: { offset: 12 } } }] }) },
+		metadataCache: { on: vi.fn(), getFileCache: () => ({ headings: [{ heading: "Transcript", level: 1, position: { end: { offset: 12 } } }] }) },
 		workspace: {
 			getLeavesOfType: (type: string) => leaves.filter((leaf) => leaf.view.getViewType() === type),
 			iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => leaves.forEach(callback),
@@ -160,7 +162,6 @@ async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = docum
 describe("transcript playback state", () => {
 	it.each([true, false])("only requests automatic sentence mode after successful timing (completed=%s)", async (completed) => {
 		const h = await harness();
-		h.plugin.settings.captionWordTiming = true;
 		h.leaves.push(h.transcriptLeaf);
 		const other = Object.create(TranscriptView.prototype) as TranscriptView;
 		vi.spyOn(other, "getFilePath").mockReturnValue("other.md");
@@ -179,6 +180,16 @@ describe("transcript playback state", () => {
 			await expect(h.plugin["timeTranscriptFromCaptions"](h.file as TFile)).rejects.toThrow("Caption timing failed");
 			expect(reload).not.toHaveBeenCalled();
 		}
+	});
+
+	it("offers the existing timing command without a settings opt-in", async () => {
+		const h = await harness();
+		addNote(h);
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		h.plugin["registerTranscriptCommands"]();
+		const command = commands.find((item) => item.id === "whisperx-align-transcript")!;
+		expect(command.checkCallback?.(true)).toBe(true);
 	});
 
 	it("tracks toolbar, commands, transcript rows and background updates without moving focus", async () => {
@@ -918,7 +929,7 @@ describe("transcript activation commands", () => {
 		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
 	});
 
-	it("opens a missing player at its saved position without repurposing an unrelated viewer", async () => {
+	it("offers a saved-position choice without repurposing an unrelated viewer", async () => {
 		const h = await harness();
 		addNote(h);
 		Object.assign(h.viewerLeaf.view, { filePath: "other.md" });
@@ -929,9 +940,33 @@ describe("transcript activation commands", () => {
 		Object.assign(h.app.workspace, { createLeafBySplit: split });
 		await h.plugin["applyVideoWorkspace"](h.file as TFile, "video");
 		expect(next.setViewState).toHaveBeenCalledWith(expect.objectContaining({
-			state: { videoId: "dQw4w9WgXcQ", time: 123.75, file: h.file.path, autoplay: false },
+			state: { videoId: "dQw4w9WgXcQ", time: 0, resumeAt: 123.75, file: h.file.path, autoplay: false },
 		}));
 		expect(h.viewerLeaf.view.getState().file).toBe("other.md");
+	});
+
+	it("workspace bookkeeping preserves an unchosen saved position", async () => {
+		const h = await harness();
+		Object.assign(h.viewerLeaf.view, { resumeAt: 123.75 });
+		h.plugin["rememberVideoPlayback"](h.viewerLeaf);
+		expect(h.plugin.settings.videoPlayback[h.file.path]).toEqual({ videoId: "abc", seconds: 123.75 });
+	});
+
+	it("transcript Play asks before resuming when reusing another note's video pane", async () => {
+		const h = await harness();
+		const viewer = h.viewerLeaf.view;
+		if (!(viewer instanceof VideoView)) throw new Error("Expected a video viewer.");
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(viewer, { filePath: "other.md" });
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		h.plugin.settings.videoPlayback[h.file.path] = { videoId: "dQw4w9WgXcQ", seconds: 123.75 };
+		const switchPlayer = vi.fn().mockResolvedValue(undefined);
+		Object.assign(h.plugin, { switchPlayer });
+		const play = vi.spyOn(viewer, "togglePlay").mockImplementation(() => {});
+		await h.plugin["runTranscriptControl"](h.file as TFile, "play");
+		expect(switchPlayer).toHaveBeenCalledWith(
+			expect.objectContaining({ leaf: h.viewerLeaf }), h.file, "dQw4w9WgXcQ", 0, false, 123.75);
+		expect(play).toHaveBeenCalledOnce();
 	});
 
 	it("opens both missing panes and leaves the note ready for typing", async () => {

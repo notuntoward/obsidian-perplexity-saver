@@ -8,6 +8,7 @@ const files = [
 	"src/main.ts",
 	"src/litNote/transcriptView.ts",
 	"src/litNote/transcriptFolding.ts",
+	"src/litNote/captionTiming.ts",
 ];
 const FORBIDDEN = /(?<![\w.$])(document|window|navigator|activeDocument|activeWindow)\s*\.(?!\s*implementation)/;
 

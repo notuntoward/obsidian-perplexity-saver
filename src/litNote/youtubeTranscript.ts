@@ -262,7 +262,7 @@ export function formatNativeTranscript(lines: TranscriptLine[], url: string, lan
 }
 
 /**
- * Group transcript lines into timestamped blocks every `timestampMod` lines.
+ * Reproduce legacy timestamped blocks for compatibility checks.
  */
 export function getTranscriptBlocks(
 	lines: TranscriptLine[],
@@ -312,16 +312,6 @@ export function formatTranscript(
 		})
 		.join("\n");
 }
-
-/**
- * How a downloaded transcript is written into the note:
- * - "cues": one line per caption cue with millisecond start and end times (lossless),
- *   shown as a short `m:ss` link with the exact times in the link title.
- * - "blocks": one line per `timestampMod` cues with only a whole-second start time.
- */
-export type TranscriptFormat = "cues" | "blocks";
-
-export const DEFAULT_TRANSCRIPT_FORMAT: TranscriptFormat = "cues";
 
 /** Separator between the start and end time of a cue in the older `[mm:ss.mmm → mm:ss.mmm]` format. */
 export const CUE_TIME_SEPARATOR = " → ";
@@ -482,11 +472,9 @@ export async function fetchYouTubeCaptions(
 
 export async function downloadYouTubeTranscript(
 	url: string,
-	options: { lang?: string; country?: string; timestampMod?: number; format?: TranscriptFormat } = {}
+	options: { lang?: string; country?: string } = {}
 ): Promise<string | null> {
 	const captions = await fetchYouTubeCaptions(url, options);
 	if (!captions) return null;
-	return (options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues"
-		? formatNativeTranscript(captions.lines, url, captions.language)
-		: withTranscriptLanguage(formatTranscript(captions.lines, url, options.timestampMod ?? 5), captions.language);
+	return formatNativeTranscript(captions.lines, url, captions.language);
 }

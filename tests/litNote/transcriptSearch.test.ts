@@ -115,6 +115,22 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("transcript reading formats and saved timing", () => {
+	it.each([false, true])("keeps the existing More repair action available without a settings opt-in or added button (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const align = vi.fn(async () => {});
+		const view = await panel(doc, { alignTranscript: align }, undefined, "abcdefghijk",
+			"# Transcript\n[0:12](https://youtu.be/abcdefghijk?t=12) We left. We stayed.\n");
+		expect(Array.from(view.contentEl.querySelectorAll("button")).some((button) => button.textContent === "Update transcript timing")).toBe(false);
+		view.contentEl.querySelector<HTMLElement>('[aria-label="More transcript options"]')!.click();
+		const repair = menuChoices.find((item) => item.title === "Get timings");
+		expect(repair).toBeDefined();
+		expect(align).not.toHaveBeenCalled();
+		repair!.run!();
+		expect(align).toHaveBeenCalledOnce();
+		expect(align).toHaveBeenCalledWith("note.md");
+	});
+
 	it.each([false, true])("keeps paragraph prose quiet and captures the selected sentence, not playback (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
@@ -215,7 +231,7 @@ describe("transcript reading formats and saved timing", () => {
 			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
 			words: [[0, null, null], null, [2, null, null], null],
 		};
-		const view = await panel(doc, { getAlignmentEnabled: () => false }, undefined, "abcdefghijk",
+		const view = await panel(doc, {}, undefined, "abcdefghijk",
 			"# Transcript" + writeInlineTimings(section, timings));
 		const select = view.contentEl.querySelector("select")!;
 		expect(Array.from(select.options, (option) => option.text)).toEqual(["Paragraphs", "Sentences", "Captions"]);
@@ -306,7 +322,7 @@ describe("transcript reading formats and saved timing", () => {
 				words: [[0, null, null], null, [2, null, null], null],
 			};
 			const align = vi.fn(async () => {});
-			const view = await panel(doc, { getAlignmentEnabled: () => timed, alignTranscript: align },
+			const view = await panel(doc, { alignTranscript: align },
 				undefined, "abcdefghijk", "# Transcript" + (timed ? writeInlineTimings(section, timings) : section));
 			const select = view.contentEl.querySelector("select")!;
 			expect(select).not.toBeNull();
@@ -350,7 +366,7 @@ describe("transcript reading formats and saved timing", () => {
 			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
 			words: [[0, null, null], null, [2, null, null], null],
 		};
-		const view = await panel(doc, { getAlignmentEnabled: () => true }, undefined, "abcdefghijk", "# Transcript" + section);
+		const view = await panel(doc, {}, undefined, "abcdefghijk", "# Transcript" + section);
 		const select = view.contentEl.querySelector("select")!;
 		select.value = "readable-paragraphs";
 		select.dispatchEvent(new Event("change"));
@@ -377,7 +393,7 @@ describe("transcript reading formats and saved timing", () => {
 			words: [[0, null, null], null, [2, null, null], null],
 		};
 		const align = vi.fn(async () => {});
-		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align },
+		const view = await panel(doc, { alignTranscript: align },
 			undefined, "abcdefghijk", "# Transcript" + writeInlineTimings(section, timings));
 		expect(view.contentEl.textContent).not.toContain("Time words");
 		expect(view.contentEl.textContent).not.toContain("Compact saved timings");
@@ -396,7 +412,7 @@ describe("transcript reading formats and saved timing", () => {
 	});
 
 	it("anchors toolbar sentence comparisons to visible text after scrolling", async () => {
-		const view = await panel(document, { getAlignmentEnabled: () => true });
+		const view = await panel(document);
 		vi.spyOn(view.app.vault, "cachedRead").mockResolvedValue("# Transcript\n" +
 			["Start.", "Target first.", "Context.", "Target last."].map((text, i) =>
 				`[00:0${i}](https://youtu.be/abc?t=${i}) ${text}\n`).join(""));
@@ -436,7 +452,7 @@ describe("transcript reading formats and saved timing", () => {
 			words: transcript.words.map((_, i) => i === 0 ? [0, null, null] : [i, 0.5 + i, 0.9]),
 		};
 		const align = vi.fn(async () => {});
-		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align }, cache, "abcdefghijk");
+		const view = await panel(doc, { alignTranscript: align }, cache, "abcdefghijk");
 		expect(view.contentEl.querySelector('option[value="aligned-sentences"]')).toBeNull();
 		const select = view.contentEl.querySelector("select")!;
 		select.value = "sentences";

@@ -35,6 +35,7 @@ import { prepareTranscript, sentenceRows } from "./transcriptSentences";
 import { formatShortTimestamp } from "./youtubeTranscript";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
 import { readInlineTimings } from "./transcriptTimingStorage";
+import { needsCaptionTimingRepair } from "./captionTiming";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
 
@@ -181,7 +182,6 @@ export function hiddenTranscriptNavigationRows(app: App, file: TFile, lines: Sto
 export interface TranscriptViewHost {
 	getHeadingName(): string;
 	getSearchSettings(): TranscriptSearchSettings;
-	getAlignmentEnabled?(): boolean;
 	paragraphWarnings?: Set<string>;
 	insertTimestampAt?(filePath: string, url: string, seconds: number): Promise<void>;
 	alignTranscript?(filePath: string): Promise<void>;
@@ -800,7 +800,6 @@ export class TranscriptView extends ItemView {
 	}
 
 	private render(): void {
-		const alignmentEnabled = this.host.getAlignmentEnabled?.() ?? false;
 		this.mode = readingMode(this.mode);
 		const el = this.contentEl;
 		const input = this.search?.inputEl;
@@ -945,7 +944,7 @@ export class TranscriptView extends ItemView {
 			menu.addItem((item) => item.setTitle("Transcript details").onClick(() => { new Notice(`${details}. ${this.alignmentStatus}`, 12000); }));
 			if (this.aligning) {
 				menu.addItem((item) => item.setTitle("Cancel caption timing").onClick(() => this.host.cancelAlignment?.()));
-			} else if (this.host.alignTranscript && (this.needsTimingMigration || (alignmentEnabled && !this.alignmentCache))) {
+			} else if (this.host.alignTranscript && (this.needsTimingMigration || needsCaptionTimingRepair(lines, this.alignmentCache))) {
 				menu.addItem((item) => item.setTitle(this.needsTimingMigration ? "Compact saved timings" : "Get timings")
 					.onClick(() => this.saveCaptionTimings()));
 			}

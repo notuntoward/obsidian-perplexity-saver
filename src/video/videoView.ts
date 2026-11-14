@@ -57,6 +57,7 @@ interface VideoViewState {
 	file?: string | null;
 	time?: number;
 	autoplay?: boolean;
+	resumeAt?: number;
 }
 
 export interface VideoViewHost {
@@ -84,6 +85,7 @@ export class VideoView extends ItemView {
 	private videoId: string | null = null;
 	private filePath: string | null = null;
 	private startTime = 0;
+	private resumeAt: number | null = null;
 	private player: YouTubeEmbed | null = null;
 	private lastReportedPlayerState: number | null = null;
 	private playbackRevision = 0;
@@ -154,7 +156,7 @@ export class VideoView extends ItemView {
 
 	async onClose(): Promise<void> {
 		this.playbackRevision++;
-		if (this.videoId) this.host.rememberPlayback?.(this.videoId, this.filePath, this.getPlaybackSeconds());
+		if (this.videoId) this.host.rememberPlayback?.(this.videoId, this.filePath, this.getBookmarkSeconds());
 		this.player?.destroy();
 		this.player = null;
 	}
@@ -183,7 +185,7 @@ export class VideoView extends ItemView {
 		const s = (state ?? {}) as VideoViewState;
 		await super.setState(state, result);
 		if (typeof s.videoId === "string") {
-			this.showVideo(s.videoId, typeof s.time === "number" ? s.time : 0, s.file ?? null, s.autoplay === true);
+			this.showVideo(s.videoId, typeof s.time === "number" ? s.time : 0, s.file ?? null, s.autoplay === true, s.resumeAt);
 		}
 	}
 
@@ -193,6 +195,7 @@ export class VideoView extends ItemView {
 			videoId: this.videoId,
 			file: this.filePath,
 			time: Math.floor(this.player?.info.currentTime ?? this.startTime),
+			...(this.resumeAt !== null ? { resumeAt: this.resumeAt } : {}),
 		};
 	}
 
@@ -210,11 +213,18 @@ export class VideoView extends ItemView {
 		return this.player?.info.currentTime ?? this.startTime;
 	}
 
+	/** Closing an unstarted viewer must not erase its unchosen saved position. */
+	getBookmarkSeconds(): number {
+		return this.resumeAt ?? this.getPlaybackSeconds();
+	}
+
 	getPlaybackToken(): { player: object; revision: number } | null {
 		return this.player ? { player: this.player, revision: this.playbackRevision } : null;
 	}
 
 	seekTo(seconds: number): void {
+		this.resumeAt = null;
+		this.updatePlayButton();
 		this.player?.seekTo(seconds);
 	}
 
@@ -237,7 +247,12 @@ export class VideoView extends ItemView {
 	}
 
 	/** Show `videoId` at `seconds`; seeks without reloading when the video is already loaded. */
-	showVideo(videoId: string, seconds: number, filePath: string | null, autoplay = false): void {
+	showVideo(videoId: string, seconds: number, filePath: string | null, autoplay = false, resumeAt?: number): void {
+		this.resumeAt = typeof resumeAt === "number" && Number.isFinite(resumeAt) && resumeAt > 0 ? resumeAt : null;
+		if (this.resumeAt !== null) {
+			seconds = 0;
+			autoplay = false;
+		}
 		const fileChanged = filePath !== null && filePath !== this.filePath;
 		if (fileChanged || this.videoId !== videoId) {
 			this.playbackRevision++;
@@ -245,6 +260,7 @@ export class VideoView extends ItemView {
 		}
 		if (filePath !== null) this.filePath = filePath;
 		if (this.player && this.videoId === videoId) {
+			if (this.resumeAt !== null) this.player.pause();
 			this.player.seekTo(seconds);
 			if (autoplay) this.player.play();
 		} else {
@@ -252,6 +268,7 @@ export class VideoView extends ItemView {
 			this.startTime = seconds;
 			this.loadPlayer(autoplay);
 		}
+		this.updatePlayButton();
 		if (fileChanged || !this.marks.length) void this.refreshMarks();
 	}
 
@@ -408,7 +425,40 @@ export class VideoView extends ItemView {
 	}
 
 	togglePlay(): void {
-		this.player?.toggle();
+		const player = this.player;
+		const resumeAt = this.resumeAt;
+		if (!player || resumeAt === null) {
+			player?.toggle();
+			return;
+		}
+		const revision = this.playbackRevision;
+		const start = (seconds: number): void => {
+			if (this.player !== player || this.playbackRevision !== revision || this.resumeAt !== resumeAt) {
+				new Notice("Playback changed. Use the current playback controls.");
+				return;
+			}
+			this.seekTo(seconds);
+			player.play();
+		};
+		const menu = new Menu();
+		menu.addItem((item) => item.setTitle(`Resume at ${formatClock(resumeAt)}`).setIcon("play").onClick(() => start(resumeAt)));
+		menu.addItem((item) => item.setTitle("Start from beginning").setIcon("rotate-ccw").onClick(() => start(0)));
+		const rect = this.playBtn.getBoundingClientRect();
+		menu.showAtPosition({ x: rect.left, y: rect.bottom }, this.playBtn.ownerDocument);
+	}
+
+	private updatePlayButton(playing = this.isPlaying()): void {
+		if (!this.playBtn) return;
+		this.playBtn.empty();
+		setIcon(this.playBtn, playing ? "pause" : "play");
+		if (this.resumeAt !== null) {
+			this.playBtn.createSpan({ text: "Play..." });
+			this.playBtn.setAttribute("aria-label", `Choose resume at ${formatClock(this.resumeAt)} or start from beginning`);
+			this.playBtn.setAttribute("aria-haspopup", "menu");
+		} else {
+			this.playBtn.setAttribute("aria-label", playing ? "Pause (space)" : "Play (space)");
+			this.playBtn.removeAttribute("aria-haspopup");
+		}
 	}
 
 	/** Pause without moving focus; used by note-taking commands outside the viewer. */
@@ -576,8 +626,9 @@ export class VideoView extends ItemView {
 		this.trackEl.setAttribute("aria-valuenow", String(Math.floor(info.currentTime)));
 		this.trackEl.setAttribute("aria-valuetext", this.timeEl.getText());
 		const playing = info.playerState === PLAYER_STATE.playing || info.playerState === PLAYER_STATE.buffering;
-		setIcon(this.playBtn, playing ? "pause" : "play");
-		this.playBtn.setAttr("aria-label", playing ? "Pause (space)" : "Play (space)");
+		// Direct use of the embedded player also resolves the start choice.
+		if (info.playerState === PLAYER_STATE.playing) this.resumeAt = null;
+		this.updatePlayButton(playing);
 		if (info.playbackRate !== this.rate && PLAYBACK_RATES.includes(info.playbackRate)) {
 			this.showRate(info.playbackRate);
 		}
@@ -591,7 +642,7 @@ export class VideoView extends ItemView {
 
 	/** Jump `delta` seconds forward (negative: back). */
 	skip(delta: number): void {
-		if (this.player) this.player.seekTo(this.player.info.currentTime + delta);
+		if (this.player) this.seekTo(this.player.info.currentTime + delta);
 	}
 
 	/** Re-read the user's own timestamp links (outside the transcript) for the timeline. */
@@ -644,12 +695,12 @@ export class VideoView extends ItemView {
 			if (Number.isNaN(t) || !this.player) return;
 			dragging = true;
 			track.setPointerCapture(evt.pointerId);
-			this.player.seekTo(snapToMark(t));
+			this.seekTo(snapToMark(t));
 		});
 		track.addEventListener("pointermove", (evt) => {
 			const t = timeAt(evt);
 			if (!Number.isNaN(t)) track.setAttr("aria-label", formatClock(snapToMark(t)));
-			if (dragging && !Number.isNaN(t)) this.player?.seekTo(t);
+			if (dragging && !Number.isNaN(t)) this.seekTo(t);
 		});
 		const stop = (evt: PointerEvent): void => {
 			if (!dragging) return;
@@ -696,7 +747,7 @@ export class VideoView extends ItemView {
 			down = null;
 			overlay.removeClass("is-panning");
 			if (overlay.hasPointerCapture(evt.pointerId)) overlay.releasePointerCapture(evt.pointerId);
-			if (clicked) this.player?.toggle();
+			if (clicked) this.togglePlay();
 		};
 		overlay.addEventListener("pointerup", (evt) => finish(evt, false));
 		overlay.addEventListener("pointercancel", (evt) => finish(evt, true));
@@ -742,8 +793,8 @@ export class VideoView extends ItemView {
 			ArrowDown: () => this.skip(-ARROW_SECONDS),
 			PageUp: () => this.skip(PAGE_SECONDS),
 			PageDown: () => this.skip(-PAGE_SECONDS),
-			Home: () => player.seekTo(0),
-			End: () => player.seekTo(Math.max(0, player.info.duration - 1)),
+			Home: () => this.seekTo(0),
+			End: () => this.seekTo(Math.max(0, player.info.duration - 1)),
 			"[": () => this.host.jumpToTranscriptTimestamp(this, -1),
 			"]": () => this.host.jumpToTranscriptTimestamp(this, 1),
 			">": () => this.stepRate(1),
@@ -989,6 +1040,7 @@ export async function openVideoViewer(
 		seconds: number;
 		sourcePath: string | null;
 		autoplay?: boolean;
+		resumeAt?: number;
 		associatedOnly?: boolean;
 		/** Reuse this specific player (the session's player) rather than any other. */
 		preferLeaf?: WorkspaceLeaf | null;
@@ -1014,7 +1066,8 @@ export async function openVideoViewer(
 			await existing.setViewState({
 				type: VIDEO_VIEW_TYPE,
 				active: false,
-				state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay },
+				state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay,
+					...(request.resumeAt !== undefined ? { resumeAt: request.resumeAt } : {}) },
 			});
 			return existing;
 		}
@@ -1029,7 +1082,8 @@ export async function openVideoViewer(
 		await leaf.setViewState({
 			type: VIDEO_VIEW_TYPE,
 			active: false,
-			state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay },
+			state: { videoId: request.videoId, time: request.seconds, file: request.sourcePath, autoplay,
+				...(request.resumeAt !== undefined ? { resumeAt: request.resumeAt } : {}) },
 		});
 	} catch (error) {
 		leaf.detach();

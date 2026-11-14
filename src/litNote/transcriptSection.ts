@@ -2,11 +2,11 @@
  * Locating and parsing the stored YouTube transcript inside a literature note.
  *
  * The transcript is written by `buildLitNoteBody` under a level-1 heading whose
- * text is the `transcriptHeading` setting, one line per caption cue (default)
- * or one line per block of cues:
+ * text is the `transcriptHeading` setting, one line per caption cue:
  *   [m:ss](https://youtu.be/ID?t=SECONDS "START–END") caption text
  * Optional word timings append `; w=...` to that title, with one version/hash
  * comment for the section. A start-only title keeps legacy block text escaping.
+ * Legacy block notes contain only whole-second starts:
  *   [mm:ss](https://youtube.com/watch?v=ID&t=SECONDS) caption text ...
  * Notes written by earlier versions may use per-cue lines of the form
  *   [mm:ss.mmm → mm:ss.mmm](https://youtube.com/watch?v=ID&t=SECONDS) caption text

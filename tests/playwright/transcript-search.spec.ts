@@ -173,6 +173,22 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 		expect(await page.locator("#video").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 		expect(await page.locator("#video").evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
 		await page.getByRole("button", { name: "Close video keyboard help" }).click();
+		await page.evaluate(() => {
+			const video = (globalThis as unknown as {
+				videoView: { resumeAt: number; update(info: object): void };
+			}).videoView;
+			video.resumeAt = 7954;
+			video.update({ currentTime: 0, duration: 9956, playbackRate: 1.75, playerState: 2 });
+		});
+		const startButton = page.getByRole("button", { name: "Choose resume at 2:12:34 or start from beginning" });
+		await expect(startButton).toHaveText("Play...");
+		await expect(startButton).toHaveAttribute("aria-haspopup", "menu");
+		expect(await page.locator("#video").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+		const startTops = await page.locator('#video [data-group="transport"] > button').evaluateAll(
+			buttons => buttons.map(el => el.getBoundingClientRect().top));
+		expect(Math.max(...startTops) - Math.min(...startTops)).toBeLessThanOrEqual(1);
+		await page.evaluate(() => (globalThis as unknown as { videoView: { seekTo(seconds: number): void } }).videoView.seekTo(0));
+		await expect(page.getByRole("button", { name: "Play (space)", exact: true })).not.toHaveText("Play...");
 	}
 	await page.locator("#transcript select").selectOption("sentences");
 	await expect(page.locator("#transcript .perplexity-saver-transcript-row")).toHaveCount(40);

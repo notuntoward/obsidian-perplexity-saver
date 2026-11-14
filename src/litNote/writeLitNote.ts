@@ -6,7 +6,6 @@ import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { findLitNoteFile } from "./litNoteFinder";
 import { downloadYouTubeTranscript, getYouTubeUrlFromItem } from "./youtubeTranscript";
-import type { TranscriptFormat } from "./youtubeTranscript";
 
 import type { NameStyle } from "./bibtexName";
 
@@ -16,7 +15,6 @@ export interface LitNoteWriterSettings {
 	authorDropVon?: boolean;
 	downloadYoutubeTranscripts?: boolean;
 	transcriptHeading?: string;
-	transcriptFormat?: TranscriptFormat;
 }
 
 /**
@@ -195,7 +193,7 @@ export async function writeNote(
 		const ytUrl = getYouTubeUrlFromItem(item);
 		if (ytUrl) {
 			try {
-				const fetched = await downloadYouTubeTranscript(ytUrl, { format: settings.transcriptFormat });
+				const fetched = await downloadYouTubeTranscript(ytUrl);
 				if (fetched) {
 					transcript = fetched;
 				} else {

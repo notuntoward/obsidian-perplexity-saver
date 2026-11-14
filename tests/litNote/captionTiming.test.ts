@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { App, TFile } from "obsidian";
+import type { App, Plugin, TFile } from "obsidian";
 import { getFrontMatterInfo } from "obsidian";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
-import { runCaptionTiming } from "../../src/litNote/captionTiming";
+import { registerCaptionTimingRepair, runCaptionTiming } from "../../src/litNote/captionTiming";
 import { fetchYouTubeCaptions } from "../../src/litNote/youtubeTranscript";
 import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
 import { prepareTranscript } from "../../src/litNote/transcriptSentences";
@@ -61,6 +61,141 @@ beforeEach(() => {
 });
 
 describe("native caption timing consent and safe persistence", () => {
+	function openingWatcher() {
+		const events = new Map<string, (file: TFile | null) => void>();
+		let active: TFile | null = file;
+		let ready!: () => void;
+		let cleanup!: () => void;
+		Object.assign(app, { workspace: {
+			getActiveFile: () => active,
+			on: (name: string, callback: (file: TFile | null) => void) => { events.set(name, callback); return {}; },
+			onLayoutReady: (callback: () => void) => { ready = callback; },
+		} });
+		Object.assign(app.metadataCache, { on: (name: string, callback: (file: TFile | null) => void) => {
+			events.set(`metadata-${name}`, callback);
+			return {};
+		} });
+		const plugin = { app, registerEvent: vi.fn(), register: (callback: () => void) => { cleanup = callback; } } as unknown as Plugin;
+		const repair = vi.fn(async (target: TFile) => { await runCaptionTiming(app, target, "Transcript"); });
+		registerCaptionTimingRepair(plugin, () => "Transcript", repair);
+		return { events, ready, cleanup, repair, activate: (target: TFile | null) => { active = target; } };
+	}
+
+	it("offers repair for a restored untimed note without downloading or writing before consent, once per source per session", async () => {
+		vi.mocked(askNoteDecision).mockResolvedValue("cancel");
+		const watcher = openingWatcher();
+		watcher.ready();
+		await vi.waitFor(() => expect(askNoteDecision).toHaveBeenCalledOnce());
+		expect(askNoteDecision).toHaveBeenCalledWith(app, "Transcript timing needs repair",
+			expect.stringContaining("Sentence timestamps may repeat or be inaccurate"), [
+				{ label: "Redownload transcript", value: "create", cta: true },
+				{ label: "Cancel", value: "cancel" },
+			]);
+		watcher.events.get("file-open")!(file);
+		watcher.events.get("metadata-changed")!(file);
+		await Promise.resolve();
+		expect(watcher.repair).toHaveBeenCalledOnce();
+		expect(fetchYouTubeCaptions).not.toHaveBeenCalled();
+		expect(app.vault.process).not.toHaveBeenCalled();
+	});
+
+	it("waits for headings after file-open and offers repair once metadata becomes available", async () => {
+		vi.mocked(askNoteDecision).mockResolvedValue("cancel");
+		const original = app.metadataCache.getFileCache;
+		vi.spyOn(app.metadataCache, "getFileCache").mockReturnValueOnce(null);
+		const watcher = openingWatcher();
+		watcher.events.get("file-open")!(file);
+		await vi.waitFor(() => expect(app.metadataCache.getFileCache).toHaveBeenCalledOnce());
+		expect(watcher.repair).not.toHaveBeenCalled();
+		vi.mocked(app.metadataCache.getFileCache).mockImplementation(original);
+		watcher.events.get("metadata-changed")!(file);
+		await vi.waitFor(() => expect(watcher.repair).toHaveBeenCalledOnce());
+	});
+
+	it("does not warn for saved native or legacy acoustic timings, unrelated notes, or a note left during the read", async () => {
+		await runCaptionTiming(app, file, "Transcript");
+		vi.mocked(askNoteDecision).mockClear();
+		const watcher = openingWatcher();
+		watcher.ready();
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+		body = '# Transcript\n[0:21](https://youtu.be/abcdefghijk?t=21 "21-30") We left. We stayed.\n';
+		frontmatter.whisperx_transcript = cacheForTest();
+		watcher.events.get("file-open")!(file);
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+		delete frontmatter.whisperx_transcript;
+		body = "# Summary\nNo transcript here.\n";
+		watcher.events.get("file-open")!(file);
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+		body = "# Transcript\n[0:00](https://youtu.be/abcdefghijk?t=0) Old blocks.\n";
+		watcher.events.get("file-open")!(file);
+		watcher.activate(null);
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+		expect(askNoteDecision).not.toHaveBeenCalled();
+	});
+
+	it("stops a pending opening check when the plugin unloads", async () => {
+		const watcher = openingWatcher();
+		watcher.ready();
+		watcher.cleanup();
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+	});
+
+	it("offers repair when an already-cached note becomes active after file-open", async () => {
+		vi.mocked(askNoteDecision).mockResolvedValue("cancel");
+		const watcher = openingWatcher();
+		watcher.activate(null);
+		watcher.events.get("file-open")!(file);
+		await Promise.resolve();
+		expect(watcher.repair).not.toHaveBeenCalled();
+		watcher.activate(file);
+		watcher.events.get("active-leaf-change")!(null);
+		await vi.waitFor(() => expect(watcher.repair).toHaveBeenCalledOnce());
+	});
+
+	it("offers a confirmed refresh for malformed saved timing without modifying the note on cancel", async () => {
+		frontmatter.whisperx_transcript = { version: 2, paddingSeconds: 0,
+			sourceHash: prepareTranscript(parseStoredTranscript(body)).hash, engine: "invalid" };
+		const originalBody = body;
+		const originalCache = frontmatter.whisperx_transcript;
+		vi.mocked(askNoteDecision).mockResolvedValue("cancel");
+		const watcher = openingWatcher();
+		watcher.ready();
+		await vi.waitFor(() => expect(askNoteDecision).toHaveBeenCalledOnce());
+		expect(body).toBe(originalBody);
+		expect(frontmatter.whisperx_transcript).toBe(originalCache);
+		expect(fetchYouTubeCaptions).not.toHaveBeenCalled();
+		expect(app.vault.process).not.toHaveBeenCalled();
+	});
+
+	it("redownloads a legacy block into native captions after accepting the opening popup, preserving other content", async () => {
+		const prefix = "# Summary\nMy summary.\n\n";
+		const suffix = "\n# Notes\nMy own notes.\n";
+		body = prefix + "# Transcript\n[0:21](https://youtu.be/abcdefghijk?t=21) We left. We stayed.\n" + suffix;
+		vi.mocked(fetchYouTubeCaptions).mockResolvedValueOnce({
+			language: "en", lines: [
+				{ offset: 21050, duration: 3000, text: "We left.", wordStarts: [21050, 21550] },
+				{ offset: 25550, duration: 5000, text: "We stayed.", wordStarts: [25550, 26150] },
+			],
+		});
+		const watcher = openingWatcher();
+		watcher.ready();
+		await vi.waitFor(() => expect(app.vault.process).toHaveBeenCalledOnce());
+		const prepared = prepareTranscript(parseStoredTranscript(body.slice(prefix.length, -suffix.length)));
+		expect(prepared.lines.map(({ startSec, endSec }) => ({ startSec, endSec })))
+			.toEqual([{ startSec: 21.05, endSec: 24.05 }, { startSec: 25.55, endSec: 30.55 }]);
+		expect(readInlineTimings(prepared)?.words).toEqual([[21.05, null, null], [21.55, null, null], [25.55, null, null], [26.15, null, null]]);
+		expect(body.startsWith(prefix)).toBe(true);
+		expect(body.endsWith(suffix)).toBe(true);
+		expect(frontmatter).toEqual({ title: "Keep me" });
+		expect(askNoteDecision).toHaveBeenCalledOnce();
+		expect(fetchYouTubeCaptions).toHaveBeenCalledOnce();
+	});
+
 	it("fetches JSON3 once and persists native starts and language without acoustic setup", async () => {
 		await runCaptionTiming(app, file, "Transcript");
 		const prepared = prepareTranscript(parseStoredTranscript(body));

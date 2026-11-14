@@ -14,6 +14,7 @@ import type { ZoteroItemPayload } from "../../src/litNote/types";
 import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
 import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
+import { alignedSentenceRows } from "../../src/litNote/transcriptAlignment";
 
 function makeMockFile(path: string): TFile {
 	return Object.assign(Object.create(TFile.prototype), { path });
@@ -306,7 +307,7 @@ describe("writeLitNote", () => {
 		).toBe(false);
 	});
 
-	it("downloads and inserts YouTube transcript when enabled", async () => {
+	it.each([undefined, "blocks"] as const)("saves native sentence timings when creating a YouTube note, ignoring obsolete format %s", async (transcriptFormat) => {
 		const ytItem: ZoteroItemPayload = {
 			title: "YouTube Lecture",
 			citekey: "ytLecture2024",
@@ -340,7 +341,10 @@ describe("writeLitNote", () => {
 				return Promise.resolve({
 					status: 200,
 					text: JSON.stringify({ events: [
-						{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: "Intro to Physics" }] },
+						{ tStartMs: 12050, dDurationMs: 10000, segs: [
+							{ utf8: "Intro to Physics. " },
+							{ utf8: "Now we begin.", tOffsetMs: 4500 },
+						] },
 					] }),
 				});
 			}
@@ -363,15 +367,19 @@ describe("writeLitNote", () => {
 			},
 		} as unknown as App;
 
-		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true }, ytItem, null);
+		const settings = { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true, transcriptFormat };
+		await writeNote(app, settings, ytItem, null);
 
 		expect(createdContent).toContain("# Transcript");
 		const transcript = prepareTranscript(parseStoredTranscript(createdContent));
 		expect(transcript.lines.map(({ text, startSec, endSec }) => ({ text, startSec, endSec }))).toEqual([
-			{ text: "Intro to Physics", startSec: 0, endSec: 2 },
+			{ text: "Intro to Physics. Now we begin.", startSec: 12.05, endSec: 22.05 },
 		]);
 		expect(transcript.language).toBe("en");
-		expect(readInlineTimings(transcript)?.words).toEqual([[0, null, null], null, null]);
+		const timings = readInlineTimings(transcript)!;
+		expect(timings?.words).toEqual([[12.05, null, null], null, null, [16.55, null, null], null, null]);
+		expect(alignedSentenceRows(transcript, timings).map(({ startSec, timingUncertain }) => ({ startSec, timingUncertain })))
+			.toEqual([{ startSec: 12.05, timingUncertain: false }, { startSec: 16.55, timingUncertain: false }]);
 	});
 
 	it("does not download YouTube transcript when downloadYoutubeTranscripts is false", async () => {

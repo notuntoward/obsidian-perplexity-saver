@@ -218,12 +218,16 @@ describe("youtubeTranscript", () => {
 			expect(requestUrlMock.mock.calls.filter(([opts]) => typeof opts !== "string" && opts.url.includes("timedtext"))
 				.every(([opts]) => typeof opts !== "string" && new URL(opts.url).searchParams.get("fmt") === "json3")).toBe(true);
 
-			const blocks = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
+			const obsoleteOptions = {
 				format: "blocks",
-				timestampMod: 1,
-			});
-			expect(blocks).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello");
-			expect(blocks).toContain("[00:02](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World");
+				timestampMod: 5,
+				lang: "en",
+			} as const;
+			const formerlyLossy = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", obsoleteOptions);
+			const retained = prepareTranscript(parseStoredTranscript(formerlyLossy!));
+			expect(retained.lines.map(({ startSec, endSec }) => ({ startSec, endSec })))
+				.toEqual([{ startSec: 0, endSec: 2 }, { startSec: 2, endSec: 4 }]);
+			expect(readInlineTimings(retained)?.words).toEqual([[0, null, null], [2, null, null]]);
 		});
 
 		it.each([
