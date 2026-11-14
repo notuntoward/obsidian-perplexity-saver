@@ -10,7 +10,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	});
 	await page.setContent(`<style>
 		* { box-sizing: border-box; } body { margin: 0; font: 14px/20px sans-serif; }
-		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --text-selection: rgba(100,80,220,.2); --text-faint: #888; }
+		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --text-selection: rgba(100,80,220,.2); --text-faint: #888; --interactive-accent-hsl: 254, 80%, 68%; --radius-s: 4px; }
 		.view-content { width: 700px; height: 300px; padding: 8px; overflow: auto; }
 		.clickable-icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: 0; }
 		.clickable-icon svg { width: 16px; height: 16px; } select { height: 28px; }
@@ -96,8 +96,25 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	await page.locator("#transcript .perplexity-saver-transcript-row").first().click();
 	await page.evaluate(() => (globalThis as unknown as { transcriptView: { showPlayback(t: number): void } }).transcriptView.showPlayback(4));
 	await expect(page.locator("#transcript .is-selected")).toHaveCount(1);
-	expect(await page.locator("#transcript .perplexity-saver-transcript-row.is-playing").evaluate(el => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
-	expect(await page.locator("#transcript .perplexity-saver-transcript-paragraph.is-playing").evaluate(el => getComputedStyle(el, "::before").width)).toBe("3px");
+	// REGRESSION GUARD: in Paragraphs the playing marker must be visibly painted on the playing SENTENCE, and must
+	// move when the player steps to the next sentence of the same paragraph. A class-only jsdom check cannot see
+	// CSS that hides the marker in this mode, which is how this bug shipped before.
+	const transcriptRowBackgrounds = () => page.locator("#transcript .perplexity-saver-transcript-row").evaluateAll((els) => els.map((el) => ({
+		bg: getComputedStyle(el).backgroundColor, playing: el.classList.contains("is-playing"), selected: el.classList.contains("is-selected"), paragraph: el.parentElement,
+	})).map(({ paragraph, ...rest }, i, all) => ({ ...rest, sameParagraphAsNext: i + 1 < all.length && paragraph === all[i + 1].paragraph })));
+	const unmarked = (await transcriptRowBackgrounds()).find((row) => !row.playing && !row.selected)!.bg;
+	let painted = await transcriptRowBackgrounds();
+	expect(painted[1].playing).toBe(true);
+	expect(painted[1].sameParagraphAsNext).toBe(true);
+	expect(painted[1].bg).not.toBe(unmarked);
+	expect(painted[1].bg).not.toBe(painted[0].bg);
+	await page.evaluate(() => (globalThis as unknown as { transcriptView: { showPlayback(t: number, follow?: boolean, stateChanged?: boolean): void } }).transcriptView.showPlayback(8, true, false));
+	painted = await transcriptRowBackgrounds();
+	expect(painted.filter((row) => row.playing)).toHaveLength(1);
+	expect(painted[2].playing).toBe(true);
+	expect(painted[2].bg).not.toBe(unmarked);
+	expect(painted[1].bg).toBe(unmarked);
+	await expect(page.locator("#transcript .perplexity-saver-transcript-paragraph.is-playing")).toHaveCount(0);
 	for (const width of [240, 320, 700]) {
 		await page.locator(".view-content").evaluateAll((els, w) => els.forEach((el) => { (el as HTMLElement).style.width = w + "px"; }), width);
 		await page.evaluate(() => (globalThis as unknown as { videoView: { onResize(): void } }).videoView.onResize());
@@ -126,6 +143,24 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	await expect(page.locator("#transcript .perplexity-saver-transcript-row")).toHaveCount(40);
 	await page.locator("#transcript select").selectOption("readable-paragraphs");
 	await expect(page.locator("#transcript .perplexity-saver-transcript-row")).toHaveCount(40);
+	// REGRESSION GUARD: with Follow on, a format switch must show the playing sentence immediately, in real layout,
+	// without waiting for the next playback update (no showPlayback call between the switch and the check).
+	await page.getByRole("button", { name: "Follow video", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveAttribute("aria-pressed", "true");
+	await page.evaluate(() => (globalThis as unknown as { transcriptView: { showPlayback(t: number, follow?: boolean, stateChanged?: boolean): void } }).transcriptView.showPlayback(130, true, false));
+	const playingInView = () => page.locator("#transcript").evaluate((box) => {
+		const playing = box.querySelectorAll(".perplexity-saver-transcript-row.is-playing");
+		const header = box.querySelector(".perplexity-saver-transcript-header")!.getBoundingClientRect();
+		const view = box.getBoundingClientRect();
+		const row = playing[0]?.getBoundingClientRect();
+		return { count: playing.length, inView: !!row && row.top >= header.bottom - 1 && row.bottom <= view.bottom + 1 };
+	});
+	for (const mode of ["sentences", "readable-paragraphs", "lines", "readable-paragraphs"]) {
+		// Park the list at the top so the old "first row on screen" anchor would be far from the playing row.
+		await page.locator("#transcript").evaluate((box) => { box.scrollTop = 0; });
+		await page.locator("#transcript select").selectOption(mode);
+		expect(await playingInView(), mode).toEqual({ count: 1, inView: true });
+	}
 	const close = page.locator(".perplexity-saver-transcript-close");
 	await expect(close).toBeVisible();
 	await page.locator("#transcript").evaluate(el => el.classList.add("show-pane-chrome"));

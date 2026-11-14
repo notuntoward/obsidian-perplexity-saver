@@ -164,6 +164,19 @@ export function transcriptRows(
 	}));
 }
 
+/** What the video's next/previous controls step through with no transcript panel open: sentences, or captions when the transcript has no sentence boundaries. */
+export function hiddenTranscriptNavigationRows(app: App, file: TFile, lines: StoredTranscriptLine[]): TranscriptRow[] {
+	if (!lines.length) return [];
+	const transcript = prepareTranscript(lines);
+	let timings: WordTimings | null = null;
+	try {
+		timings = readInlineTimings(transcript) ?? readAlignmentCache(app.metadataCache.getFileCache(file)?.frontmatter?.[ALIGNMENT_CACHE_KEY], transcript);
+	} catch {
+		// Stale or invalid saved timings: use caption-based sentence starts.
+	}
+	return transcriptRows(lines, "readable-paragraphs", timings);
+}
+
 /** What the transcript panel needs from the plugin. */
 export interface TranscriptViewHost {
 	getHeadingName(): string;
@@ -588,15 +601,20 @@ export class TranscriptView extends ItemView {
 			resumed = playing && !this.lastPlaying;
 			this.lastPlaying = playing;
 			this.refreshPlaybackControls(playing);
+			if (resumed) this.dropSelection();
 		}
 		const idx = seconds === null ? -1 : currentRowIndex(this.rowStarts, seconds);
 		const changed = idx !== this.currentRow;
 		if (changed) {
 			this.rendered[this.currentRow]?.el.removeClass("is-playing");
-			this.rendered[this.currentRow]?.el.closest(".perplexity-saver-transcript-paragraph")?.classList.remove("is-playing");
 			this.currentRow = idx;
 			this.rendered[idx]?.el.addClass("is-playing");
-			this.rendered[idx]?.el.closest(".perplexity-saver-transcript-paragraph")?.classList.add("is-playing");
+			// While following, the keyboard cursor rides with playback so its focus ring is not left behind as a second mark.
+			if (this.isFollowing() && this.rendered[idx]) {
+				const hadFocus = this.focusedRowIndex() >= 0;
+				this.setFocusRow(idx);
+				if (hadFocus) this.rendered[idx].el.focus({ preventScroll: true });
+			}
 		}
 		const current = this.rendered[idx];
 		if (!current) {
@@ -612,6 +630,22 @@ export class TranscriptView extends ItemView {
 			this.scrollToRow(current.el, true);
 		}
 		this.retryReveal();
+	}
+
+	private isFollowing(): boolean {
+		return this.follow && !this.followingPaused && !this.query.trim();
+	}
+
+	/**
+	 * A selection marks the row the user is browsing, so it exists only while following
+	 * is paused or off. Anything that hands the transcript back to playback (playing
+	 * from a row, resuming playback, turning Follow back on) calls this; otherwise the
+	 * panel shows the selected row and the playing row as two marks.
+	 */
+	private dropSelection(): void {
+		if (this.selectedSourceStart === null) return;
+		this.selectedSourceStart = null;
+		this.updateSelection();
 	}
 
 	private pauseFollowing(): void {
@@ -688,9 +722,12 @@ export class TranscriptView extends ItemView {
 	}
 
 	private setMode(mode: TranscriptViewMode): void {
+		// While following, the playing row is the reading position; otherwise keep the row the user is reading.
+		const following = this.isFollowing() && this.rendered[this.currentRow] !== undefined;
 		const { visible, onScreen } = this.visibleRows();
 		const focused = this.focusedRowIndex();
-		const row = this.rendered[onScreen.includes(focused) ? focused : onScreen[0] ?? visible[0] ?? -1];
+		const row = following ? this.rendered[this.currentRow]
+			: this.rendered[onScreen.includes(focused) ? focused : onScreen[0] ?? visible[0] ?? -1];
 		const anchor = row?.row.startSec ?? this.playbackSec;
 		const source = row?.row.sourceStart;
 		const previous = this.comparisonSourceStart;
@@ -699,7 +736,12 @@ export class TranscriptView extends ItemView {
 		const hadFocus = this.focusedRowIndex() >= 0;
 		this.mode = readingMode(mode);
 		this.render();
-		if (anchor !== null && anchor !== undefined) {
+		const playing = this.rendered[this.currentRow];
+		if (following && playing) {
+			this.setFocusRow(this.currentRow);
+			this.scrollToRow(playing.el, false, false);
+			if (hadFocus) playing.el.focus({ preventScroll: true });
+		} else if (anchor !== null && anchor !== undefined) {
 			const index = this.comparisonSourceStart === null ? currentRowIndex(this.rowStarts, anchor)
 				: currentRowIndex(this.rendered.map((entry) => entry.row.sourceStart ?? 0), this.comparisonSourceStart);
 			if (index >= 0) {
@@ -805,6 +847,7 @@ export class TranscriptView extends ItemView {
 			this.followOverride = !this.follow || this.followingPaused;
 			this.follow = this.followOverride;
 			this.followingPaused = !this.follow;
+			if (this.follow) this.dropSelection();
 			this.revealSeconds = null;
 			this.updateFollowButton();
 			if (this.follow) this.revealPlayingPassage();
@@ -1208,6 +1251,7 @@ export class TranscriptView extends ItemView {
 		this.followOverride = source.followOverride;
 		this.follow = source.follow;
 		this.followingPaused = source.followingPaused;
+		this.lastPlaying = source.lastPlaying;
 		this.render();
 		const playback = source.backgroundPlayback;
 		if (playback) {
@@ -1246,7 +1290,12 @@ export class TranscriptView extends ItemView {
 
 	private playRow(index: number, play: boolean): void {
 		const r = this.rendered[index];
-		if (r && this.filePath) this.host.playAt(this.filePath, r.row.url, r.row.startSec, play);
+		if (!r || !this.filePath) return;
+		// Playback takes over from the chosen row: its playing marker replaces the selection, and following resumes there.
+		this.dropSelection();
+		this.followingPaused = false;
+		this.updateFollowButton();
+		this.host.playAt(this.filePath, r.row.url, r.row.startSec, play);
 	}
 
 	/** Move keyboard focus to the lines: the selected match, else the playing line, else the first line on screen (the search box when there are none). */

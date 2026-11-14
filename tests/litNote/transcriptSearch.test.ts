@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
-import { transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
+import { hiddenTranscriptNavigationRows, transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
 import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
 import { writeInlineTimings } from "../../src/litNote/transcriptTimingStorage";
@@ -1297,20 +1297,6 @@ describe("transcript search settings", () => {
 		expect(document.activeElement).toBe(rows(view)[3]);
 	});
 
-	it("preserves the playing sentence when switching to paragraph formatting", async () => {
-		const view = await panel();
-		view.showPlayback(2.5);
-		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
-		const scrolled = vi.mocked(HTMLElement.prototype.scrollIntoView);
-		scrolled.mockClear();
-		const format = view.contentEl.querySelector("select")!;
-		format.value = "readable-paragraphs";
-		format.dispatchEvent(new Event("change"));
-		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row.is-playing")).toHaveLength(1);
-		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
-		expect(scrolled).toHaveBeenCalled();
-	});
-
 	it("accepts a search after paragraph formatting without playing", async () => {
 		const view = await panel();
 		const format = view.contentEl.querySelector("select")!;
@@ -1321,5 +1307,250 @@ describe("transcript search settings", () => {
 		expect(input.value).toBe("");
 		expect(document.activeElement).toBe(rows(view)[1]);
 		expect(play).not.toHaveBeenCalled();
+	});
+});
+
+/*
+ * REGRESSION GUARD for the transcript playing marker. These bugs have come back
+ * several times; read this before changing setMode, showPlayback, render or the
+ * .is-playing CSS.
+ *
+ * Contract:
+ * 1. With Follow on, switching format (Sentences <-> Paragraphs <-> Captions)
+ *    must leave exactly the playing row marked AND make it the LAST row the panel
+ *    scrolls to, immediately, without waiting for the next playback update.
+ *    The previous test only asserted that scrollIntoView was called at all.
+ *    render() itself scrolls the playing row, so that assertion passed even
+ *    while setMode then scrolled a different "reading anchor" row over it and
+ *    the marker stayed off-screen until the next sentence started.
+ *    Always assert WHICH row was scrolled last.
+ * 2. One mark while playback leads. A selection exists only while the user is
+ *    browsing (following paused or off). Starting playback from a row (Enter,
+ *    Shift+Enter, Ctrl+Enter, playing a search match), resuming playback, and
+ *    turning Follow video back on all clear it, and while following the focus
+ *    ring moves with the playing row. This bug came back three times, once per
+ *    path that hands control back to playback; test every such path, during
+ *    playback, AFTER playback has moved past the chosen row.
+ * 3. In Paragraphs the playing marker is the playing sentence, so stepping to the
+ *    next sentence of the same paragraph moves it. The CSS half of this (that the
+ *    marker is actually visible in Paragraphs) is checked with real styles in
+ *    tests/playwright/transcript-search.spec.ts.
+ */
+describe("transcript playing marker (regression guard)", () => {
+	const pad = (s: number): string => `0:${String(s).padStart(2, "0")}`;
+	const sixSentences = "# Transcript\n<!-- saver-transcript-language: en -->\n" + Array.from({ length: 6 }, (_, i) =>
+		`[${pad(i * 2)}](https://youtu.be/abcdefghijk?t=${i * 2} "${i * 2}-${i * 2 + 2}") Sentence number ${i + 1} is here.\n`).join("");
+
+	function setFormat(view: TranscriptView, mode: string): void {
+		// The select is rebuilt by every render, so look it up each time.
+		const select = view.contentEl.querySelector("select")!;
+		select.value = mode;
+		select.dispatchEvent(new Event("change"));
+	}
+
+	function playingRows(view: TranscriptView): HTMLElement[] {
+		return rows(view).filter((row) => row.classList.contains("is-playing"));
+	}
+
+	function markedRows(view: TranscriptView): HTMLElement[] {
+		return rows(view).filter((row) => ["is-playing", "is-selected", "is-search-current"].some((cls) => row.classList.contains(cls)));
+	}
+
+	function selectionBarHidden(view: TranscriptView): boolean {
+		return view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-selection")!.hidden;
+	}
+
+	function followPressed(view: TranscriptView): string | null {
+		return view.contentEl.querySelector('[aria-label="Follow video"]')!.getAttribute("aria-pressed");
+	}
+
+	/** The element of the last scrollIntoView call (jsdom has no scroll box, so scrollToRow uses scrollIntoView). */
+	function lastScrolled(): unknown {
+		const contexts = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.contexts;
+		return contexts[contexts.length - 1];
+	}
+
+	async function playingPanel(playing: { value: boolean }): Promise<TranscriptView> {
+		return panel(document, {
+			isVideoVisible: () => true,
+			isPlaybackPlaying: () => playing.value,
+		}, undefined, "abcdefghijk", sixSentences);
+	}
+
+	it.each([
+		["sentences", "readable-paragraphs"],
+		["readable-paragraphs", "sentences"],
+		["lines", "readable-paragraphs"],
+		["readable-paragraphs", "lines"],
+	])("scrolls to the playing row, not the reading anchor, on a %s -> %s switch with Follow on", async (from, to) => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, from);
+		expect(rows(view)).toHaveLength(6);
+		// Play a late sentence; the top-of-list row (row 0) is what the broken anchor logic picked.
+		view.showPlayback(9, true, true);
+		expect(playingRows(view)).toEqual([rows(view)[4]]);
+		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+		setFormat(view, to);
+		// No further showPlayback: the marker must be correct and in view right now.
+		expect(playingRows(view)).toEqual([rows(view)[4]]);
+		expect(lastScrolled()).toBe(rows(view)[4]);
+	});
+
+	it("keeps the playing row in view across repeated format toggles", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(7, true, true);
+		for (const mode of ["readable-paragraphs", "sentences", "readable-paragraphs", "lines", "sentences"]) {
+			vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+			setFormat(view, mode);
+			expect(playingRows(view)).toEqual([rows(view)[3]]);
+			expect(lastScrolled()).toBe(rows(view)[3]);
+		}
+	});
+
+	it("keeps the row the user is reading when following is paused", async () => {
+		const playing = { value: false };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(9, true, true);
+		// Clicking a row pauses following; that row is now the reading position.
+		rows(view)[1].click();
+		rows(view)[1].focus();
+		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+		setFormat(view, "readable-paragraphs");
+		expect(lastScrolled()).toBe(rows(view)[1]);
+		expect(playingRows(view)).toEqual([rows(view)[4]]);
+	});
+
+	it.each(["sentences", "readable-paragraphs"])("clears a row selected while paused when playback resumes, leaving one marked row (%s)", async (mode) => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		// The reported sequence: switch format while playing, pause, click a sentence, unpause.
+		setFormat(view, mode === "sentences" ? "readable-paragraphs" : "sentences");
+		view.showPlayback(1, true, true);
+		setFormat(view, mode);
+		view.showPlayback(3, true, false);
+		playing.value = false;
+		view.showPlayback(3, true, true);
+		rows(view)[4].click();
+		expect(markedRows(view)).toEqual([rows(view)[1], rows(view)[4]]);
+		playing.value = true;
+		view.showPlayback(3, true, true);
+		view.showPlayback(5, true, false);
+		expect(markedRows(view)).toEqual([rows(view)[2]]);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-selection")!.hidden).toBe(true);
+	});
+
+	it("keeps a row selected during playback", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[4].click();
+		view.showPlayback(3, true, true);
+		expect(rows(view)[4].classList.contains("is-selected")).toBe(true);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-selection")!.hidden).toBe(false);
+	});
+
+	// Every way to start playback from a row. The host only seeks the player; the
+	// view hears about it later through showPlayback, like in Obsidian.
+	const playFromRow: [string, (row: HTMLElement) => void][] = [
+		["Enter", (row) => { row.focus(); key(row, "Enter"); }],
+		["Shift+Enter", (row) => { row.focus(); key(row, "Enter", { shiftKey: true }); }],
+		["Ctrl+Enter", (row) => { row.focus(); scopeHandlers.get("Enter")!(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true })); }],
+	];
+
+	it.each(playFromRow)("hands a selected row to the playing marker when %s plays it during playback", async (_name, start) => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[3].click();
+		expect(followPressed(view)).toBe("false");
+		start(rows(view)[3]);
+		expect(play).toHaveBeenCalledWith("note.md", expect.any(String), 6, expect.any(Boolean));
+		// The seek lands, then playback moves on. There is no paused->playing transition here.
+		view.showPlayback(6, true, false);
+		view.showPlayback(8, true, false);
+		expect(markedRows(view)).toEqual([rows(view)[4]]);
+		expect(selectionBarHidden(view)).toBe(true);
+		// Following resumes from the row the user chose.
+		expect(followPressed(view)).toBe("true");
+		expect(lastScrolled()).toBe(rows(view)[4]);
+	});
+
+	it.each(["sentences", "readable-paragraphs"])("leaves one mark after search, accept, Enter while playing (reported bug, %s)", async (mode) => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, mode);
+		view.showPlayback(1, true, true);
+		const input = search(view, "number 3");
+		expect(markedRows(view)).toEqual([rows(view)[0], rows(view)[2]]);
+		key(input, "Tab");
+		expect(rows(view)[2].classList.contains("is-selected")).toBe(true);
+		expect(document.activeElement).toBe(rows(view)[2]);
+		key(rows(view)[2], "Enter");
+		view.showPlayback(4, true, false);
+		view.showPlayback(6, true, false);
+		expect(markedRows(view)).toEqual([rows(view)[3]]);
+		expect(selectionBarHidden(view)).toBe(true);
+		// The keyboard focus ring is a mark too: while following, it moves with the playing row.
+		expect(document.activeElement).toBe(rows(view)[3]);
+	});
+
+	it("clears an earlier selection when Ctrl+Enter plays a search match", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[0].click();
+		const input = search(view, "number 4");
+		key(input, "Enter", { ctrlKey: true });
+		expect(play).toHaveBeenCalledWith("note.md", expect.any(String), 6, true);
+		view.showPlayback(6, true, false);
+		view.showPlayback(8, true, false);
+		expect(rows(view).filter((row) => row.classList.contains("is-selected"))).toEqual([]);
+		expect(selectionBarHidden(view)).toBe(true);
+	});
+
+	it("clears the selection when Follow video is turned back on during playback", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[4].click();
+		expect(followPressed(view)).toBe("false");
+		view.contentEl.querySelector<HTMLElement>('[aria-label="Follow video"]')!.click();
+		expect(followPressed(view)).toBe("true");
+		view.showPlayback(3, true, false);
+		expect(markedRows(view)).toEqual([rows(view)[1]]);
+		expect(selectionBarHidden(view)).toBe(true);
+	});
+
+	it("moves the paragraph-mode marker between sentences of the same paragraph while paused", async () => {
+		const playing = { value: false };
+		const view = await playingPanel(playing);
+		setFormat(view, "readable-paragraphs");
+		view.showPlayback(0.5, true, true);
+		const [first, next] = rows(view);
+		expect(first.parentElement).toBe(next.parentElement);
+		// The player's next/previous-sentence button seeks; the view hears it as a playback update.
+		view.showPlayback(2, true, false);
+		expect(playingRows(view)).toEqual([next]);
+		view.showPlayback(0, true, false);
+		expect(playingRows(view)).toEqual([first]);
+		// The marker is the sentence, never a whole-paragraph indicator that cannot show intra-paragraph steps.
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-paragraph.is-playing")).toHaveLength(0);
+	});
+});
+
+describe("player next/previous with no transcript panel", () => {
+	it("steps by sentence, not by caption", () => {
+		const lines = parseStoredTranscript('\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-6") We left. We stayed. We went home.\n');
+		const app = { metadataCache: { getFileCache: () => null } } as unknown as App;
+		const navigation = hiddenTranscriptNavigationRows(app, { path: "note.md" } as never, lines);
+		expect(navigation.map((row) => row.text)).toEqual(["We left.", "We stayed.", "We went home."]);
 	});
 });

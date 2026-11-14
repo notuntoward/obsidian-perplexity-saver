@@ -1990,3 +1990,41 @@ describe("transcript timestamp navigation", () => {
 		expect(player.seekTo).not.toHaveBeenCalled();
 	});
 });
+
+describe("video next/previous label with the transcript panel closed", () => {
+	async function closedTranscript(content: string) {
+		const h = await harness();
+		h.app.vault.cachedRead = vi.fn(async () => content);
+		const { videoFactory } = await playbackPanel(h);
+		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
+		const host = (videoFactory(h.viewerLeaf) as VideoView)["host"];
+		const refresh = vi.spyOn(h.viewerLeaf.view as VideoView, "refreshTranscriptControls").mockImplementation(() => {});
+		const calls = vi.mocked(h.app.vault.on).mock.calls as unknown as [string, (file: { path: string }) => void][];
+		const modify = calls.find(([name]) => name === "modify")![1];
+		return { h, unit: () => host.getTranscriptUnit!(h.file.path), refresh, modify };
+	}
+
+	it("says Caption for a transcript with no sentence boundaries, and Sentence again once it has them", async () => {
+		const { h, unit, refresh, modify } = await closedTranscript("# Transcript\n[0:00](https://youtu.be/abc?t=0) start\n[0:25](https://youtu.be/abc?t=25) current");
+		expect(unit()).toBe("sentence");
+		await vi.waitFor(() => expect(unit()).toBe("caption"));
+		expect(refresh).toHaveBeenCalledOnce();
+		h.app.vault.cachedRead = vi.fn(async () => "# Transcript\n[0:00](https://youtu.be/abc?t=0) We left.\n[0:25](https://youtu.be/abc?t=25) We stayed.");
+		modify(h.file);
+		expect(refresh).toHaveBeenCalledTimes(2);
+		// A stale cache would still answer "caption" here.
+		expect(unit()).toBe("sentence");
+		await vi.waitFor(() => expect(h.app.vault.cachedRead).toHaveBeenCalled());
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(unit()).toBe("sentence");
+		expect(refresh).toHaveBeenCalledTimes(2);
+	});
+
+	it("says Sentence for a transcript with sentence boundaries without refreshing the toolbar", async () => {
+		const { unit, refresh } = await closedTranscript("# Transcript\n[0:00](https://youtu.be/abc?t=0) We left.\n[0:25](https://youtu.be/abc?t=25) We stayed.");
+		expect(unit()).toBe("sentence");
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(unit()).toBe("sentence");
+		expect(refresh).not.toHaveBeenCalled();
+	});
+});

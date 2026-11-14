@@ -291,8 +291,8 @@
 	background-color: var(--background-modifier-hover);
 }
 
-/* The line the video viewer is playing. */
-.perplexity-saver-transcript-list:not(.is-readable-paragraphs) .perplexity-saver-transcript-row.is-playing {
+/* The sentence (or caption) the video is playing; paragraphs mark the sentence too, so stepping by sentence is always visible. */
+.perplexity-saver-transcript-row.is-playing {
 	background-color: hsla(var(--interactive-accent-hsl), 0.12);
 	border-radius: var(--radius-s);
 }
@@ -300,17 +300,6 @@
 .perplexity-saver-transcript-row.is-selected {
 	background-color: var(--text-selection);
 	border-radius: var(--radius-s);
-}
-
-.perplexity-saver-transcript-paragraph.is-playing::before {
-	content: "";
-	position: absolute;
-	inset-inline-start: -4px;
-	top: 0.8em;
-	width: 3px;
-	height: 1em;
-	border-radius: 2px;
-	background: var(--text-faint);
 }
 
 /* The selected search match. */

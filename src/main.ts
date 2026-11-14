@@ -50,7 +50,7 @@ import {
 	visibleTranscriptLeaves,
 	loadTranscriptLines,
 	currentRowIndex,
-	transcriptRows,
+	hiddenTranscriptNavigationRows,
 	transcriptSearchCommands,
 	type TranscriptPanelLocation,
 	type TranscriptPlacement,
@@ -259,6 +259,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private readonly paragraphWarnings = new Set<string>();
 	/** Pending "open the transcript if the video cannot start" checks, keyed by note path. */
 	private transcriptFallbacks = new Map<string, CancelTimer>();
+	/** Next/previous unit for notes whose transcript panel is closed, keyed by note path; filled asynchronously. */
+	private readonly hiddenTranscriptUnits = new Map<string, "sentence" | "caption" | "pending">();
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -282,6 +284,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.viewTracker.rename(oldPath, file.path);
+				this.hiddenTranscriptUnits.delete(oldPath);
 				const playback = this.settings.videoPlayback[oldPath];
 				if (playback) {
 					this.settings.videoPlayback[file.path] = playback;
@@ -294,7 +297,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 			this.app.vault.on("delete", (file) => {
 				this.viewTracker.remove(file.path);
 				delete this.settings.videoPlayback[file.path];
+				this.hiddenTranscriptUnits.delete(file.path);
 				this.persistViews();
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("modify", (changed) => {
+				if (!this.hiddenTranscriptUnits.delete(changed.path)) return;
+				const file = this.app.vault.getFileByPath(changed.path);
+				const view = file ? this.partLeaves(file).video?.view : null;
+				if (view instanceof VideoView) view.refreshTranscriptControls();
 			})
 		);
 
@@ -396,7 +408,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					getTranscriptUnit: (filePath) => {
 						const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
 						const view = file ? this.partLeaves(file).transcript?.view : null;
-						return view instanceof TranscriptView ? view.getNavigationUnit() : "caption";
+						return view instanceof TranscriptView ? view.getNavigationUnit() : file ? this.hiddenTranscriptUnit(file) : "sentence";
 					},
 					insertTimestamp: (view) => this.insertTimestampIntoNote(view),
 					insertScreenshot: (view, whole) => this.insertScreenshotIntoNote(view, whole),
@@ -1144,6 +1156,26 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return null;
 	}
 
+	/**
+	 * What the video's next/previous controls step by when no transcript panel is open: sentences, or captions
+	 * for a transcript with no sentence boundaries. Answers "sentence" until the note is read, then refreshes the label.
+	 */
+	private hiddenTranscriptUnit(file: TFile): "sentence" | "caption" {
+		const known = this.hiddenTranscriptUnits.get(file.path);
+		if (known === "sentence" || known === "caption") return known;
+		if (known === undefined) {
+			this.hiddenTranscriptUnits.set(file.path, "pending");
+			void loadTranscriptLines(this.app, file, this.settings.transcriptHeading).then((lines) => {
+				if (this.hiddenTranscriptUnits.get(file.path) !== "pending") return;
+				const captions = hiddenTranscriptNavigationRows(this.app, file, lines ?? [])[0]?.captionFallback;
+				this.hiddenTranscriptUnits.set(file.path, captions ? "caption" : "sentence");
+				const view = this.partLeaves(file).video?.view;
+				if (captions && view instanceof VideoView) view.refreshTranscriptControls();
+			}, () => this.hiddenTranscriptUnits.delete(file.path));
+		}
+		return "sentence";
+	}
+
 	private async jumpToTranscriptTimestamp(playback: NotePlayback, direction: 1 | -1): Promise<void> {
 		const token = playback.getPlaybackToken();
 		const filePath = playback.getFilePath();
@@ -1166,7 +1198,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view;
 		const transcript = active instanceof TranscriptView && active.getFilePath() === filePath
 			? active : this.partLeaves(file).transcript?.view;
-		const rows = transcript instanceof TranscriptView ? transcript.getRows(lines ?? []) : transcriptRows(lines ?? [], "lines");
+		const rows = transcript instanceof TranscriptView ? transcript.getRows(lines ?? []) : hiddenTranscriptNavigationRows(this.app, file, lines ?? []);
 		const timestamps = [...new Set(rows
 			.filter((row) => {
 				const rowVideo = parseYouTubeUrl(row.url)?.videoId;
