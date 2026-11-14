@@ -1,7 +1,6 @@
 import {
 	App,
 	Editor,
-	FileSystemAdapter,
 	MarkdownView,
 	Notice,
 	Platform,
@@ -16,7 +15,6 @@ import {
 import { StateField, StateEffect } from "@codemirror/state";
 import { Decoration, DecorationSet, WidgetType, EditorView } from "@codemirror/view";
 import http from "http";
-import path from "path";
 import { createPerplexityNote } from "./note-creator";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
 import { registerSyncCommand, registerSyncViaLinkCommand } from "./commands/sync";
@@ -42,7 +40,7 @@ import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { DEFAULT_TRANSCRIPT_FORMAT, type TranscriptFormat } from "./litNote/youtubeTranscript";
-import { runWhisperxExperiment } from "./litNote/whisperxExperiment";
+import { runCaptionTiming } from "./litNote/captionTiming";
 import {
 	TRANSCRIPT_VIEW_TYPE,
 	TranscriptView,
@@ -171,8 +169,7 @@ export interface PerplexitySaverSettings {
 	 * "blocks": one line per 5 cues with a whole-second start time only.
 	 */
 	transcriptFormat: TranscriptFormat;
-	whisperxEnabled: boolean;
-	whisperxPythonPath: string;
+	captionWordTiming: boolean;
 	/** What a plain click on a YouTube timestamp link does; Ctrl/Cmd-click does the other. */
 	timestampClickAction: TimestampClickAction;
 	/** Where a new video viewer opens: a split next to the note, or its own window. */
@@ -218,8 +215,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
 	collapseTranscriptOnOpen: true,
 	transcriptFormat: DEFAULT_TRANSCRIPT_FORMAT,
-	whisperxEnabled: false,
-	whisperxPythonPath: "",
+	captionWordTiming: false,
 	timestampClickAction: "viewer",
 	videoViewerLocation: "split",
 	timestampCopyFormat: "link",
@@ -318,13 +314,13 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
-					getAlignmentEnabled: () => this.settings.whisperxEnabled,
+					getAlignmentEnabled: () => this.settings.captionWordTiming,
 					alignTranscript: async (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) throw new Error("Transcript note not found.");
-						await this.alignWhisperxTranscript(file);
+						await this.timeTranscriptFromCaptions(file);
 					},
-					cancelAlignment: () => this.stopWhisperxAlignment(),
+					cancelAlignment: () => this.stopCaptionTiming(),
 					getSearchSettings: () => ({
 						keyboard: this.settings.transcriptSearchBehavior,
 						matching: this.settings.transcriptSearchMatching,
@@ -711,21 +707,21 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private registerTranscriptCommands(): void {
 		this.addCommand({
 			id: "whisperx-align-transcript",
-			name: "Transcript: time words from captions (experiment)",
+			name: "Transcript: time sentences from YouTube captions",
 			checkCallback: (checking: boolean) => {
 				const file = this.activePart().file;
-				if (!this.settings.whisperxEnabled || !file || file.extension !== "md") return false;
-				if (!checking) void this.alignWhisperxTranscript(file).catch((error: unknown) => {
-					console.error("Perplexity Saver: audio alignment failed", error);
-					new Notice(error instanceof Error ? error.message : "Audio alignment failed.");
+				if (!this.settings.captionWordTiming || !file || file.extension !== "md") return false;
+				if (!checking) void this.timeTranscriptFromCaptions(file).catch((error: unknown) => {
+					console.error("Perplexity Saver: caption timing failed", error);
+					new Notice(error instanceof Error ? error.message : "Caption timing failed.");
 				});
 				return true;
 			},
 		});
 		this.addCommand({
 			id: "whisperx-cancel-alignment",
-			name: "Transcript: cancel local audio alignment",
-			callback: () => this.stopWhisperxAlignment(),
+			name: "Transcript: cancel caption timing",
+			callback: () => this.stopCaptionTiming(),
 		});
 		this.addCommand({
 			id: "show-youtube-transcript",
@@ -784,23 +780,17 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
-	private whisperxAbort = new AbortController();
+	private captionTimingAbort = new AbortController();
 
-	stopWhisperxAlignment(): void {
-		this.whisperxAbort.abort();
-		this.whisperxAbort = new AbortController();
+	stopCaptionTiming(): void {
+		this.captionTimingAbort.abort();
+		this.captionTimingAbort = new AbortController();
 	}
 
-	private async alignWhisperxTranscript(file: TFile): Promise<void> {
-		if (!this.settings.whisperxEnabled) throw new Error("Enable Caption word timing in settings first.");
-		if (!(this.app.vault.adapter instanceof FileSystemAdapter) || !this.manifest.dir) {
-			throw new Error("Local WhisperX alignment requires a desktop filesystem vault.");
-		}
-		const root = path.join(this.app.vault.adapter.getBasePath(), this.manifest.dir);
-		const timings = await runWhisperxExperiment(this.app, file, this.settings.transcriptHeading, {
-			pythonPath: this.settings.whisperxPythonPath.trim() || path.join(root, ".venv-whisperx", Platform.isWin ? "Scripts\\python.exe" : "bin/python"),
-			helperPath: path.join(root, "scripts", "whisperx", "align.py"),
-			signal: this.whisperxAbort.signal,
+	private async timeTranscriptFromCaptions(file: TFile): Promise<void> {
+		if (!this.settings.captionWordTiming) throw new Error("Enable Caption word timing in settings first.");
+		const timings = await runCaptionTiming(this.app, file, this.settings.transcriptHeading, {
+			signal: this.captionTimingAbort.signal,
 		});
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 			if (leaf.view instanceof TranscriptView && leaf.view.getFilePath() === file.path) {
@@ -810,7 +800,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		this.whisperxAbort.abort();
+		this.captionTimingAbort.abort();
 		for (const cancel of this.transcriptFallbacks.values()) cancel();
 		this.transcriptFallbacks.clear();
 		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
@@ -1507,7 +1497,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		const stored: Partial<PerplexitySaverSettings> & { whisperxEnabled?: boolean; whisperxPythonPath?: string } = await this.loadData() ?? {};
+		const { whisperxEnabled, whisperxPythonPath: _pythonPath, ...current } = stored;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, current);
+		this.settings.captionWordTiming = current.captionWordTiming ?? whisperxEnabled ?? DEFAULT_SETTINGS.captionWordTiming;
 		this.settings.videoPlayback = { ...this.settings.videoPlayback };
 	}
 
@@ -1814,8 +1807,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		if (key === "transcriptHeading") {
 			this.plugin.applyTranscriptHeading();
 		}
-		if (key === "whisperxEnabled") {
-			if (key === "whisperxEnabled" && !value) this.plugin.stopWhisperxAlignment();
+		if (key === "captionWordTiming") {
+			if (!value) this.plugin.stopCaptionTiming();
 			for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
 				if (leaf.view instanceof TranscriptView) await leaf.view.reload();
 			}
@@ -2093,13 +2086,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Caption word timing",
-						desc: "Use native YouTube word offsets at punctuation-derived sentence starts. Only missing sentence starts need local WhisperX inside caption anchors; missing internal words do not. Time words asks before network access. Compact saved timings migrates old caches offline. See the README for helper setup.",
-						control: { type: "toggle", key: "whisperxEnabled" },
-					},
-					{
-						name: "WhisperX Python executable",
-						desc: "Optional full path to the Python executable with scripts/whisperx/requirements.txt installed. Leave blank for this plugin's .venv-whisperx environment. Do not include arguments or quotes.",
-						control: { type: "text", key: "whisperxPythonPath" },
+						desc: "Use saved native YouTube timestamps for sentence starts; missing offsets stay approximate. New per-caption downloads include timings automatically. Time words asks before fetching JSON3 for older notes. Compact saved timings migrates old caches offline. No Python, audio or model downloads.",
+						control: { type: "toggle", key: "captionWordTiming" },
 					},
 				],
 			},

@@ -29,6 +29,18 @@ describe("acoustically aligned punctuation sentences", () => {
 		expect(rows.map((row) => row.timingUncertain)).toEqual([false, true]);
 	});
 
+	it("retains later caption anchors when unspaced text shares one timing token", () => {
+		const prepared = prepareTranscript([
+			{ startSec: 12, endSec: 16, url: "https://youtu.be/abcdefghijk?t=12", text: "你好。世界。", language: "zh" },
+			{ startSec: 16, endSec: 20, url: "https://youtu.be/abcdefghijk?t=16", text: "我们继续。", language: "zh" },
+		]);
+		const rows = alignedSentenceRows(prepared, {
+			sourceHash: prepared.hash, videoId: "abcdefghijk", words: [[12, null, null]], wordSources: ["caption"],
+		});
+		expect(rows.map((row) => row.startSec)).toEqual([12, 12, 16]);
+		expect(rows.map((row) => row.timingUncertain)).toEqual([false, true, false]);
+	});
+
 	it("changes timing, not sentence text or source position, including timestamp links", () => {
 		const baseline = sentenceRows(transcript);
 		const rows = alignedSentenceRows(transcript, cacheForTest());

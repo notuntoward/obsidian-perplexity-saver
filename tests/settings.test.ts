@@ -9,7 +9,7 @@ vi.mock("obsidian", async (original) => ({
 }));
 
 describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
-	it("keeps local alignment opt-in and cancels it when disabled", async () => {
+	it("keeps native caption timing opt-in, preserves the old preference and removes Python setup", async () => {
 		const app = { workspace: { getLeavesOfType: () => [] } } as unknown as App;
 		const plugin = new PerplexitySaverPlugin(app, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
@@ -18,12 +18,18 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		vi.spyOn(plugin, "loadData").mockResolvedValue({});
 		await plugin.loadSettings();
 		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
-		const stop = vi.spyOn(plugin, "stopWhisperxAlignment");
+		expect(plugin.settings.captionWordTiming).toBe(false);
+		vi.mocked(plugin.loadData).mockResolvedValue({ whisperxEnabled: true, whisperxPythonPath: "obsolete" });
+		await plugin.loadSettings();
+		expect(plugin.settings.captionWordTiming).toBe(true);
+		expect(plugin.settings).not.toHaveProperty("whisperxPythonPath");
+		expect(plugin.settings).not.toHaveProperty("whisperxEnabled");
+		const stop = vi.spyOn(plugin, "stopCaptionTiming");
 		const tab = new PerplexitySaverSettingTab(app, plugin);
 		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("whisperxEnabled", true);
-		expect(plugin.settings.whisperxEnabled).toBe(true);
-		await tab.setControlValue("whisperxEnabled", false);
+		await tab.setControlValue("captionWordTiming", true);
+		expect(plugin.settings.captionWordTiming).toBe(true);
+		await tab.setControlValue("captionWordTiming", false);
 		expect(stop).toHaveBeenCalledOnce();
 	});
 

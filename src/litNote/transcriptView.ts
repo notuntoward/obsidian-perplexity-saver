@@ -125,7 +125,7 @@ export function transcriptRows(
 	}));
 	if (mode === "sentences") return sentenceRows(prepared);
 	if (mode === "aligned-sentences") {
-		if (!alignment) throw new Error("WhisperX timings are unavailable for this transcript.");
+		if (!alignment) throw new Error("Word timings are unavailable for this transcript.");
 		return alignedSentenceRows(prepared, alignment);
 	}
 	if (mode === "readable-paragraphs") {
@@ -507,8 +507,8 @@ export class TranscriptView extends ItemView {
 				this.alignmentStatus = "Sentence timing: saved timings are stale. Click Time words to recompute sentence starts.";
 			}
 		} catch (error: unknown) {
-			console.error("Perplexity Saver: invalid WhisperX cache", error);
-			this.alignmentStatus = error instanceof Error ? error.message : "Invalid WhisperX transcript cache.";
+			console.error("Perplexity Saver: invalid saved timing cache", error);
+			this.alignmentStatus = error instanceof Error ? error.message : "Invalid saved transcript timing cache.";
 		}
 	}
 

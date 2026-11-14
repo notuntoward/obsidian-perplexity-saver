@@ -11,6 +11,9 @@ import {
 	writeNote,
 } from "../../src/litNote/writeLitNote";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
+import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
+import { prepareTranscript } from "../../src/litNote/transcriptSentences";
+import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
 
 function makeMockFile(path: string): TFile {
 	return Object.assign(Object.create(TFile.prototype), { path });
@@ -336,7 +339,9 @@ describe("writeLitNote", () => {
 			if (opts.url.includes("api/timedtext")) {
 				return Promise.resolve({
 					status: 200,
-					text: `<transcript><text start="0" dur="2">Intro to Physics</text></transcript>`,
+					text: JSON.stringify({ events: [
+						{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: "Intro to Physics" }] },
+					] }),
 				});
 			}
 			return Promise.reject(new Error("Unknown URL"));
@@ -361,9 +366,12 @@ describe("writeLitNote", () => {
 		await writeNote(app, { litNotesFolder: "lit/notes", downloadYoutubeTranscripts: true }, ytItem, null);
 
 		expect(createdContent).toContain("# Transcript");
-		expect(createdContent).toContain(
-			'[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Intro to Physics'
-		);
+		const transcript = prepareTranscript(parseStoredTranscript(createdContent));
+		expect(transcript.lines.map(({ text, startSec, endSec }) => ({ text, startSec, endSec }))).toEqual([
+			{ text: "Intro to Physics", startSec: 0, endSec: 2 },
+		]);
+		expect(transcript.language).toBe("en");
+		expect(readInlineTimings(transcript)?.words).toEqual([[0, null, null], null, null]);
 	});
 
 	it("does not download YouTube transcript when downloadYoutubeTranscripts is false", async () => {

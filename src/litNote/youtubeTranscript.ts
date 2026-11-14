@@ -2,19 +2,25 @@
  * YouTube transcript downloader and formatter for literature notes.
  *
  * Implements transcript retrieval using YouTube's public InnerTube player API,
- * parsing timedtext XML, and formatting timestamped transcript blocks.
+ * parsing native JSON3 captions, and formatting timestamped transcripts.
  *
  * Reference implementation: https://github.com/lstrzepek/obsidian-yt-transcript
  */
 
 import { requestUrl } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
-import { withTranscriptLanguage } from "./transcriptLanguage";
+import { normalizeTranscriptLanguage, withTranscriptLanguage } from "./transcriptLanguage";
+import { parseStoredTranscript } from "./transcriptSection";
+import { prepareTranscript } from "./transcriptSentences";
+import { writeInlineTimings } from "./transcriptTimingStorage";
+import type { WordTimings } from "./transcriptAlignment";
 
 export interface TranscriptLine {
 	text: string;
 	duration: number;
 	offset: number;
+	/** Absolute native starts in milliseconds; missing internal offsets remain null. */
+	wordStarts?: (number | null)[];
 }
 
 export interface TranscriptBlock {
@@ -185,72 +191,74 @@ export function formatShortTimestamp(offsetMs: number): string {
 	return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
-/**
- * Decode common HTML entities from caption XML text.
- */
-export function decodeHtmlEntities(text: string): string {
-	let decoded = text
-		.replace(/&amp;/g, "&")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&apos;/g, "'")
-		.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
-		.replace(/&#x([a-fA-F0-9]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
-		.replace(/\n/g, " ")
-		.trim();
-
-	// Handle double-encoded entities like &amp;#39;
-	if (decoded.includes("&#") || decoded.includes("&quot;") || decoded.includes("&amp;")) {
-		decoded = decoded
-			.replace(/&amp;/g, "&")
-			.replace(/&quot;/g, '"')
-			.replace(/&#39;/g, "'")
-			.replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
-			.replace(/&#x([a-fA-F0-9]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
-			.trim();
+export function parseCaptionJson3(data: unknown, durationMs?: number): TranscriptLine[] {
+	if (typeof data !== "object" || data === null || !("events" in data) || !Array.isArray(data.events)) {
+		throw new Error("Invalid YouTube JSON3 caption document.");
 	}
-
-	return decoded;
+	const events = data.events.flatMap((value: unknown) => {
+		if (typeof value !== "object" || value === null) throw new Error("Invalid JSON3 caption event.");
+		if (!("segs" in value)) return [];
+		if (!Array.isArray(value.segs)) throw new Error("Invalid JSON3 caption segments.");
+		const segs = value.segs.map((segment: unknown) => {
+			if (typeof segment !== "object" || segment === null || !("utf8" in segment) || typeof segment.utf8 !== "string") {
+				throw new Error("Invalid JSON3 caption text.");
+			}
+			const offset = "tOffsetMs" in segment ? segment.tOffsetMs : undefined;
+			if (offset !== undefined && (typeof offset !== "number" || !Number.isFinite(offset) || offset < 0)) {
+				throw new Error("Invalid JSON3 word offset.");
+			}
+			return { text: segment.utf8, offset };
+		});
+		if (!segs.some((segment) => segment.text.trim())) return [];
+		const start = "tStartMs" in value ? value.tStartMs : undefined;
+		const duration = "dDurationMs" in value ? value.dDurationMs : undefined;
+		if (typeof start !== "number" || !Number.isFinite(start) || start < 0 ||
+			(duration !== undefined && (typeof duration !== "number" || !Number.isFinite(duration) || duration <= 0))) {
+			throw new Error("Invalid JSON3 caption time.");
+		}
+		return [{ start, duration, segs }];
+	});
+	return events.map((event, index) => {
+		const following = events[index + 1]?.start ?? durationMs ?? Infinity;
+		const end = Math.min(following, event.duration === undefined ? Infinity : event.start + event.duration, durationMs ?? Infinity);
+		if (!Number.isFinite(end) || end <= event.start) throw new Error("Invalid JSON3 caption bounds or missing duration.");
+		let raw = "";
+		const segments = event.segs.map((segment, position) => {
+			const start = raw.length;
+			raw += segment.text;
+			const offset = segment.offset ?? (position === 0 ? 0 : undefined);
+			return { start, end: raw.length, time: offset === undefined ? null : event.start + offset };
+		});
+		let segment = 0;
+		let previous = event.start;
+		const wordStarts = Array.from(raw.matchAll(/\S+/g), (match, word) => {
+			while (segment + 1 < segments.length && segments[segment].end <= match.index) segment++;
+			const part = segments[segment];
+			const time = word === 0 ? event.start : raw.slice(part.start, match.index).trim() ? null : part.time;
+			if (time !== null) {
+				if (time < previous || time > end) throw new Error("JSON3 word offset crosses a caption bound or reverses time.");
+				previous = time;
+			}
+			return time;
+		});
+		return { offset: event.start, duration: end - event.start, text: raw.replace(/\s+/g, " ").trim(), wordStarts };
+	});
 }
 
-const TEXT_TAG_PATTERN = /<text\s+start="([^"]+)"\s+dur="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
-const P_TAG_PATTERN = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
-
-/**
- * Parse caption lines from YouTube timedtext XML content.
- */
-export function parseCaptionXml(xmlContent: string): TranscriptLine[] {
-	const lines: TranscriptLine[] = [];
-
-	for (const match of xmlContent.matchAll(TEXT_TAG_PATTERN)) {
-		const startSeconds = parseFloat(match[1]);
-		const durationSeconds = parseFloat(match[2]);
-		const text = decodeHtmlEntities(match[3].replace(/<[^>]+>/g, ""));
-
-		if (text) {
-			lines.push({
-				text,
-				offset: Math.round(startSeconds * 1000),
-				duration: Math.round(durationSeconds * 1000),
-			});
-		}
-	}
-
-	if (lines.length === 0) {
-		for (const match of xmlContent.matchAll(P_TAG_PATTERN)) {
-			const offset = parseInt(match[1], 10);
-			const duration = parseInt(match[2], 10);
-			const text = decodeHtmlEntities(match[3].replace(/<[^>]+>/g, ""));
-
-			if (text) {
-				lines.push({ text, offset, duration });
-			}
-		}
-	}
-
-	return lines;
+export function formatNativeTranscript(lines: TranscriptLine[], url: string, language?: string): string {
+	const section = withTranscriptLanguage(formatTranscriptCues(lines, url), language);
+	const prepared = prepareTranscript(parseStoredTranscript(section));
+	const offsets = lines.map((line) => new Map(Array.from(line.text.matchAll(/\S+/g), (match, index) =>
+		[match.index, line.wordStarts?.[index] ?? (index === 0 ? line.offset : null)])));
+	const words: WordTimings["words"] = prepared.words.map((word) => {
+		const start = offsets[word.cue].get(word.start - prepared.cueStarts[word.cue]);
+		return start === undefined || start === null ? null : [start / 1000, null, null];
+	});
+	const videoId = extractYouTubeVideoId(url);
+	if (!videoId) throw new Error("Native captions need a valid YouTube video URL.");
+	return writeInlineTimings(section, {
+		sourceHash: prepared.hash, videoId, words, wordSources: words.map((word) => word ? "youtube" : "unmatched"),
+	});
 }
 
 /**
@@ -366,14 +374,16 @@ export function preciseSeconds(offsetMs: number): string {
 	return String(Math.max(0, Math.round(offsetMs)) / 1000);
 }
 
-function findCaptionTrack(captionTracks: any[], langCode = "en"): any {
-	let track = captionTracks.find((t: any) => t.languageCode === langCode);
+interface CaptionTrack { languageCode?: string; baseUrl: string }
+
+function findCaptionTrack(captionTracks: CaptionTrack[], langCode = "en"): CaptionTrack | null {
+	let track = captionTracks.find((t) => t.languageCode === langCode);
 	if (track) return track;
 
-	track = captionTracks.find((t: any) => t.languageCode?.startsWith(langCode + "-"));
+	track = captionTracks.find((t) => t.languageCode?.startsWith(langCode + "-"));
 	if (track) return track;
 
-	track = captionTracks.find((t: any) => langCode.startsWith(t.languageCode + "-"));
+	track = captionTracks.find((t) => t.languageCode && langCode.startsWith(t.languageCode + "-"));
 	if (track) return track;
 
 	if (captionTracks.length > 0) {
@@ -387,12 +397,13 @@ function findCaptionTrack(captionTracks: any[], langCode = "en"): any {
  * Fetch YouTube transcript for a video URL and return formatted markdown.
  * Returns null if the URL is invalid or no captions are available.
  */
-export async function downloadYouTubeTranscript(
+export async function fetchYouTubeCaptions(
 	url: string,
-	options: { lang?: string; country?: string; timestampMod?: number; format?: TranscriptFormat } = {}
-): Promise<string | null> {
+	options: { lang?: string; country?: string; signal?: AbortSignal } = {}
+): Promise<{ lines: TranscriptLine[]; language?: string } | null> {
 	const videoId = extractYouTubeVideoId(url);
 	if (!videoId) return null;
+	options.signal?.throwIfAborted();
 
 	const context = {
 		client: {
@@ -432,37 +443,50 @@ export async function downloadYouTubeTranscript(
 	}
 
 	const captionsData = playerData.captions?.playerCaptionsTracklistRenderer;
+	options.signal?.throwIfAborted();
 	if (!captionsData || !Array.isArray(captionsData.captionTracks) || captionsData.captionTracks.length === 0) {
 		console.warn(`[LitNote] No caption tracks available for YouTube video ${videoId}`);
 		return null;
 	}
 
-	const captionTrack = findCaptionTrack(captionsData.captionTracks, options.lang || "en");
+	const tracks = captionsData.captionTracks.filter((track: unknown): track is CaptionTrack =>
+		typeof track === "object" && track !== null && "baseUrl" in track && typeof track.baseUrl === "string" &&
+		(!("languageCode" in track) || track.languageCode === undefined || typeof track.languageCode === "string"));
+	const captionTrack = findCaptionTrack(tracks, options.lang || "en");
 	if (!captionTrack || !captionTrack.baseUrl) {
 		console.warn(`[LitNote] No matching caption track found for YouTube video ${videoId}`);
 		return null;
 	}
 
+	const captionUrl = new URL(captionTrack.baseUrl);
+	captionUrl.searchParams.set("fmt", "json3");
 	const captionResponse = await requestUrl({
-		url: captionTrack.baseUrl,
+		url: captionUrl.toString(),
 		method: "GET",
 		headers: {
 			"Accept-Language": "en-US,en;q=0.9",
 		},
 	});
 
-	const xml = captionResponse.text;
-	if (!xml || xml.trim().length === 0) {
-		return null;
-	}
-
-	const lines = parseCaptionXml(xml);
+	const data: unknown = captionResponse.json ?? JSON.parse(captionResponse.text);
+	options.signal?.throwIfAborted();
+	const duration = Number(playerData.videoDetails?.lengthSeconds);
+	const lines = parseCaptionJson3(data, Number.isFinite(duration) && duration > 0 ? duration * 1000 : undefined);
 	if (lines.length === 0) {
+		console.warn(`[LitNote] No nonempty JSON3 captions for YouTube video ${videoId}`);
 		return null;
 	}
+	const language = normalizeTranscriptLanguage(captionUrl.searchParams.get("tlang") ?? captionTrack.languageCode);
+	return { lines, language };
+}
 
-	const formatted = (options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues"
-		? formatTranscriptCues(lines, url) : formatTranscript(lines, url, options.timestampMod ?? 5);
-	const language = new URL(captionTrack.baseUrl).searchParams.get("tlang") ?? captionTrack.languageCode;
-	return withTranscriptLanguage(formatted, language);
+export async function downloadYouTubeTranscript(
+	url: string,
+	options: { lang?: string; country?: string; timestampMod?: number; format?: TranscriptFormat } = {}
+): Promise<string | null> {
+	const captions = await fetchYouTubeCaptions(url, options);
+	if (!captions) return null;
+	return (options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues"
+		? formatNativeTranscript(captions.lines, url, captions.language)
+		: withTranscriptLanguage(formatTranscript(captions.lines, url, options.timestampMod ?? 5), captions.language);
 }

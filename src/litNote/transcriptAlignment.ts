@@ -1,6 +1,5 @@
 import { sentenceRows, type BoundaryRow, type PreparedTranscript } from "./transcriptSentences";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
-import type { StoredTranscriptLine } from "./transcriptSection";
 
 export const ALIGNMENT_CACHE_KEY = "whisperx_transcript";
 export const ALIGNMENT_ENGINE = "whisperx-3.8.6";
@@ -24,32 +23,6 @@ export interface AlignmentCache {
 
 export type WordTimings = Pick<AlignmentCache, "sourceHash" | "videoId" | "wordSources" | "words">;
 
-export function readCaptionReplacement(value: unknown, transcript: PreparedTranscript, videoId: string): {
-	reason: "format" | "wording"; expectedWords: number; actualWords: number; captions: (StoredTranscriptLine & { endSec: number })[];
-} | null {
-	if (typeof value !== "object" || value === null || !("status" in value) || value.status !== "transcript-mismatch") return null;
-	const raw = value as Record<string, unknown>;
-	if (raw.version !== 2 || raw.sourceHash !== transcript.hash || raw.videoId !== videoId ||
-		(raw.reason !== "format" && raw.reason !== "wording") || raw.expectedWords !== transcript.words.length ||
-		typeof raw.actualWords !== "number" || !Number.isInteger(raw.actualWords) || raw.actualWords <= 0 ||
-		typeof raw.audioDuration !== "number" || !Number.isFinite(raw.audioDuration) || raw.audioDuration <= 0 ||
-		!Array.isArray(raw.captions) || !raw.captions.length) throw new Error("Invalid transcript replacement metadata.");
-	let previousEnd = 0;
-	const duration = raw.audioDuration;
-	const captions = raw.captions.map((value: unknown): StoredTranscriptLine & { endSec: number } => {
-		if (typeof value !== "object" || value === null) throw new Error("Invalid replacement caption.");
-		const { startSec, endSec, text } = value as Record<string, unknown>;
-		if (typeof startSec !== "number" || !Number.isFinite(startSec) || startSec < previousEnd ||
-			typeof endSec !== "number" || !Number.isFinite(endSec) || endSec <= startSec || endSec > duration ||
-			typeof text !== "string" || !text.trim()) throw new Error("Invalid replacement caption bounds or text.");
-		previousEnd = endSec;
-		return { startSec, endSec, text, url: watchUrl(videoId, startSec) };
-	});
-	const actualWords = captions.reduce((count, caption) => count + (caption.text.match(/\S+/g)?.length ?? 0), 0);
-	if (actualWords !== raw.actualWords) throw new Error("Invalid replacement caption word count.");
-	return { reason: raw.reason, expectedWords: transcript.words.length, actualWords, captions };
-}
-
 export interface AlignedRow extends BoundaryRow {
 	endSec?: number;
 	timingUncertain: boolean;
@@ -66,12 +39,12 @@ export function transcriptVideoId(transcript: PreparedTranscript): string {
 
 export function readAlignmentCache(value: unknown, transcript: PreparedTranscript): AlignmentCache | null {
 	if (value === undefined || value === null) return null;
-	if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid WhisperX transcript cache.");
+	if (typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid saved transcript timing cache.");
 	const raw = value as Record<string, unknown>;
 	if (raw.version !== 2 || raw.paddingSeconds !== 0 || raw.sourceHash !== transcript.hash) return null;
 	if ((raw.engine !== ALIGNMENT_ENGINE || raw.model !== ALIGNMENT_MODEL) &&
 		(raw.engine !== "youtube-json3" || raw.model !== null)) throw new Error("Invalid word timing engine.");
-	if (raw.videoId !== transcriptVideoId(transcript)) throw new Error("WhisperX cache video does not match the transcript.");
+	if (raw.videoId !== transcriptVideoId(transcript)) throw new Error("Saved timing cache video does not match the transcript.");
 	if (typeof raw.createdAt !== "string" || !Number.isFinite(Date.parse(raw.createdAt)) ||
 		(raw.audioSha256 !== null && (typeof raw.audioSha256 !== "string" || !/^[a-f0-9]{64}$/.test(raw.audioSha256))) ||
 		typeof raw.captionSha256 !== "string" || !/^[a-f0-9]{64}$/.test(raw.captionSha256) ||
@@ -79,7 +52,7 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 		!Array.isArray(raw.words) || raw.words.length !== transcript.words.length ||
 		!Array.isArray(raw.wordSources) || raw.wordSources.length !== raw.words.length ||
 		!Array.isArray(raw.captions) || !raw.captions.length) {
-		throw new Error("Invalid WhisperX cache metadata or word count. Remove whisperx_transcript to realign.");
+		throw new Error("Invalid legacy cache metadata or word count. Remove whisperx_transcript to refresh caption timing.");
 	}
 	const duration = raw.audioDuration;
 	if ((raw.engine === "youtube-json3") !== (raw.audioSha256 === null)) throw new Error("Invalid word timing audio provenance.");
@@ -93,7 +66,7 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 		if (raw.engine === "youtube-json3" && wordSources[index] === "acoustic") throw new Error("Invalid native word timing provenance.");
 		if (word === null && wordSources[index] === "unmatched") return null;
 		if (!Array.isArray(word) || word.length !== 3 || typeof word[0] !== "number" || !Number.isFinite(word[0])) {
-			throw new Error("Invalid WhisperX word timing.");
+			throw new Error("Invalid saved word timing.");
 		}
 		const [start, end, score] = word as [number, unknown, unknown];
 		if (wordSources[index] !== "acoustic") {
@@ -102,7 +75,7 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 		}
 		if (typeof end !== "number" || !Number.isFinite(end) || typeof score !== "number" || !Number.isFinite(score) ||
 			end <= start || score < 0.3 || score > 1) {
-			throw new Error("Invalid or non-monotonic WhisperX word timing.");
+			throw new Error("Invalid or non-monotonic saved word timing.");
 		}
 		return [start, end, score];
 	});
@@ -149,9 +122,10 @@ export function alignedSentenceRows(transcript: PreparedTranscript, cache: WordT
 		while (last < transcript.words.length && transcript.words[last].start < nextStart) last++;
 		const timings = cache.words.slice(first, last);
 		const known = timings.filter((word) => word !== null);
-		const startSec = known[0]?.[0] ?? previousEnd;
+		const startSec = Math.max(sentence.startSec, known[0]?.[0] ?? previousEnd);
 		const endSec = known.at(-1)?.[1] ?? undefined;
-		const timingUncertain = !cache.words[first] || transcript.words[first]?.start !== sentence.sourceStart;
+		const timingUncertain = (!cache.words[first] || transcript.words[first]?.start !== sentence.sourceStart) &&
+			!transcript.cueStarts.includes(sentence.sourceStart);
 		first = last;
 		previousEnd = endSec ?? known.at(-1)?.[0] ?? startSec;
 		return { ...sentence, startSec, endSec, timingUncertain, url: watchUrl(cache.videoId, startSec) };

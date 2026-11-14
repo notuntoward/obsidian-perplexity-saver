@@ -6,14 +6,17 @@ import {
 	extractYouTubeVideoId,
 	buildTimestampUrl,
 	formatTimestamp,
-	decodeHtmlEntities,
-	parseCaptionXml,
+	parseCaptionJson3,
 	getTranscriptBlocks,
 	formatTranscript,
 	downloadYouTubeTranscript,
 	type TranscriptLine,
 } from "../../src/litNote/youtubeTranscript";
 import { requestUrlMock } from "../__mocks__/obsidian";
+import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
+import { prepareTranscript } from "../../src/litNote/transcriptSentences";
+import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
+import { alignedSentenceRows } from "../../src/litNote/transcriptAlignment";
 
 describe("youtubeTranscript", () => {
 	beforeEach(() => {
@@ -102,33 +105,28 @@ describe("youtubeTranscript", () => {
 		});
 	});
 
-	describe("XML parsing and HTML entity decoding", () => {
-		it("decodes HTML entities properly", () => {
-			expect(decodeHtmlEntities("&amp; &quot; &#39; &lt; &gt;")).toBe('& " \' < >');
-			expect(decodeHtmlEntities("&#65; &#66; &#x43;")).toBe("A B C");
-			expect(decodeHtmlEntities("We&amp;#39;re")).toBe("We're");
+	describe("native JSON3 captions", () => {
+		it("preserves native starts, bounds and text without inventing multiword offsets", () => {
+			const lines = parseCaptionJson3({ events: [
+				{ tStartMs: 0, wpWinPosId: 1 },
+				{ tStartMs: 70200, dDurationMs: 4000, segs: [
+					{ utf8: "We left. " }, { utf8: "We stayed &amp; waited.", tOffsetMs: 2300 },
+				] },
+				{ tStartMs: 72500, dDurationMs: 2000, segs: [{ utf8: "Next." }] },
+			] });
+			expect(lines).toEqual([
+				{ offset: 70200, duration: 2300, text: "We left. We stayed &amp; waited.", wordStarts: [70200, null, 72500, null, null, null] },
+				{ offset: 72500, duration: 2000, text: "Next.", wordStarts: [72500] },
+			]);
 		});
 
-		it("parses timedtext XML with <text> tags", () => {
-			const xml = `<?xml version="1.0" encoding="utf-8" ?>
-<transcript>
-  <text start="1.36" dur="1.68">[Music]</text>
-  <text start="18.64" dur="3.24">We&amp;#39;re no strangers to love</text>
-  <text start="22.64" dur="4.32">You know the rules and so do I</text>
-</transcript>`;
-			const lines = parseCaptionXml(xml);
-			expect(lines).toHaveLength(3);
-			expect(lines[0]).toEqual({ text: "[Music]", offset: 1360, duration: 1680 });
-			expect(lines[1]).toEqual({ text: "We're no strangers to love", offset: 18640, duration: 3240 });
-			expect(lines[2]).toEqual({ text: "You know the rules and so do I", offset: 22640, duration: 4320 });
-		});
-
-		it("parses timedtext XML with <p> tags", () => {
-			const xml = `<p t="1000" d="2000">First line</p><p t="3000" d="2500">Second line</p>`;
-			const lines = parseCaptionXml(xml);
-			expect(lines).toHaveLength(2);
-			expect(lines[0]).toEqual({ text: "First line", offset: 1000, duration: 2000 });
-			expect(lines[1]).toEqual({ text: "Second line", offset: 3000, duration: 2500 });
+		it.each([
+			{ events: [{ tStartMs: -1, dDurationMs: 10, segs: [{ utf8: "No." }] }] },
+			{ events: [{ tStartMs: 0, dDurationMs: 10, segs: [{ utf8: "No. " }, { utf8: "Overrun.", tOffsetMs: 11 }] }] },
+			{ events: [{ tStartMs: 0, dDurationMs: 10, segs: [{ utf8: "A " }, { utf8: "B ", tOffsetMs: 8 }, { utf8: "C", tOffsetMs: 4 }] }] },
+			{ events: [{ tStartMs: 0, dDurationMs: 10, segs: [{ utf8: 123 }] }] },
+		])("rejects malformed, reversed or out-of-bound native data", (data) => {
+			expect(() => parseCaptionJson3(data)).toThrow(/JSON3/);
 		});
 	});
 
@@ -162,6 +160,24 @@ describe("youtubeTranscript", () => {
 	});
 
 	describe("downloadYouTubeTranscript", () => {
+		it("saves native sentence starts and leaves missing offsets explicitly approximate", async () => {
+			requestUrlMock.mockResolvedValueOnce({ status: 200, json: { captions: { playerCaptionsTracklistRenderer: {
+				captionTracks: [{ languageCode: "en", baseUrl: "https://www.youtube.com/api/timedtext?v=test&fmt=srv3" }],
+			} } }, text: "" }).mockResolvedValueOnce({ status: 200, text: JSON.stringify({ events: [
+				{ tStartMs: 12000, dDurationMs: 10000, segs: [
+					{ utf8: "We left. " }, { utf8: "We stayed. ", tOffsetMs: 4000 }, { utf8: "Then we returned." },
+				] },
+			] }) });
+			const result = await downloadYouTubeTranscript("https://youtu.be/dQw4w9WgXcQ");
+			const prepared = prepareTranscript(parseStoredTranscript(result!));
+			const timing = readInlineTimings(prepared)!;
+			const rows = alignedSentenceRows(prepared, timing);
+			expect(rows.map((row) => row.text)).toEqual(["We left.", "We stayed.", "Then we returned."]);
+			expect(rows.map((row) => row.startSec)).toEqual([12, 16, 16]);
+			expect(rows.map((row) => row.timingUncertain)).toEqual([false, false, true]);
+			expect(requestUrlMock).toHaveBeenCalledTimes(2);
+		});
+
 		it("successfully fetches and formats YouTube transcript", async () => {
 			requestUrlMock.mockImplementation((opts: any) => {
 				if (opts.url.includes("youtubei/v1/player")) {
@@ -183,17 +199,24 @@ describe("youtubeTranscript", () => {
 				if (opts.url.includes("api/timedtext")) {
 					return Promise.resolve({
 						status: 200,
-						text: `<transcript><text start="0" dur="2">Hello</text><text start="2" dur="2">World</text></transcript>`,
+						text: JSON.stringify({ events: [
+							{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: "Hello" }] },
+							{ tStartMs: 2000, dDurationMs: 2000, segs: [{ utf8: "World" }] },
+						] }),
 					});
 				}
 				return Promise.reject(new Error("Unknown URL"));
 			});
 
 			const result = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
-			expect(result).toBe(
-				'<!-- saver-transcript-language: en -->\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Hello\n' +
-					'[0:02](https://youtu.be/dQw4w9WgXcQ?t=2 "2–4") World'
-			);
+			const prepared = prepareTranscript(parseStoredTranscript(result!));
+			expect(prepared.lines.map(({ text, startSec, endSec }) => ({ text, startSec, endSec }))).toEqual([
+				{ text: "Hello", startSec: 0, endSec: 2 }, { text: "World", startSec: 2, endSec: 4 },
+			]);
+			expect(prepared.language).toBe("en");
+			expect(readInlineTimings(prepared)?.words).toEqual([[0, null, null], [2, null, null]]);
+			expect(requestUrlMock.mock.calls.filter(([opts]) => typeof opts !== "string" && opts.url.includes("timedtext"))
+				.every(([opts]) => typeof opts !== "string" && new URL(opts.url).searchParams.get("fmt") === "json3")).toBe(true);
 
 			const blocks = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ", {
 				format: "blocks",
@@ -212,7 +235,9 @@ describe("youtubeTranscript", () => {
 				status: 200, text: "", json: { captions: { playerCaptionsTracklistRenderer: {
 					captionTracks: [{ languageCode, baseUrl: "https://www.youtube.com/api/timedtext?v=test" + translation }],
 				} } },
-			}).mockResolvedValueOnce({ status: 200, text: '<transcript><text start="0" dur="2">Bonjour.</text></transcript>' });
+			}).mockResolvedValueOnce({ status: 200, text: JSON.stringify({ events: [
+				{ tStartMs: 0, dDurationMs: 2000, segs: [{ utf8: "Bonjour." }] },
+			] }) });
 			const result = await downloadYouTubeTranscript("https://youtu.be/dQw4w9WgXcQ");
 			if (expected) expect(result).toContain(`<!-- saver-transcript-language: ${expected} -->`);
 			else expect(result).not.toContain("saver-transcript-language");

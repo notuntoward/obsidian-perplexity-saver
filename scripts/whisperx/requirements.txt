@@ -1,2 +1,0 @@
-whisperx==3.8.6
-yt-dlp[default]>=2025.10.22,<2027
