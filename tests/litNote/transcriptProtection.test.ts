@@ -2,7 +2,7 @@
 import { EditorState, StateEffect, Text, Transaction } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Plugin, type App, type TFile, type WorkspaceLeaf } from "obsidian";
+import { Plugin, setIcon, setTooltip, type App, type TFile, type WorkspaceLeaf } from "obsidian";
 import { getActiveLeafInFocusedWindow } from "commons/workspace";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import {
@@ -18,6 +18,11 @@ import { createNoteInsertionAnchor, getNoteInsertionPosition, insertAtNoteInsert
 import { createdNotices, editorInfoField, installEditorDomHelpers, MarkdownView } from "../__mocks__/obsidian";
 
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
+vi.mock("obsidian", async (original) => ({
+	...await original<Record<string, unknown>>(),
+	setIcon: vi.fn(),
+	setTooltip: vi.fn(),
+}));
 vi.mock("commons/workspace", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	getActiveLeafInFocusedWindow: vi.fn(),
@@ -230,13 +235,24 @@ describe("transcript lock controls", () => {
 		vi.mocked(askNoteDecision).mockResolvedValue("unlock");
 		const unlock = parent.querySelector<HTMLButtonElement>(".saver-transcript-lock button");
 		expect(unlock?.ownerDocument).toBe(parent.ownerDocument);
+		expect(unlock?.classList.contains("clickable-icon")).toBe(true);
+		expect(unlock?.getAttribute("aria-label")).toBe("Unlock transcript for editing");
+		expect(parent.querySelector(".saver-transcript-lock")?.textContent).toBe("");
+		expect(setIcon).toHaveBeenCalledWith(unlock, "lock");
+		expect(setTooltip).toHaveBeenCalledWith(unlock, "Transcript protected · Click to unlock");
 		unlock?.click();
 		await vi.waitFor(() => expect(view.state.field(transcriptProtectionState).unlocked).toBe(true));
 		expect(askNoteDecision).toHaveBeenCalledWith(expect.anything(), "Unlock transcript for editing?",
 			expect.stringContaining("invalidate word timings"), expect.anything());
-		expect(parent.querySelector(".saver-transcript-lock")?.textContent).toContain("Transcript unlocked");
-		parent.querySelector<HTMLButtonElement>(".saver-transcript-lock button")?.click();
+		expect(parent.querySelector(".saver-transcript-lock")?.textContent).toBe("Unlocked");
+		expect(parent.querySelector(".saver-transcript-lock")?.classList.contains("is-unlocked")).toBe(true);
+		const lock = parent.querySelector<HTMLButtonElement>(".saver-transcript-lock button");
+		expect(lock?.getAttribute("aria-label")).toBe("Lock transcript");
+		expect(setIcon).toHaveBeenCalledWith(lock, "lock-open");
+		expect(setTooltip).toHaveBeenCalledWith(lock, "Transcript unlocked · Click to lock");
+		lock?.click();
 		expect(view.state.field(transcriptProtectionState).unlocked).toBe(false);
+		expect(parent.querySelector(".saver-transcript-lock")?.textContent).toBe("");
 		expect(askNoteDecision).toHaveBeenCalledTimes(1);
 	});
 

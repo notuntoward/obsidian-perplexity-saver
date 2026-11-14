@@ -1,7 +1,7 @@
 import { EditorState, Facet, StateEffect, StateField, Transaction, type Extension, type Text } from "@codemirror/state";
 import { Decoration, EditorView, WidgetType, type DecorationSet } from "@codemirror/view";
 import { parser } from "@lezer/markdown";
-import { editorInfoField, getFrontMatterInfo, MarkdownView, Notice, type Plugin, type TFile } from "obsidian";
+import { editorInfoField, getFrontMatterInfo, MarkdownView, Notice, setIcon, setTooltip, type Plugin, type TFile } from "obsidian";
 import { getActiveLeafInFocusedWindow } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
 import { DEFAULT_TRANSCRIPT_HEADING, normalizeTranscriptHeading } from "./transcriptSection";
@@ -83,10 +83,13 @@ class LockWidget extends WidgetType {
 
 	toDOM(view: EditorView): HTMLElement {
 		const el = view.dom.ownerDocument.createDocumentFragment().createSpan({ cls: "saver-transcript-lock" });
-		el.createSpan({ text: this.unlocked ? "Transcript unlocked" : "Transcript protected" });
-		const button = el.createEl("button", { text: this.unlocked ? "Lock" : "Unlock" });
+		if (this.unlocked) el.classList.add("is-unlocked");
+		const button = el.createEl("button", { cls: "clickable-icon saver-transcript-lock-button" });
 		button.type = "button";
+		setIcon(button, this.unlocked ? "lock-open" : "lock");
+		setTooltip(button, this.unlocked ? "Transcript unlocked · Click to lock" : "Transcript protected · Click to unlock");
 		button.setAttribute("aria-label", this.unlocked ? "Lock transcript" : "Unlock transcript for editing");
+		if (this.unlocked) el.createSpan({ text: "Unlocked" });
 		button.addEventListener("click", () => {
 			if (this.unlocked) lockTranscript(view);
 			else void view.state.facet(config).requestUnlock(view).catch((error: unknown) => {

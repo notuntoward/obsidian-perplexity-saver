@@ -794,13 +794,34 @@
 .saver-transcript-lock {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.5em;
-	margin-left: 0.75em;
+	gap: 0.25em;
+	margin-left: 0.5em;
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 	font-weight: normal;
+	vertical-align: middle;
 }
 
-.saver-transcript-lock button {
-	font-size: inherit;
+.saver-transcript-lock .saver-transcript-lock-button {
+	--icon-size: 16px;
+	padding: 4px;
+	height: 24px;
+	width: 24px;
+	border: none;
+	box-shadow: none;
+	background: transparent;
+	color: var(--text-muted);
+}
+
+.saver-transcript-lock .saver-transcript-lock-button:hover {
+	background: var(--background-modifier-hover);
+}
+
+.saver-transcript-lock .saver-transcript-lock-button:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
+}
+
+.saver-transcript-lock.is-unlocked .saver-transcript-lock-button {
+	color: var(--text-warning);
 }
