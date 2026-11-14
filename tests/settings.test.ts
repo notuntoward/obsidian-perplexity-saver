@@ -185,7 +185,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
 			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
 		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Video workspace default",
+			name: "Initial video workspace",
 			control: expect.objectContaining({ type: "dropdown", key: "preferredVideoWorkspace" }),
 		}));
 		expect(group?.items).toContainEqual(expect.objectContaining({
