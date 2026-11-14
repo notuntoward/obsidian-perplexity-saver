@@ -70,7 +70,7 @@ beforeEach(() => {
 	HTMLElement.prototype.appendText = function (text) { this.append(text); };
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
 	HTMLElement.prototype.isShown = function () {
-		return !this.parentElement?.classList.contains("is-filtered") || this.classList.contains("is-match");
+		return !this.closest(".is-filtered") || this.classList.contains("is-match");
 	};
 	HTMLElement.prototype.scrollIntoView = vi.fn();
 });
@@ -114,7 +114,155 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 	return view;
 }
 
-describe("local acoustic alignment comparison", () => {
+describe("transcript reading formats and saved timing", () => {
+	it.each([false, true])("keeps paragraph prose quiet and captures the selected sentence, not playback (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const insertTimestampAt = vi.fn().mockResolvedValue(undefined);
+		const view = await panel(doc, { insertTimestampAt }, undefined, "abcdefghijk",
+			'# Transcript\n<!-- saver-transcript-language: en -->\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-2") First sentence.\n[0:02](https://youtu.be/abcdefghijk?t=2 "2-4") Second sentence.\n');
+		expect(view.contentEl.querySelector(".perplexity-saver-transcript-count")).toBeNull();
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-time")).toHaveLength(0);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-selection")!.hidden).toBe(true);
+		rows(view)[0].click();
+		view.showPlayback(2);
+		expect(rows(view)[0].classList.contains("is-selected")).toBe(true);
+		expect(rows(view)[1].classList.contains("is-selected")).toBe(false);
+		view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Insert selected timestamp into note"]')!.click();
+		expect(insertTimestampAt).toHaveBeenCalledWith("note.md", expect.stringContaining("abcdefghijk"), 0);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("does not repeat the language warning when a replacement view is created", async () => {
+		const paragraphWarnings = new Set<string>();
+		await panel(document, { paragraphWarnings });
+		await panel(document, { paragraphWarnings });
+		expect(createdNotices).toHaveLength(1);
+	});
+
+	it.each([false, true])("routes search from native pane chrome without selecting a row (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		let active: Element | null = null;
+		if (popout) Object.defineProperty(doc, "activeElement", { get: () => active });
+		const view = await panel(doc);
+		const container = doc.body.createDiv();
+		const header = container.createEl("button");
+		container.appendChild(view.contentEl);
+		view.containerEl = container;
+		view.refreshSearchSettings();
+		Object.assign(view.app.workspace, { getLeavesOfType: () => [{ view }] });
+		header.focus();
+		if (popout) active = header;
+		const command = transcriptSearchCommands(view.app)[0];
+		expect(command.checkCallback!(true)).toBe(true);
+		command.checkCallback!(false);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(false);
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("routes body-focused shared search only to the active transcript (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const view = await panel(doc);
+		view.containerEl = view.contentEl;
+		Object.assign(view.leaf, { view });
+		const other = { view: { containerEl: doc.body.createDiv() } };
+		Object.assign(view.app.workspace, {
+			activeLeaf: view.leaf,
+			getLeavesOfType: () => [view.leaf],
+			iterateAllLeaves: (fn: (leaf: unknown) => void) => [view.leaf, other].forEach(fn),
+		});
+		view.refreshSearchSettings();
+		expect(doc.activeElement).toBe(doc.body);
+		expect(transcriptSearchCommands(view.app)[0].checkCallback!(true)).toBe(true);
+		expect(dispatchSearchNavigation(doc.body, "forward", false)).toBe(true);
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(false);
+		Object.assign(view.app.workspace, { activeLeaf: other });
+		if (!popout) (doc.activeElement as HTMLElement).blur();
+		expect(transcriptSearchCommands(view.app)[0].checkCallback!(true)).toBe(false);
+		expect(dispatchSearchNavigation(doc.body, "forward", true)).toBe(false);
+	});
+
+	it("routes search to a later focused transcript rather than stopping at an unfocused one", async () => {
+		const first = await panel();
+		const second = await panel();
+		Object.assign(first.app.workspace, { getLeavesOfType: () => [{ view: first }, { view: second }] });
+		rows(second)[0].focus();
+		const command = transcriptSearchCommands(first.app)[0];
+		expect(command.checkCallback!(true)).toBe(true);
+		command.checkCallback!(false);
+		expect(second.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(false);
+		expect(first.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-search")!.hidden).toBe(true);
+	});
+
+	it.each([["paragraphs", "readable-paragraphs"], ["aligned-sentences", "sentences"]])(
+		"restores legacy %s as %s without seeking", async (legacy, current) => {
+			const view = await panel(document);
+			await view.setState({ file: view.getFilePath(), mode: legacy, filter: true, pinned: true }, { history: false });
+			expect(view.contentEl.querySelector("select")!.value).toBe(current);
+			expect(view.getState()).toMatchObject({ mode: current, filter: true, pinned: true });
+			expect(play).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([false, true])("offers a reading toolbar with three formats and automatic saved timing (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
+		const prepared = prepareTranscript(parseStoredTranscript(section));
+		const timings: WordTimings = {
+			sourceHash: prepared.hash, videoId: "abcdefghijk",
+			wordSources: ["caption", "unmatched", "youtube", "unmatched"],
+			words: [[0, null, null], null, [2, null, null], null],
+		};
+		const view = await panel(doc, { getAlignmentEnabled: () => false }, undefined, "abcdefghijk",
+			"# Transcript" + writeInlineTimings(section, timings));
+		const select = view.contentEl.querySelector("select")!;
+		expect(Array.from(select.options, (option) => option.text)).toEqual(["Paragraphs", "Sentences", "Captions"]);
+		select.value = "sentences";
+		select.dispatchEvent(new Event("change"));
+		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:02"]);
+		expect(view.contentEl.querySelector('[aria-label="Compare segmentations"]')).toBeNull();
+		expect(view.contentEl.querySelector(".perplexity-saver-transcript-experiment-status")).toBeNull();
+		expect(play).not.toHaveBeenCalled();
+	});
+
+	it.each([false, true])("separates following from a one-time playing-passage reveal (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
+		const view = await panel(doc);
+		Object.assign(view.app.workspace, { on: vi.fn(() => ({})) });
+		Object.assign(view.app.metadataCache, { on: vi.fn(() => ({})) });
+		Object.assign(view.app.vault, { on: vi.fn(() => ({})) });
+		Object.assign(view, { registerDomEvent: (el: HTMLElement, type: string, callback: EventListener) => el.addEventListener(type, callback) });
+		await view.onOpen();
+		view.showPlayback(0);
+		const follow = view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Follow video"]')!;
+		expect(follow.getAttribute("aria-pressed")).toBe("true");
+		const scroll = vi.spyOn(view as unknown as {
+			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
+		}, "scrollToRow");
+		scroll.mockClear();
+		view.contentEl.dispatchEvent(new Event("wheel", { bubbles: true }));
+		view.showPlayback(2);
+		expect(scroll).not.toHaveBeenCalled();
+		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		const resume = view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Show playing passage"]')!;
+		expect(resume.hidden).toBe(false);
+		resume.click();
+		expect(scroll).toHaveBeenCalled();
+		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		scroll.mockClear();
+		view.showPlayback(3);
+		expect(scroll).not.toHaveBeenCalled();
+		follow.click();
+		expect(follow.getAttribute("aria-pressed")).toBe("true");
+		expect(resume.hidden).toBe(true);
+		key(rows(view)[0], "PageDown");
+		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		expect(play).not.toHaveBeenCalled();
+	});
+
 	it.each(["en", "en-US"])("keeps English topic grouping without a fallback warning (%s)", async (language) => {
 		const view = await panel(document, {}, undefined, "abcdefghijk",
 			`# Transcript\n<!-- saver-transcript-language: ${language} -->\n` +
@@ -169,7 +317,9 @@ describe("local acoustic alignment comparison", () => {
 			expect(paragraphs).toHaveLength(1);
 			expect(rows(view)).toHaveLength(2);
 			expect(rows(view).every((row) => row.parentElement === paragraphs[0] && row.tagName === "SPAN")).toBe(true);
-			expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", timed ? "0:02" : "≈ 0:00"]);
+			expect(rows(view).every((row) => row.querySelector("a") === null)).toBe(true);
+			rows(view)[1].click();
+			expect(view.contentEl.querySelector(".perplexity-saver-transcript-selection")!.textContent).toContain(timed ? "0:02" : "≈ 0:00");
 			rows(view)[1].focus();
 			if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
 			select.value = "lines";
@@ -190,7 +340,7 @@ describe("local acoustic alignment comparison", () => {
 			expect(align).not.toHaveBeenCalled();
 		});
 
-	it.each([false, true])("switches completed timing to word-timed sentences without seeking (popout=%s)", async (popout) => {
+	it.each([false, true])("switches completed timing to Sentences without seeking (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
 		const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
@@ -202,21 +352,21 @@ describe("local acoustic alignment comparison", () => {
 		};
 		const view = await panel(doc, { getAlignmentEnabled: () => true }, undefined, "abcdefghijk", "# Transcript" + section);
 		const select = view.contentEl.querySelector("select")!;
-		select.value = "paragraphs";
+		select.value = "readable-paragraphs";
 		select.dispatchEvent(new Event("change"));
 		await view.reload({ showWordTimedSentences: true });
-		expect(view.getState().mode).toBe("paragraphs");
+		expect(view.getState().mode).toBe("readable-paragraphs");
 		vi.spyOn(view.app.vault, "cachedRead").mockResolvedValue("# Transcript" + writeInlineTimings(section, timings));
 		await view.reload();
-		expect(view.getState().mode).toBe("paragraphs");
+		expect(view.getState().mode).toBe("readable-paragraphs");
 		await view.reload({ showWordTimedSentences: true });
-		expect(view.getState().mode).toBe("aligned-sentences");
-		expect(view.contentEl.querySelector("select")!.value).toBe("aligned-sentences");
+		expect(view.getState().mode).toBe("sentences");
+		expect(view.contentEl.querySelector("select")!.value).toBe("sentences");
 		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:02"]);
 		expect(play).not.toHaveBeenCalled();
 	});
 
-	it.each([false, true])("loads compact timings offline and compares sentence starts (popout=%s)", async (popout) => {
+	it.each([false, true])("loads compact timings offline with no comparison controls (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
 		const section = '\n[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n';
@@ -231,17 +381,16 @@ describe("local acoustic alignment comparison", () => {
 			undefined, "abcdefghijk", "# Transcript" + writeInlineTimings(section, timings));
 		expect(view.contentEl.textContent).not.toContain("Time words");
 		expect(view.contentEl.textContent).not.toContain("Compact saved timings");
-		expect(view.contentEl.textContent).toContain("2/2 sentence starts timed");
+		expect(view.contentEl.querySelector(".perplexity-saver-transcript-timing-status")).toBeNull();
 		const select = view.contentEl.querySelector("select")!;
-		select.value = "aligned-sentences";
+		select.value = "sentences";
 		select.dispatchEvent(new Event("change"));
 		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:02"]);
 		rows(view)[1].focus();
 		if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
 		key(rows(view)[1], "Enter");
 		expect(play).toHaveBeenLastCalledWith("note.md", expect.any(String), 2, true);
-		Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compare")!.click();
-		expect(rows(view).map((row) => row.querySelector("a")?.textContent)).toEqual(["0:00", "0:00"]);
+		expect(view.contentEl.querySelector('[aria-label="Compare segmentations"]')).toBeNull();
 		expect(rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent)).toEqual(["We left.", "We stayed."]);
 		expect(align).not.toHaveBeenCalled();
 	});
@@ -271,7 +420,7 @@ describe("local acoustic alignment comparison", () => {
 		expect(play).not.toHaveBeenCalled();
 	});
 
-	it.each([false, true])("compares identical text with aligned playback, offline in either document (popout=%s)", async (popout) => {
+	it.each([false, true])("uses legacy acoustic timings offline and offers migration under More (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);
 		const lines = ["start", "target first", "context", "target last"].map((text, i) => ({
@@ -288,13 +437,12 @@ describe("local acoustic alignment comparison", () => {
 		};
 		const align = vi.fn(async () => {});
 		const view = await panel(doc, { getAlignmentEnabled: () => true, alignTranscript: align }, cache, "abcdefghijk");
-		expect(view.contentEl.querySelector('option[value="aligned-sentences"]')).not.toBeNull();
+		expect(view.contentEl.querySelector('option[value="aligned-sentences"]')).toBeNull();
 		const select = view.contentEl.querySelector("select")!;
 		select.value = "sentences";
 		select.dispatchEvent(new Event("change"));
 		const text = rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent);
-		Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compare")!.click();
-		expect(view.getState().mode).toBe("aligned-sentences");
+		expect(view.getState().mode).toBe("sentences");
 		expect(rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent)).toEqual(text);
 		expect(rows(view)[0].querySelector("a")?.textContent).toBe("0:00");
 		rows(view)[0].focus();
@@ -302,9 +450,10 @@ describe("local acoustic alignment comparison", () => {
 		key(rows(view)[0], "Enter");
 		expect(play).toHaveBeenLastCalledWith("note.md", "https://www.youtube.com/watch?v=abcdefghijk", 0, true);
 		expect(align).not.toHaveBeenCalled();
-		const migrate = Array.from(view.contentEl.querySelectorAll("button")).find((button) => button.textContent === "Compact saved timings");
+		view.contentEl.querySelector<HTMLElement>('[aria-label="More transcript options"]')!.click();
+		const migrate = menuChoices.find((item) => item.title === "Compact saved timings");
 		expect(migrate).toBeDefined();
-		migrate!.click();
+		migrate!.run!();
 		expect(align).toHaveBeenCalledWith("note.md");
 	});
 });
@@ -332,7 +481,7 @@ describe("transcript-only playback controls", () => {
 		const bar = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback")!;
 		expect(bar.parentElement).toBe(view.contentEl.querySelector(".perplexity-saver-transcript-controls"));
 		expect(bar.hidden).toBe(visible);
-		for (const [label, action] of [["Play", "play"], ["Previous transcript row", "previous"], ["Next transcript row", "next"], ["Insert current timestamp", "insert"]]) {
+		for (const [label, action] of [["Play", "play"], ["Previous caption", "previous"], ["Next caption", "next"], ["Insert current timestamp", "insert"]]) {
 			bar.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!.click();
 			if (visible) expect(runPlaybackControl).not.toHaveBeenCalled();
 			else expect(runPlaybackControl).toHaveBeenLastCalledWith("note.md", action);
@@ -347,7 +496,7 @@ describe("transcript-only playback controls", () => {
 			isPlaybackPlaying: () => playing,
 			runPlaybackControl: vi.fn(),
 		} as Partial<TranscriptViewHost>);
-		const button = view.contentEl.querySelector<HTMLElement>('.perplexity-saver-transcript-playback button')!;
+		const button = view.contentEl.querySelector<HTMLElement>('.perplexity-saver-transcript-play-toggle')!;
 		expect(button.ownerDocument).toBe(doc);
 		expect(button.getAttribute("aria-label")).toBe("Play");
 		expect(button.dataset.icon).toBe("play");
@@ -377,7 +526,6 @@ describe("transcript-only playback controls", () => {
 		expect(rows(view)[1].classList.contains("is-playing")).toBe(true);
 		scroll.mockClear();
 		rows(view)[1].focus();
-		view["userScrollAt"] = Date.now();
 		view.showPlayback(1.2, true, false);
 		expect(scroll).not.toHaveBeenCalled();
 		playing = true;
@@ -400,7 +548,6 @@ describe("transcript-only playback controls", () => {
 			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
 		}, "scrollToRow");
 		rows(view)[1].focus();
-		view["userScrollAt"] = Date.now();
 		playing = false;
 		view.showPlayback(1.2, true, true);
 		expect(scroll).not.toHaveBeenCalled();
@@ -478,34 +625,32 @@ describe("transcript-only playback controls", () => {
 });
 
 describe("accepting transcript search", () => {
-	it("exposes the same orientation toggle in the labeled Layout menu", async () => {
+	it.each([false, true])("exposes orientation directly with an accurate icon (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) stubPopout(doc);
 		const toggleOrientation = vi.fn(async () => {});
-		const view = await panel(document, { movePanel: vi.fn(async () => {}), toggleOrientation });
-		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!.click();
-		expect(menuChoices.map((item) => item.title)).toEqual([
-			"Show pane tabs and navigation",
-			"Toggle transcript below / beside video",
-		]);
-		menuChoices[1].run!();
+		const view = await panel(doc, { toggleOrientation, getOrientation: () => "below" });
+		const button = view.contentEl.querySelector<HTMLElement>('[aria-label="Move transcript beside video"]')!;
+		expect(button.ownerDocument).toBe(doc);
+		expect(button.dataset.icon).toBe("arrow-right-to-line");
+		expect(button.textContent).toBe("Beside video");
+		button.click();
 		expect(toggleOrientation).toHaveBeenCalledWith("note.md");
+		expect(menuChoices).toHaveLength(0);
 	});
 
-	it("restores native pane chrome from the layout menu and closes using the host", async () => {
+	it("restores native pane chrome directly and closes using the host", async () => {
 		const closePanel = vi.fn(async () => {});
 		const view = await panel(document, { toggleOrientation: vi.fn(async () => {}), closePanel });
-		const layout = view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!;
-		expect(layout.textContent).toContain("Layout");
+		const layout = view.contentEl.querySelector<HTMLElement>('button[aria-label="Show pane tabs and navigation"]')!;
+		expect(layout.getAttribute("aria-pressed")).toBe("false");
 		layout.click();
-		const choice = menuChoices.find((item) => item.title === "Show pane tabs and navigation")!;
-		expect(choice.checked).toBe(false);
-		choice.run!();
 		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(true);
 		view.refreshSearchSettings();
 		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(true);
-		menuChoices.length = 0;
-		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript layout"]')!.click();
-		expect(menuChoices[0].checked).toBe(true);
-		menuChoices[0].run!();
+		const toggle = view.contentEl.querySelector<HTMLElement>('button[aria-label="Show pane tabs and navigation"]')!;
+		expect(toggle.getAttribute("aria-pressed")).toBe("true");
+		toggle.click();
 		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(false);
 		view.contentEl.querySelector<HTMLElement>('button[aria-label="Close transcript pane"]')!.click();
 		expect(closePanel).toHaveBeenCalledWith(view.leaf);
@@ -521,7 +666,8 @@ describe("accepting transcript search", () => {
 		expect(bar.hidden).toBe(true);
 		expect(document.activeElement).toBe(rows(view)[1]);
 		expect(view.contentEl.classList.contains("show-help")).toBe(false);
-		view.contentEl.querySelector<HTMLElement>('button[aria-label="Transcript keyboard help"]')!.click();
+		view.contentEl.querySelector<HTMLElement>('[aria-label="More transcript options"]')!.click();
+		menuChoices.find((item) => item.title === "Keyboard help")!.run!();
 		expect(view.contentEl.classList.contains("show-help")).toBe(true);
 	});
 
@@ -758,7 +904,6 @@ describe("accepting transcript search", () => {
 			scrollToRow: (row: HTMLElement, onlyIfNeeded: boolean, smooth?: boolean) => void;
 		}, "scrollToRow");
 		rows(view)[1].focus();
-		view["userScrollAt"] = Date.now();
 		view.showPlayback(3.5, false, false);
 		expect(scroll).not.toHaveBeenCalled();
 		view.showPlayback(2.5, false, false, true);
@@ -1152,30 +1297,29 @@ describe("transcript search settings", () => {
 		expect(document.activeElement).toBe(rows(view)[3]);
 	});
 
-	it("re-centers the playing chunk when switching transcript format after a click", async () => {
+	it("preserves the playing sentence when switching to paragraph formatting", async () => {
 		const view = await panel();
 		view.showPlayback(2.5);
 		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
 		const scrolled = vi.mocked(HTMLElement.prototype.scrollIntoView);
 		scrolled.mockClear();
-		view["userScrollAt"] = Date.now();
 		const format = view.contentEl.querySelector("select")!;
-		format.value = "paragraphs";
+		format.value = "readable-paragraphs";
 		format.dispatchEvent(new Event("change"));
-		expect(view.contentEl.querySelectorAll(".is-playing")).toHaveLength(1);
-		expect(rows(view)[0].classList.contains("is-playing")).toBe(true);
+		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-row.is-playing")).toHaveLength(1);
+		expect(rows(view)[2].classList.contains("is-playing")).toBe(true);
 		expect(scrolled).toHaveBeenCalled();
 	});
 
 	it("accepts a search after paragraph formatting without playing", async () => {
 		const view = await panel();
 		const format = view.contentEl.querySelector("select")!;
-		format.value = "paragraphs";
+		format.value = "readable-paragraphs";
 		format.dispatchEvent(new Event("change"));
 		const input = search(view);
 		key(input, "Tab");
 		expect(input.value).toBe("");
-		expect(document.activeElement).toBe(rows(view)[0]);
+		expect(document.activeElement).toBe(rows(view)[1]);
 		expect(play).not.toHaveBeenCalled();
 	});
 });

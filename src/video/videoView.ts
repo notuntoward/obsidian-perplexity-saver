@@ -3,6 +3,7 @@ import type { App, ViewStateResult, WorkspaceLeaf } from "obsidian";
 import { captureElementImage } from "commons/os";
 import { findLeafForFile, getActiveLeafInFocusedWindow, getWindowForLeaf, loadLeafIfDeferred } from "commons/workspace";
 import { requestFrameIn, setTimeoutIn, writeClipboardIn } from "commons/windows";
+import { getCommandHotkeyLabel, renderKeyHints } from "commons/modal";
 import { findTranscriptRange } from "../litNote/transcriptSection";
 import {
 	blockInsertion,
@@ -64,6 +65,7 @@ export interface VideoViewHost {
 	getTimestampListStyle?(): TimestampListStyle;
 	getToolbarCaptureAction(): VideoToolbarCaptureAction;
 	getShowYoutubeCaptions(): boolean;
+	getTranscriptUnit?(filePath: string | null): "sentence" | "caption";
 	insertTimestamp(view: VideoView): Promise<void>;
 	insertScreenshot(view: VideoView, whole: boolean): Promise<void>;
 	/** True when a transcript panel the button controls is on screen. */
@@ -97,13 +99,16 @@ export class VideoView extends ItemView {
 	private rateLabel!: HTMLElement;
 	private rate = 1;
 	private snip: SnipSession | null = null;
-	private zoomLabel!: HTMLElement;
 	private trackEl!: HTMLElement;
 	private marksEl!: HTMLElement;
 	private emptyEl!: HTMLElement;
 	private transcriptBtn!: HTMLElement;
-	private timestampBtn!: HTMLElement;
+	private previousTranscriptBtn!: HTMLElement;
+	private nextTranscriptBtn!: HTMLElement;
+	private transcriptUnitLabel!: HTMLElement;
 	private screenshotBtn?: HTMLElement;
+	private helpEl!: HTMLElement;
+	private helpBtn!: HTMLElement;
 
 	constructor(leaf: WorkspaceLeaf, private readonly host: VideoViewHost) {
 		super(leaf);
@@ -160,7 +165,8 @@ export class VideoView extends ItemView {
 		if (!win || !this.stageEl || el.clientWidth <= 0 || el.clientHeight <= 0) return;
 		const css = win.getComputedStyle(el);
 		const width = el.clientWidth - parseFloat(css.paddingLeft) - parseFloat(css.paddingRight);
-		const chrome = Array.from(el.querySelectorAll<HTMLElement>(":scope > .perplexity-saver-video-timeline, :scope > .perplexity-saver-video-controls"));
+		const chrome = Array.from(el.querySelectorAll<HTMLElement>(":scope > .perplexity-saver-video-position, :scope > .perplexity-saver-video-timeline, :scope > .perplexity-saver-video-controls, :scope > .perplexity-saver-video-help"))
+			.filter((child) => child.getBoundingClientRect().height > 0);
 		const height = el.clientHeight - parseFloat(css.paddingTop) - parseFloat(css.paddingBottom)
 			- chrome.reduce((sum, child) => sum + child.getBoundingClientRect().height, 0)
 			- (parseFloat(css.rowGap) || 0) * chrome.length;
@@ -265,6 +271,8 @@ export class VideoView extends ItemView {
 		const overlay = this.stageEl.createDiv({ cls: "perplexity-saver-video-overlay" });
 		this.bindOverlay(overlay);
 
+		const position = el.createDiv({ cls: "perplexity-saver-video-position" });
+		this.timeEl = position.createSpan({ cls: "perplexity-saver-video-time", text: "0:00" });
 		const timeline = el.createDiv({ cls: "perplexity-saver-video-timeline" });
 		this.trackEl = timeline.createDiv({
 			cls: "perplexity-saver-video-track",
@@ -281,12 +289,15 @@ export class VideoView extends ItemView {
 		this.bindTimeline();
 
 		const bar = el.createDiv({ cls: "perplexity-saver-video-controls" });
-		this.button(bar, "rotate-ccw", `Back ${SKIP_SECONDS} seconds (J)`, () => this.skip(-SKIP_SECONDS), "J");
-		this.playBtn = this.button(bar, "play", "Play (space)", () => this.togglePlay(), "K");
-		this.button(bar, "rotate-cw", `Forward ${SKIP_SECONDS} seconds (L)`, () => this.skip(SKIP_SECONDS), "L");
-		this.timeEl = bar.createSpan({ cls: "perplexity-saver-video-time", text: "0:00" });
+		const group = (name: string, label: string): HTMLElement => bar.createDiv({
+			cls: "perplexity-saver-video-control-group", attr: { "data-group": name, role: "group", "aria-label": label },
+		});
+		const transport = group("transport", "Playback");
+		this.button(transport, "", `Back ${SKIP_SECONDS} seconds (J)`, () => this.skip(-SKIP_SECONDS), "J").setText(`-${SKIP_SECONDS}s`);
+		this.playBtn = this.button(transport, "play", "Play (space)", () => this.togglePlay(), "K");
+		this.button(transport, "", `Forward ${SKIP_SECONDS} seconds (L)`, () => this.skip(SKIP_SECONDS), "L").setText(`+${SKIP_SECONDS}s`);
 
-		this.rateBtn = this.button(bar, "gauge", "Playback speed", (evt) => this.showRateMenu(evt));
+		this.rateBtn = this.button(transport, "gauge", "Playback speed", (evt) => this.showRateMenu(evt));
 		this.rateBtn.addClass("perplexity-saver-video-rate");
 		this.rateBtn.setAttribute("aria-keyshortcuts", "Shift+Period Shift+Comma");
 		this.rateBtn.setAttribute("aria-haspopup", "menu");
@@ -301,43 +312,86 @@ export class VideoView extends ItemView {
 		);
 		this.showRate(1);
 
-		bar.createDiv({ cls: "perplexity-saver-video-spacer" });
-		this.button(bar, "zoom-out", "Zoom out (-)", () => this.zoomBy(1 / ZOOM_STEP), "Minus");
-		this.zoomLabel = bar.createEl("button", {
-			cls: "perplexity-saver-video-zoom-label",
-			text: "100%",
-			attr: { "aria-label": "Reset zoom (0)" },
-		});
-		this.zoomLabel.addEventListener("click", () => this.resetZoom());
-		this.button(bar, "zoom-in", "Zoom in (+)", () => this.zoomBy(ZOOM_STEP), "Plus");
-		this.timestampBtn = this.button(bar, "link", "", () => {
-			if (this.host.getToolbarCaptureAction() === "insert") void this.host.insertTimestamp(this);
-			else void this.copyTimestampLink();
-		});
-		this.timestampBtn.setAttribute("aria-haspopup", "menu");
-		this.timestampBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, this.timestampBtn, false));
-		const timestampMenu = this.button(bar, "chevron-down", "Timestamp alternatives", (evt) => this.showCaptureMenu(evt, timestampMenu, false));
-		timestampMenu.setAttribute("aria-haspopup", "menu");
-		this.button(bar, "external-link", "Open in browser at this time", () => this.openInBrowser());
+		const navigation = group("navigation", "Transcript navigation");
+		this.previousTranscriptBtn = this.button(navigation, "chevron-up", "", () => this.host.jumpToTranscriptTimestamp(this, -1), "[");
+		this.transcriptUnitLabel = navigation.createSpan({ cls: "perplexity-saver-video-unit" });
+		this.nextTranscriptBtn = this.button(navigation, "chevron-down", "", () => this.host.jumpToTranscriptTimestamp(this, 1), "]");
+		const capture = group("capture", "Capture into note");
+		const timestamp = this.button(capture, "file-plus-2", "Insert current timestamp into note", () => void this.host.insertTimestamp(this));
+		timestamp.createSpan({ text: "Insert time" });
+		this.button(capture, "copy", "Copy current timestamp link", () => void this.copyTimestampLink());
 		if (Platform.isDesktopApp) {
-			this.screenshotBtn = this.button(bar, "camera", "", (evt) => {
+			this.screenshotBtn = this.button(capture, "camera", "", (evt) => {
 				if (this.host.getToolbarCaptureAction() === "insert") void this.host.insertScreenshot(this, evt.shiftKey);
 				else void this.screenshot(evt.shiftKey);
 			});
 			const screenshotBtn = this.screenshotBtn;
 			screenshotBtn.setAttribute("aria-haspopup", "menu");
-			screenshotBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, screenshotBtn, true));
-			const screenshotMenu = this.button(bar, "chevron-down", "Screenshot alternatives", (evt) => this.showCaptureMenu(evt, screenshotMenu, true));
+			screenshotBtn.addEventListener("contextmenu", (evt) => this.showCaptureMenu(evt, screenshotBtn));
+			const screenshotMenu = this.button(capture, "chevron-down", "Screenshot alternatives", (evt) => this.showCaptureMenu(evt, screenshotMenu));
 			screenshotMenu.setAttribute("aria-haspopup", "menu");
 		}
 		this.updateToolbarCaptureLabels();
-		this.button(bar, "skip-back", "Previous transcript row ([)", () => this.host.jumpToTranscriptTimestamp(this, -1), "[");
-		this.transcriptBtn = this.button(bar, "captions", "Show transcript (C)", () => void this.toggleTranscript(), "C");
-		this.button(bar, "skip-forward", "Next transcript row (])", () => this.host.jumpToTranscriptTimestamp(this, 1), "]");
+		const view = group("view", "View options");
+		this.transcriptBtn = this.button(view, "file-text", "Show transcript (C)", () => void this.toggleTranscript(), "C");
+		this.helpBtn = this.button(view, "circle-help", "Video keyboard help", () => this.toggleHelp());
+		this.helpBtn.setAttribute("aria-expanded", "false");
+		const more = this.button(view, "ellipsis", "More video options", () => {
+			const menu = new Menu();
+			menu.addItem((item) => item.setTitle("Zoom out (-)").onClick(() => this.zoomBy(1 / ZOOM_STEP)));
+			menu.addItem((item) => item.setTitle("Reset zoom (0)").onClick(() => this.resetZoom()));
+			menu.addItem((item) => item.setTitle("Zoom in (+)").onClick(() => this.zoomBy(ZOOM_STEP)));
+			menu.addSeparator();
+			menu.addItem((item) => item.setTitle("Open in browser at this time").onClick(() => this.openInBrowser()));
+			const rect = more.getBoundingClientRect();
+			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
+		});
+		more.setAttribute("aria-haspopup", "menu");
+		this.helpEl = el.createDiv({ cls: "perplexity-saver-video-help", attr: { role: "region", "aria-label": "Video keyboard shortcuts" } });
+		this.helpEl.hidden = true;
+		this.helpEl.addEventListener("keydown", (evt) => {
+			if (evt.key !== "Escape") return;
+			evt.stopPropagation();
+			this.toggleHelp(false);
+			this.helpBtn.focus();
+		});
 		this.updateTranscriptButton();
 
 		el.addEventListener("keydown", (evt) => this.onKey(evt));
 		this.updateEmpty();
+	}
+
+	private toggleHelp(show = this.helpEl.hidden): void {
+		this.helpEl.hidden = !show;
+		this.helpBtn.setAttribute("aria-expanded", String(show));
+		this.helpBtn.toggleClass("is-active", show);
+		if (show) {
+			this.helpEl.empty();
+			const header = this.helpEl.createDiv({ cls: "perplexity-saver-video-help-heading", text: "Video keyboard shortcuts" });
+			this.button(header, "x", "Close video keyboard help", () => this.toggleHelp(false));
+			this.helpEl.createDiv({ text: "Note, player or transcript" });
+			const shared = [
+				["video-viewer-play-pause", "play / pause"], ["video-seek-backward-10-seconds", "back 10 seconds"],
+				["video-seek-forward-10-seconds", "forward 10 seconds"], ["video-viewer-previous-note-timestamp", "previous segment"],
+				["video-viewer-next-note-timestamp", "next segment"], ["video-viewer-insert-timestamp", "insert timestamp"],
+				["video-viewer-copy-timestamp", "copy timestamp"], ["show-youtube-transcript", "show / hide transcript"],
+				["video-viewer-faster", "faster"], ["video-viewer-slower", "slower"],
+			].map(([id, action]) => {
+				const key = getCommandHotkeyLabel(this.app, `perplexity-saver:${id}`);
+				return [{ key: key || "Unassigned", action, disabled: !key }];
+			});
+			renderKeyHints(this.helpEl.createDiv({ cls: "perplexity-saver-video-shared-keys" }), shared, "perplexity-saver");
+			this.helpEl.createDiv({ text: "Assign shared shortcuts in Settings → Hotkeys." });
+			this.helpEl.createDiv({ text: "While the player is focused" });
+			renderKeyHints(this.helpEl.createDiv(), [
+				[{ key: "Space / K", action: "play / pause" }, { key: "J / L", action: "back / forward 10 seconds" }],
+				[{ key: "← / →", action: "back / forward 5 seconds" }, { key: "Page Up / Down", action: "back / forward 1 minute" }],
+				[{ key: "Home / End", action: "start / end" }, { key: "↑ / ↓", action: "seek 5 seconds (timeline only)" }],
+				[{ key: "[ / ]", action: "previous / next segment" }, { key: "< / >", action: "speed" }],
+				[{ key: "+ / -", action: "zoom" }, { key: "0", action: "reset zoom" }, { key: "C", action: "transcript" }],
+			], "perplexity-saver");
+		}
+		this.onResize();
 	}
 
 	/** Show or hide the note's transcript panel. */
@@ -407,6 +461,14 @@ export class VideoView extends ItemView {
 		this.transcriptBtn.toggleClass("is-active", shown);
 		this.transcriptBtn.setAttribute("aria-label", shown ? "Hide transcript (C)" : "Show transcript (C)");
 		this.transcriptBtn.setAttribute("aria-pressed", String(shown));
+		const unit = this.host.getTranscriptUnit?.(this.filePath) ?? "caption";
+		this.transcriptUnitLabel?.setText(unit === "sentence" ? "Sentence" : "Caption");
+		this.previousTranscriptBtn?.setAttribute("aria-label", `Previous ${unit} ([)`);
+		this.nextTranscriptBtn?.setAttribute("aria-label", `Next ${unit} (])`);
+	}
+
+	refreshTranscriptControls(): void {
+		this.updateTranscriptButton();
 	}
 
 	private button(
@@ -418,14 +480,13 @@ export class VideoView extends ItemView {
 	): HTMLElement {
 		const btn = parent.createEl("button", { cls: "clickable-icon", attr: { "aria-label": label } });
 		if (keys) btn.setAttribute("aria-keyshortcuts", keys);
-		setIcon(btn, icon);
+		if (icon) setIcon(btn, icon);
 		btn.addEventListener("click", onClick);
 		return btn;
 	}
 
 	updateToolbarCaptureLabels(): void {
 		const insert = this.host.getToolbarCaptureAction() === "insert";
-		this.timestampBtn?.setAttribute("aria-label", `${insert ? "Insert timestamp into note" : "Copy timestamp"} (alternatives button or right-click for both actions)`);
 		this.screenshotBtn?.setAttribute("aria-label",
 			`${insert ? "Insert screenshot into note" : "Copy screenshot"}: drag an area, or click for the whole picture (Shift-click: whole picture now; alternatives button or right-click for both actions)`);
 	}
@@ -434,26 +495,21 @@ export class VideoView extends ItemView {
 		this.player?.setCaptions(this.host.getShowYoutubeCaptions());
 	}
 
-	private showCaptureMenu(evt: MouseEvent, button: HTMLElement, screenshot: boolean): void {
+	private showCaptureMenu(evt: MouseEvent, button: HTMLElement): void {
 		evt.preventDefault();
 		evt.stopPropagation();
 		const menu = new Menu();
-		if (screenshot) {
-			menu.addItem((item) => item.setTitle("Insert selected area into note...").onClick(() => void this.host.insertScreenshot(this, false)));
-			menu.addItem((item) => item.setTitle("Copy selected area...").onClick(() => void this.screenshot(false)));
-			menu.addItem((item) => item.setTitle("Insert whole picture into note").onClick(() => void this.host.insertScreenshot(this, true)));
-			menu.addItem((item) => item.setTitle("Copy whole picture").onClick(() => void this.screenshot(true)));
-		} else {
-			menu.addItem((item) => item.setTitle("Insert timestamp into note").onClick(() => void this.host.insertTimestamp(this)));
-			menu.addItem((item) => item.setTitle("Copy timestamp").onClick(() => void this.copyTimestampLink()));
-		}
+		menu.addItem((item) => item.setTitle("Insert selected area into note...").onClick(() => void this.host.insertScreenshot(this, false)));
+		menu.addItem((item) => item.setTitle("Copy selected area...").onClick(() => void this.screenshot(false)));
+		menu.addItem((item) => item.setTitle("Insert whole picture into note").onClick(() => void this.host.insertScreenshot(this, true)));
+		menu.addItem((item) => item.setTitle("Copy whole picture").onClick(() => void this.screenshot(true)));
 		const rect = button.getBoundingClientRect();
 		menu.showAtPosition({ x: rect.left, y: rect.bottom }, button.ownerDocument);
 	}
 
 	private showRate(rate: number): void {
 		this.rate = rate;
-		this.rateLabel.setText(rate === 1 ? "" : `${rate}×`);
+		this.rateLabel.setText(`${rate}×`);
 		this.rateBtn.toggleClass("is-active", rate !== 1);
 		this.rateBtn.setAttribute("aria-label", `Playback speed: ${rate}× (< and > to change)`);
 	}
@@ -661,10 +717,10 @@ export class VideoView extends ItemView {
 			"--perplexity-saver-video-y": `${state.y}px`,
 		});
 		this.stageEl?.toggleClass("is-zoomed", state.zoom > 1);
-		this.zoomLabel?.setText(`${Math.round(state.zoom * 100)}%`);
 	}
 
 	private onKey(evt: KeyboardEvent): void {
+		if (this.helpEl?.contains(evt.target as Node | null)) return;
 		if (this.snip) {
 			if (evt.key === "Escape" || evt.key === "Enter") {
 				evt.preventDefault();

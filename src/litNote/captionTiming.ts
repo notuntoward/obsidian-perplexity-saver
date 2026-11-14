@@ -113,7 +113,7 @@ export async function runCaptionTiming(
 			await save(cache, sourceSection);
 			const sentences = alignedSentenceRows(prepared, cache);
 			const approximate = sentences.filter((sentence) => sentence.timingUncertain).length;
-			new Notice(`Native YouTube sentence timings saved. No audio or model downloads. ${sentences.length - approximate}/${sentences.length} sentence starts timed; ${approximate} approximate. Use Compare to compare with caption timing.`);
+			new Notice(`Native YouTube sentence timings saved. No audio or model downloads. ${sentences.length - approximate}/${sentences.length} sentence starts timed; ${approximate} approximate. Sentence and paragraph views use saved timings automatically.`);
 			return cache;
 		} finally {
 			notice.hide();

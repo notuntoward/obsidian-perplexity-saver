@@ -15,6 +15,7 @@ import {
 } from "commons/search";
 import {
 	getWindowForLeaf,
+	getActiveLeafInFocusedWindow,
 	isInCollapsedSidebar,
 	isSidebarCollapsed,
 	isSidebarLeaf,
@@ -45,12 +46,23 @@ export function transcriptSearchCommands(app: App): Command[] {
 		id: `transcript-search-${direction}`,
 		name: `Transcript search: ${direction === "forward" ? "Forward" : "Reverse"} Emacs`,
 		checkCallback: (checking: boolean): boolean => {
-			for (const leaf of app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
+			const leaves = app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE);
+			for (const leaf of leaves) {
 				if (!(leaf.view instanceof TranscriptView)) continue;
 				const target = leaf.view.contentEl.ownerDocument.activeElement;
-				if (target && leaf.view.contentEl.contains(target)) {
+				if (target && (leaf.view.containerEl ?? leaf.view.contentEl).contains(target)) {
 					return dispatchSearchNavigation(target, direction, checking);
 				}
+			}
+			if (!leaves.some((leaf) => {
+				if (!(leaf.view instanceof TranscriptView)) return false;
+				const doc = leaf.view.contentEl.ownerDocument;
+				return !doc.activeElement || doc.activeElement === doc.body;
+			})) return false;
+			const view = getActiveLeafInFocusedWindow(app, { includeSidebars: true })?.view;
+			const doc = view?.containerEl?.ownerDocument;
+			if (view instanceof TranscriptView && (!doc?.activeElement || doc.activeElement === doc.body)) {
+				return dispatchSearchNavigation(view.contentEl, direction, checking);
 			}
 			return false;
 		},
@@ -59,16 +71,19 @@ export function transcriptSearchCommands(app: App): Command[] {
 
 export type TranscriptViewMode = "lines" | "paragraphs" | "sentences" | "aligned-sentences" | "readable-paragraphs";
 
-const COMPARISON_MODES: Record<TranscriptViewMode, string> = {
-	lines: "Original captions / lines",
-	sentences: "Punctuation sentences",
-	paragraphs: "Original paragraphs",
-	"aligned-sentences": "Word-timed sentences",
-	"readable-paragraphs": "Readable paragraphs",
+const TRANSCRIPT_MODES = {
+	"readable-paragraphs": "Paragraphs",
+	sentences: "Sentences",
+	lines: "Captions",
 };
 
 function isTranscriptMode(value: unknown): value is TranscriptViewMode {
-	return typeof value === "string" && Object.prototype.hasOwnProperty.call(COMPARISON_MODES, value);
+	return typeof value === "string" && (Object.prototype.hasOwnProperty.call(TRANSCRIPT_MODES, value) ||
+		value === "paragraphs" || value === "aligned-sentences");
+}
+
+function readingMode(mode: TranscriptViewMode): keyof typeof TRANSCRIPT_MODES {
+	return mode === "paragraphs" ? "readable-paragraphs" : mode === "aligned-sentences" ? "sentences" : mode;
 }
 
 export interface TranscriptSearchSettings {
@@ -123,7 +138,8 @@ export function transcriptRows(
 		startSec: line.startSec, url: line.url, text: line.text,
 		sourceStart: offsets.get(line),
 	}));
-	if (mode === "sentences") return sentenceRows(prepared);
+	if (mode === "sentences") return alignment ? alignedSentenceRows(prepared, alignment)
+		: sentenceRows(prepared).map((row) => ({ ...row, timingUncertain: !prepared.cueStarts.includes(row.sourceStart) }));
 	if (mode === "aligned-sentences") {
 		if (!alignment) throw new Error("Word timings are unavailable for this transcript.");
 		return alignedSentenceRows(prepared, alignment);
@@ -153,6 +169,8 @@ export interface TranscriptViewHost {
 	getHeadingName(): string;
 	getSearchSettings(): TranscriptSearchSettings;
 	getAlignmentEnabled?(): boolean;
+	paragraphWarnings?: Set<string>;
+	insertTimestampAt?(filePath: string, url: string, seconds: number): Promise<void>;
 	alignTranscript?(filePath: string): Promise<void>;
 	cancelAlignment?(): void;
 	/**
@@ -168,6 +186,8 @@ export interface TranscriptViewHost {
 	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert"): void;
 	movePanel?(filePath: string, location: TranscriptPanelLocation): Promise<void>;
 	toggleOrientation?(filePath: string): Promise<void>;
+	getOrientation?(filePath: string): "below" | "beside";
+	onFormatChanged?(filePath: string): void;
 	closePanel?(leaf: WorkspaceLeaf): Promise<void>;
 }
 
@@ -249,9 +269,6 @@ const ROW_HINTS: KeyHint[][] = [
 	],
 ];
 
-/** After the user scrolls or clicks in the panel, following playback waits this long (ms) before scrolling again. */
-const FOLLOW_PAUSE_MS = 4000;
-
 interface RenderedRow {
 	row: TranscriptRow;
 	el: HTMLElement;
@@ -284,13 +301,14 @@ export class TranscriptView extends ItemView {
 
 	private filePath: string | null = null;
 	private pinned = false;
-	private mode: TranscriptViewMode = "lines";
+	private mode: keyof typeof TRANSCRIPT_MODES = "readable-paragraphs";
 	private lines: StoredTranscriptLine[] | null = null;
 	private alignmentCache: WordTimings | null = null;
 	private needsTimingMigration = false;
 	private alignmentStatus = "Sentence timing: not computed.";
 	private aligning = false;
-	private paragraphWarningKey: string | null = null;
+	private timingProblem: string | null = null;
+	private readonly paragraphWarnings = this.host.paragraphWarnings ?? new Set<string>();
 	private comparisonSourceStart: number | null = null;
 	private loadToken = 0;
 	private rendered: RenderedRow[] = [];
@@ -322,12 +340,17 @@ export class TranscriptView extends ItemView {
 	private focusRow = -1;
 	private playbackSec: number | null = null;
 	private follow = true;
+	private followOverride: boolean | null = null;
 	private currentRow = -1;
 	/** Timestamp whose row must be centered as soon as the panel can scroll. */
 	private revealSeconds: number | null = null;
 	private revealObserver: ResizeObserver | null = null;
 	private observedRevealEl: HTMLElement | null = null;
-	private userScrollAt = 0;
+	private followingPaused = false;
+	private playingPassageBtn: HTMLElement | null = null;
+	private followBtn: HTMLElement | null = null;
+	private selectionBar: HTMLElement | null = null;
+	private selectedSourceStart: number | null = null;
 	private lastPlaying = false;
 
 	constructor(leaf: WorkspaceLeaf, private readonly host: TranscriptViewHost) {
@@ -367,7 +390,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	getIcon(): string {
-		return "captions";
+		return "file-text";
 	}
 
 	async onOpen(): Promise<void> {
@@ -409,13 +432,18 @@ export class TranscriptView extends ItemView {
 				if (file && file.path !== this.filePath) void this.followFile(file);
 			})
 		);
-		// Scrolling or clicking in the panel pauses following playback for a moment.
-		const touched = (): void => {
-			this.userScrollAt = Date.now();
-		};
+		const touched = (): void => this.pauseFollowing();
 		this.registerDomEvent(this.contentEl, "wheel", touched, { passive: true });
-		this.registerDomEvent(this.contentEl, "pointerdown", touched);
+		this.registerDomEvent(this.contentEl, "pointerdown", (evt) => {
+			const target = evt.target as HTMLElement | null;
+			if (target === this.contentEl || (target && this.listEl?.contains(target))) touched();
+		});
 		this.registerDomEvent(this.contentEl, "touchmove", touched, { passive: true });
+		this.registerDomEvent(this.contentEl, "keydown", (evt) => {
+			if (evt.ctrlKey || evt.metaKey || evt.altKey || (evt.key !== "PageDown" && evt.key !== "PageUp")) return;
+			const target = evt.target as HTMLElement | null;
+			if (!target?.closest("input, textarea, select, [contenteditable=true]")) touched();
+		});
 		await this.reload();
 	}
 
@@ -427,10 +455,13 @@ export class TranscriptView extends ItemView {
 				this.stopBackgroundPlayback();
 				this.revealSeconds = null;
 				this.lastPlaying = false;
+				this.followingPaused = false;
+				this.followOverride = null;
+				this.selectedSourceStart = null;
 			}
 			this.filePath = s.file;
 		}
-		if (isTranscriptMode(s.mode)) this.mode = s.mode;
+		if (isTranscriptMode(s.mode)) this.mode = readingMode(s.mode);
 		if (typeof s.filter === "boolean") this.filter = s.filter;
 		if (typeof s.pinned === "boolean") this.pinned = s.pinned;
 		await super.setState(state, result);
@@ -471,6 +502,9 @@ export class TranscriptView extends ItemView {
 			this.query = "";
 			this.searchOrigin = null;
 			this.lastPlaying = false;
+			this.followingPaused = false;
+			this.followOverride = null;
+			this.selectedSourceStart = null;
 		}
 		this.filePath = path;
 		await this.reload();
@@ -482,17 +516,21 @@ export class TranscriptView extends ItemView {
 		const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
 		const lines = file ? await loadTranscriptLines(this.app, file, this.host.getHeadingName()) : null;
 		if (token !== this.loadToken) return;
+		if (this.lines?.length !== lines?.length || this.lines?.some((line, i) => line.text !== lines?.[i]?.text)) {
+			this.selectedSourceStart = null;
+		}
 		this.lines = lines;
 		this.loadAlignmentCache(file, lines);
-		if (options?.showWordTimedSentences && this.alignmentCache) this.setMode("aligned-sentences");
+		if (options?.showWordTimedSentences && this.alignmentCache) this.setMode("sentences");
 		else this.render();
 	}
 
 	private loadAlignmentCache(file: TFile | null, lines: StoredTranscriptLine[] | null): void {
 		this.alignmentCache = null;
 		this.needsTimingMigration = false;
+		this.timingProblem = null;
 		this.alignmentStatus = "Sentence timing: not computed.";
-		if (!file || !lines?.length || !this.host.getAlignmentEnabled?.()) return;
+		if (!file || !lines?.length) return;
 		const raw: unknown = this.app.metadataCache.getFileCache(file)?.frontmatter?.[ALIGNMENT_CACHE_KEY];
 		try {
 			const transcript = prepareTranscript(lines);
@@ -504,17 +542,23 @@ export class TranscriptView extends ItemView {
 				this.alignmentStatus = `Sentence timing: ${sentences.length - missing}/${sentences.length} sentence starts timed; ${missing} approximate. Saved offline. ≈ marks estimated starts.` +
 					(this.needsTimingMigration ? " Compact saved timings moves the old Properties cache into transcript links, offline." : "");
 			} else if (raw !== undefined || lines.some((line) => line.timingMarker !== undefined || line.wordTimings !== undefined)) {
-				this.alignmentStatus = "Sentence timing: saved timings are stale. Click Time words to recompute sentence starts.";
+				this.alignmentStatus = "Sentence timing: saved timings are stale. Choose Get timings in More to refresh sentence starts.";
+				this.timingProblem = "Saved timings no longer match this transcript. Get timings to refresh them.";
 			}
 		} catch (error: unknown) {
 			console.error("Perplexity Saver: invalid saved timing cache", error);
 			this.alignmentStatus = error instanceof Error ? error.message : "Invalid saved transcript timing cache.";
+			this.timingProblem = this.alignmentStatus;
 		}
 	}
 
 	/** The displayed segmentation also drives existing next/previous timestamp commands. */
 	getRows(lines = this.lines ?? []): TranscriptRow[] {
-		return transcriptRows(lines, this.mode, this.host.getAlignmentEnabled?.() ? this.alignmentCache : undefined);
+		return transcriptRows(lines, readingMode(this.mode), this.alignmentCache);
+	}
+
+	getNavigationUnit(): "sentence" | "caption" {
+		return this.mode === "lines" || this.rendered[0]?.row.captionFallback ? "caption" : "sentence";
 	}
 
 	/** Put the cursor in the search box. */
@@ -522,6 +566,7 @@ export class TranscriptView extends ItemView {
 		const input = this.search?.inputEl;
 		if (!input) return;
 		this.setSearchOpen(true);
+		this.pauseFollowing();
 		this.rememberSearchOrigin();
 		input.focus();
 		input.select();
@@ -534,7 +579,9 @@ export class TranscriptView extends ItemView {
 	 */
 	showPlayback(seconds: number | null, follow = true, stateChanged = true, reveal = false): void {
 		this.playbackSec = seconds;
-		this.follow = follow;
+		this.follow = this.followOverride ?? follow;
+		follow = this.follow;
+		this.updateFollowButton();
 		let resumed = false;
 		if (stateChanged) {
 			const playing = this.playbackIsPlaying();
@@ -546,23 +593,43 @@ export class TranscriptView extends ItemView {
 		const changed = idx !== this.currentRow;
 		if (changed) {
 			this.rendered[this.currentRow]?.el.removeClass("is-playing");
+			this.rendered[this.currentRow]?.el.closest(".perplexity-saver-transcript-paragraph")?.classList.remove("is-playing");
 			this.currentRow = idx;
 			this.rendered[idx]?.el.addClass("is-playing");
+			this.rendered[idx]?.el.closest(".perplexity-saver-transcript-paragraph")?.classList.add("is-playing");
 		}
 		const current = this.rendered[idx];
 		if (!current) {
 			// The transcript can still be loading, hidden in a collapsed sidebar, or
 			// in a deferred view. Keep the request until layout makes the row usable.
-			if (reveal || resumed) this.revealSeconds = seconds;
+			if (reveal || (resumed && follow && !this.followingPaused)) this.revealSeconds = seconds;
 			return;
 		}
-		if (reveal || resumed) {
+		if (reveal || (resumed && follow && !this.followingPaused)) {
 			this.revealSeconds = seconds;
 			this.retryReveal();
-		} else if (changed && follow && !this.query.trim() && this.focusedRowIndex() < 0 && Date.now() - this.userScrollAt > FOLLOW_PAUSE_MS) {
+		} else if (changed && follow && !this.followingPaused && !this.query.trim()) {
 			this.scrollToRow(current.el, true);
 		}
 		this.retryReveal();
+	}
+
+	private pauseFollowing(): void {
+		this.followingPaused = true;
+		this.revealSeconds = null;
+		this.updateFollowButton();
+	}
+
+	private updateFollowButton(): void {
+		const enabled = this.follow && !this.followingPaused;
+		this.followBtn?.setAttribute("aria-pressed", String(enabled));
+		this.followBtn?.toggleClass("is-active", enabled);
+		if (this.playingPassageBtn) this.playingPassageBtn.hidden = enabled || this.playbackSec === null;
+	}
+
+	private revealPlayingPassage(): void {
+		this.finishSearch(true, false);
+		this.showPlayback(this.playbackSec, this.follow, false, true);
 	}
 
 	/** Center the pending timestamp row once the panel has a scrollable layout. */
@@ -593,8 +660,7 @@ export class TranscriptView extends ItemView {
 		this.demandHighlights = false;
 		this.applySearch(false);
 		this.showPlayback(seconds, follow);
-		this.focusLines();
-		this.userScrollAt = Date.now();
+		this.focusLines(false);
 	}
 
 	private async followFile(file: TFile): Promise<void> {
@@ -610,6 +676,9 @@ export class TranscriptView extends ItemView {
 		this.query = "";
 		this.searchOrigin = null;
 		this.lastPlaying = false;
+		this.followingPaused = false;
+		this.followOverride = null;
+		this.selectedSourceStart = null;
 		this.filePath = file.path;
 		this.comparisonSourceStart = null;
 		this.setSearchOpen(false);
@@ -619,10 +688,6 @@ export class TranscriptView extends ItemView {
 	}
 
 	private setMode(mode: TranscriptViewMode): void {
-		if (mode === "aligned-sentences" && !this.alignmentCache) {
-			new Notice(this.alignmentStatus);
-			return;
-		}
 		const { visible, onScreen } = this.visibleRows();
 		const focused = this.focusedRowIndex();
 		const row = this.rendered[onScreen.includes(focused) ? focused : onScreen[0] ?? visible[0] ?? -1];
@@ -632,10 +697,7 @@ export class TranscriptView extends ItemView {
 		this.comparisonSourceStart = source === undefined ? null
 			: previous !== null && previous >= source && previous < source + row.row.text.length ? previous : source;
 		const hadFocus = this.focusedRowIndex() >= 0;
-		this.mode = mode;
-		// Rebuilding the list resets its scroll position; re-center on the playing
-		// row at once instead of waiting out the pause a click in the panel starts.
-		this.userScrollAt = 0;
+		this.mode = readingMode(mode);
 		this.render();
 		if (anchor !== null && anchor !== undefined) {
 			const index = this.comparisonSourceStart === null ? currentRowIndex(this.rowStarts, anchor)
@@ -655,9 +717,7 @@ export class TranscriptView extends ItemView {
 
 	private render(): void {
 		const alignmentEnabled = this.host.getAlignmentEnabled?.() ?? false;
-		const comparison = alignmentEnabled;
-		if ((!comparison && this.mode !== "lines" && this.mode !== "paragraphs" && this.mode !== "readable-paragraphs") ||
-			(this.mode === "aligned-sentences" && (!alignmentEnabled || !this.alignmentCache))) this.mode = "lines";
+		this.mode = readingMode(this.mode);
 		const el = this.contentEl;
 		const input = this.search?.inputEl;
 		const searchFocused = !!input && input.ownerDocument.activeElement === input;
@@ -666,6 +726,9 @@ export class TranscriptView extends ItemView {
 		this.searchVisibilityCleanup?.();
 		this.searchNavigationCleanup = null;
 		this.searchHintsEl = null;
+		this.playingPassageBtn = null;
+		this.followBtn = null;
+		this.selectionBar = null;
 		this.previousMatchBtn = null;
 		this.nextMatchBtn = null;
 		el.empty();
@@ -692,7 +755,8 @@ export class TranscriptView extends ItemView {
 
 		const header = el.createDiv({ cls: "perplexity-saver-transcript-header" });
 		const controls = header.createDiv({ cls: "perplexity-saver-transcript-controls" });
-		const title = controls.createEl("a", {
+		const summary = controls.createDiv({ cls: "perplexity-saver-transcript-summary" });
+		const title = summary.createEl("a", {
 			cls: "perplexity-saver-transcript-title",
 			text: file.basename,
 			attr: { title: file.path },
@@ -716,124 +780,114 @@ export class TranscriptView extends ItemView {
 			const language = resolveTranscriptLanguage(lines.map((line) => line.language));
 			const captionFallback = rows[0]?.captionFallback;
 			const warningKey = `${file.path}:${language ?? "unknown"}:${captionFallback ? "captions" : "sentences"}`;
-			if ((!isEnglishTranscript(language) || captionFallback) && this.paragraphWarningKey !== warningKey) {
+			if ((!isEnglishTranscript(language) || captionFallback) && !this.paragraphWarnings.has(warningKey)) {
 				const message = isEnglishTranscript(language) ? "Using length-based paragraphs."
 					: language ? "Using length-based paragraphs for this language; topic-aware grouping is English-only."
 						: "Using length-based paragraphs because the caption language is unknown; topic-aware grouping is English-only.";
 				new Notice(message + (captionFallback ? " No sentence boundaries found; grouping whole captions instead." : ""));
-				this.paragraphWarningKey = warningKey;
+				this.paragraphWarnings.add(warningKey);
 			}
 		}
 		const lineNoun = lines.some((l) => l.endSec !== undefined) ? "captions" : "lines";
-		controls.createSpan({
-			cls: "perplexity-saver-transcript-count",
-			text: this.mode === "readable-paragraphs" ? `${rows.filter((row) => row.paragraphStart).length} paragraphs · ${rows.length} ${rows[0]?.captionFallback ? "captions" : "sentences"}`
+		const details = this.mode === "readable-paragraphs" ? `${rows.filter((row) => row.paragraphStart).length} paragraphs · ${rows.length} ${rows[0]?.captionFallback ? "captions" : "sentences"}`
 				: this.mode === "lines" ? `${rows.length} ${lineNoun}`
-				: !comparison && this.mode === "paragraphs" ? `${rows.length} paragraphs`
-				: `${rows.length} ${COMPARISON_MODES[this.mode]}`,
-		});
-		const formats = comparison ? COMPARISON_MODES : {
-			lines: COMPARISON_MODES.lines,
-			paragraphs: COMPARISON_MODES.paragraphs,
-			"readable-paragraphs": COMPARISON_MODES["readable-paragraphs"],
-		};
-		const format = new DropdownComponent(controls).addOptions(formats).setValue(this.mode)
+				: `${rows.length} sentences`;
+		const presentation = controls.createDiv({ cls: "perplexity-saver-transcript-control-group" });
+		const format = new DropdownComponent(presentation).addOptions(TRANSCRIPT_MODES).setValue(this.mode)
 			.onChange((mode) => {
 				if (isTranscriptMode(mode)) this.setMode(mode);
 				format.setValue(this.mode);
 			});
 		format.selectEl.setAttribute("aria-label", "Transcript segmentation");
 		format.selectEl.addClass("perplexity-saver-transcript-segmentation");
-		if (comparison) {
-			const compare = controls.createEl("button", { text: "Compare", attr: { "aria-label": "Compare segmentations" } });
-			compare.disabled = !this.alignmentCache || (this.mode !== "sentences" && this.mode !== "aligned-sentences");
-			compare.addEventListener("click", () => {
-				const counterpart: Partial<Record<TranscriptViewMode, TranscriptViewMode>> = {
-					sentences: "aligned-sentences", "aligned-sentences": "sentences",
-				};
-				const next = counterpart[this.mode];
-				if (next) this.setMode(next);
-			});
-			if (alignmentEnabled && this.host.alignTranscript && (!this.alignmentCache || this.needsTimingMigration)) {
-				const align = controls.createEl("button", { text: this.aligning ? "Saving timings..." :
-					this.needsTimingMigration ? "Compact saved timings" : "Time words" });
-				align.disabled = this.aligning;
-				align.addEventListener("click", () => {
-					if (!this.filePath || this.aligning) return;
-					this.aligning = true;
-					this.render();
-					void this.host.alignTranscript?.(this.filePath).catch((error: unknown) => {
-						console.error("Perplexity Saver: audio alignment failed", error);
-						new Notice(error instanceof Error ? error.message : "Audio alignment failed.");
-					}).finally(() => {
-						this.aligning = false;
-						void this.reload().catch((error: unknown) => {
-							console.error("Perplexity Saver: could not reload alignment", error);
-							new Notice("Could not reload saved alignment.");
-						});
-					});
-				});
-			}
-			if (this.aligning && this.host.cancelAlignment) {
-				const cancel = controls.createEl("button", { text: "Cancel alignment" });
-				cancel.addEventListener("click", () => this.host.cancelAlignment?.());
-			}
-		}
-		if (alignmentEnabled) header.createDiv({ cls: "perplexity-saver-transcript-experiment-status", text: this.alignmentStatus });
-		this.iconButton(controls, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
+		this.iconButton(presentation, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
+		this.followBtn = this.iconButton(controls, "arrow-down", "Follow video", () => {
+			this.followOverride = !this.follow || this.followingPaused;
+			this.follow = this.followOverride;
+			this.followingPaused = !this.follow;
+			this.revealSeconds = null;
+			this.updateFollowButton();
+			if (this.follow) this.revealPlayingPassage();
+		});
+		this.followBtn.appendText("Follow video");
+		this.followBtn.addClass("perplexity-saver-transcript-follow");
+		this.followBtn.setAttribute("title", "Automatically scroll the transcript with playback");
+		const layout = controls.createDiv({ cls: "perplexity-saver-transcript-control-group" });
+		const chrome = this.iconButton(layout, "panel-top", "Show pane tabs and navigation", () => {
+			el.toggleClass("show-pane-chrome", !el.hasClass("show-pane-chrome"));
+			this.render();
+		});
+		chrome.setAttribute("aria-pressed", String(el.hasClass("show-pane-chrome")));
+		chrome.toggleClass("is-active", el.hasClass("show-pane-chrome"));
 		if (this.host.toggleOrientation) {
-			const placement = controls.createEl("button", {
-				text: "Layout",
-				attr: { "aria-label": "Transcript layout", "aria-haspopup": "menu" },
-			});
-			placement.addEventListener("click", () => {
-				const menu = new Menu();
-				menu.addItem((item) => item.setTitle("Show pane tabs and navigation")
-					.setChecked(el.hasClass("show-pane-chrome"))
-					.onClick(() => el.toggleClass("show-pane-chrome", !el.hasClass("show-pane-chrome"))));
-				menu.addItem((item) => item.setTitle("Toggle transcript below / beside video").onClick(() => {
-					if (this.filePath) void this.host.toggleOrientation?.(this.filePath).catch((error: unknown) => {
+			const below = this.host.getOrientation?.(file.path) === "below";
+			const placement = this.iconButton(layout, below ? "arrow-right-to-line" : "arrow-down-to-line",
+				below ? "Move transcript beside video" : "Move transcript below video", () => {
+					void this.host.toggleOrientation?.(file.path).then(() => this.render()).catch((error: unknown) => {
 						console.error("Perplexity Saver: could not change transcript orientation", error);
 						new Notice("Could not change transcript orientation.");
 					});
-				}));
-				const rect = placement.getBoundingClientRect();
-				menu.showAtPosition({ x: rect.left, y: rect.bottom }, placement.ownerDocument);
 			});
+			placement.appendText(below ? "Beside video" : "Below video");
 		}
 		if (this.host.runPlaybackControl) {
 			const playback = controls.createDiv({ cls: "perplexity-saver-transcript-playback" });
+			const transport = playback.createDiv({ cls: "perplexity-saver-transcript-control-group" });
+			const unit = this.mode === "lines" || rows[0]?.captionFallback ? "caption" : "sentence";
 			for (const [icon, label, action] of [
+				["chevron-up", `Previous ${unit}`, "previous"],
 				["play", "Play", "play"],
-				["skip-back", "Previous transcript row", "previous"],
-				["skip-forward", "Next transcript row", "next"],
-				["list-plus", "Insert current timestamp", "insert"],
+				["chevron-down", `Next ${unit}`, "next"],
 			] as const) {
-				const button = this.iconButton(playback, icon, label, () => {
+				const button = this.iconButton(transport, icon, label, () => {
 					if (this.filePath && !playback.hidden) this.host.runPlaybackControl?.(this.filePath, action);
 				});
 				if (action === "play") button.addClass("perplexity-saver-transcript-play-toggle");
 			}
+			const capture = playback.createDiv({ cls: "perplexity-saver-transcript-control-group" });
+			this.iconButton(capture, "list-plus", "Insert current timestamp", () => {
+				if (this.filePath && !playback.hidden) this.host.runPlaybackControl?.(this.filePath, "insert");
+			});
 			this.refreshPlaybackControls();
 		}
-		const help = this.iconButton(controls, "circle-help", "Transcript keyboard help", () => {
-			const shown = !el.hasClass("show-help");
-			el.toggleClass("show-help", shown);
-			help.setAttribute("aria-expanded", String(shown));
+		const actions = controls.createDiv({ cls: "perplexity-saver-transcript-control-group" });
+		const more = this.iconButton(actions, "ellipsis", "More transcript options", () => {
+			const menu = new Menu();
+			menu.addItem((item) => item.setTitle("Transcript details").onClick(() => { new Notice(`${details}. ${this.alignmentStatus}`, 12000); }));
+			if (this.aligning) {
+				menu.addItem((item) => item.setTitle("Cancel caption timing").onClick(() => this.host.cancelAlignment?.()));
+			} else if (this.host.alignTranscript && (this.needsTimingMigration || (alignmentEnabled && !this.alignmentCache))) {
+				menu.addItem((item) => item.setTitle(this.needsTimingMigration ? "Compact saved timings" : "Get timings")
+					.onClick(() => this.saveCaptionTimings()));
+			}
+			menu.addItem((item) => item.setTitle("Keyboard help").setChecked(el.hasClass("show-help"))
+				.onClick(() => el.toggleClass("show-help", !el.hasClass("show-help"))));
+			const rect = more.getBoundingClientRect();
+			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
 		});
-		help.setAttribute("aria-expanded", String(el.hasClass("show-help")));
-		this.iconButton(controls, "x", "Close transcript pane", () => {
+		more.setAttribute("aria-haspopup", "menu");
+		this.iconButton(actions, "x", "Close transcript pane", () => {
 			if (this.host.closePanel) void this.host.closePanel(this.leaf).catch((error: unknown) => {
 				console.error("Perplexity Saver: could not close transcript", error);
 				new Notice("Could not close transcript pane.");
 			});
 			else this.leaf.detach();
-		});
+		}).addClass("perplexity-saver-transcript-close");
+		this.playingPassageBtn = this.iconButton(header, "locate", "Show playing passage", () => this.revealPlayingPassage());
+		this.playingPassageBtn.appendText("Show playing passage");
+		this.playingPassageBtn.addClass("perplexity-saver-transcript-reveal");
+		this.updateFollowButton();
+		if (this.timingProblem || this.aligning) {
+			header.createDiv({ cls: "perplexity-saver-transcript-timing-status",
+				text: this.aligning ? "Saving caption timings..." : this.timingProblem ?? "",
+				attr: { role: "status" } });
+		}
 		this.buildSearch(header);
 		const hints = header.createDiv({ cls: "perplexity-saver-transcript-hints" });
 		this.searchHintsEl = hints.createDiv({ cls: "is-search" });
 		this.updateSearchHints();
 		renderKeyHints(hints.createDiv({ cls: "is-rows" }), ROW_HINTS, "perplexity-saver");
+		this.selectionBar = header.createDiv({ cls: "perplexity-saver-transcript-selection" });
 
 		const list = el.createDiv({
 			cls: `perplexity-saver-transcript-list is-${this.mode}`,
@@ -845,6 +899,18 @@ export class TranscriptView extends ItemView {
 		list.addEventListener("focusin", (evt) => {
 			const idx = this.rendered.findIndex((r) => r.el === evt.target);
 			if (idx >= 0) this.setFocusRow(idx);
+		});
+		list.addEventListener("click", (evt) => {
+			if (this.hasTextSelection()) return;
+			const target = evt.target as HTMLElement | null;
+			if (target?.closest("a")) return;
+			const row = target?.closest(".perplexity-saver-transcript-row");
+			const index = this.rendered.findIndex((entry) => entry.el === row);
+			if (index >= 0) {
+				this.pauseFollowing();
+				this.setFocusRow(index);
+				this.selectRow(index);
+			}
 		});
 		let parent = list;
 		let previousText = "";
@@ -858,15 +924,17 @@ export class TranscriptView extends ItemView {
 			});
 			const stamp = `${row.timingUncertain ? "≈ " : ""}${formatShortTimestamp(row.startSec * 1000)}`;
 			if (row.timingUncertain) rowEl.setAttribute("title", "Approximate sentence start: the first word has no accepted timing.");
-			if (row.url) {
-				rowEl.createEl("a", {
-					cls: "perplexity-saver-transcript-time external-link",
-					text: stamp,
-					href: row.url,
-					attr: { target: "_blank", rel: "noopener" },
-				});
-			} else {
-				rowEl.createSpan({ cls: "perplexity-saver-transcript-time", text: stamp });
+			if (this.mode !== "readable-paragraphs") {
+				if (row.url) {
+					rowEl.createEl("a", {
+						cls: "perplexity-saver-transcript-time external-link",
+						text: stamp,
+						href: row.url,
+						attr: { target: "_blank", rel: "noopener" },
+					});
+				} else {
+					rowEl.createSpan({ cls: "perplexity-saver-transcript-time", text: stamp });
+				}
 			}
 			const textEl = rowEl.createEl(this.mode === "readable-paragraphs" ? "span" : "div", { cls: "perplexity-saver-transcript-text", text: row.text });
 			this.rendered.push({ row, el: rowEl, textEl, highlighted: false, ranges: [] });
@@ -876,13 +944,31 @@ export class TranscriptView extends ItemView {
 
 		this.focusRow = Math.min(this.focusRow, this.rendered.length - 1);
 		this.setFocusRow(this.focusRow >= 0 ? this.focusRow : 0);
+		this.updateSelection();
 		if (rowHadFocus) this.rendered[this.focusRow]?.el.focus({ preventScroll: true });
 		const keep = this.matchIndex;
 		this.applySearch(false);
 		if (this.matches.length && keep >= 0) this.selectMatch(Math.min(keep, this.matches.length - 1), false);
 		if (searchFocused) this.focusSearch();
-		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow);
+		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow, false);
 		this.retryReveal();
+		this.host.onFormatChanged?.(file.path);
+	}
+
+	private saveCaptionTimings(): void {
+		if (!this.filePath || this.aligning || !this.host.alignTranscript) return;
+		this.aligning = true;
+		this.render();
+		void this.host.alignTranscript(this.filePath).catch((error: unknown) => {
+			console.error("Perplexity Saver: caption timing failed", error);
+			new Notice(error instanceof Error ? error.message : "Caption timing failed.");
+		}).finally(() => {
+			this.aligning = false;
+			void this.reload().catch((error: unknown) => {
+				console.error("Perplexity Saver: could not reload timings", error);
+				new Notice("Could not reload saved timings.");
+			});
+		});
 	}
 
 	refreshPlaybackControls(playing = this.playbackIsPlaying()): void {
@@ -939,7 +1025,7 @@ export class TranscriptView extends ItemView {
 			this.contentEl.removeEventListener("focusout", leave);
 			win?.removeEventListener("blur", blur);
 		};
-		this.searchNavigationCleanup = onSearchNavigation(this.contentEl, (direction, checking) => {
+		const navigate = (direction: "forward" | "backward", checking: boolean): boolean => {
 			if (!checking) {
 				const settings = this.host.getSearchSettings();
 				const action = searchRepeatAction(
@@ -965,7 +1051,16 @@ export class TranscriptView extends ItemView {
 				this.updateSearchHints();
 			}
 			return true;
+		};
+		const root = this.containerEl ?? this.contentEl;
+		const cleanupRoot = onSearchNavigation(root, navigate);
+		const cleanupBackground = onSearchNavigation(root.ownerDocument.body, (direction, checking) => {
+			if (!root.isConnected) return false;
+			const active = root.ownerDocument.activeElement;
+			if (active && active !== root.ownerDocument.body) return false;
+			return getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view === this && navigate(direction, checking);
 		});
+		this.searchNavigationCleanup = () => { cleanupRoot(); cleanupBackground(); };
 		search.onChange((value) => {
 			this.query = value;
 			this.applySearch(true);
@@ -1109,6 +1204,10 @@ export class TranscriptView extends ItemView {
 		this.mode = source.mode;
 		this.filter = source.filter;
 		this.previousQuery = source.query || source.previousQuery;
+		this.selectedSourceStart = source.selectedSourceStart;
+		this.followOverride = source.followOverride;
+		this.follow = source.follow;
+		this.followingPaused = source.followingPaused;
 		this.render();
 		const playback = source.backgroundPlayback;
 		if (playback) {
@@ -1132,7 +1231,6 @@ export class TranscriptView extends ItemView {
 			const box = scrollParent(this.listEl);
 			if (box) box.scrollTop = origin.scrollTop;
 		}
-		this.userScrollAt = Date.now();
 	}
 
 	private stepMatch(delta: number): void {
@@ -1152,7 +1250,7 @@ export class TranscriptView extends ItemView {
 	}
 
 	/** Move keyboard focus to the lines: the selected match, else the playing line, else the first line on screen (the search box when there are none). */
-	focusLines(): void {
+	focusLines(select = true): void {
 		const { visible, onScreen } = this.visibleRows();
 		const match = this.matches[this.matchIndex];
 		const target =
@@ -1160,7 +1258,7 @@ export class TranscriptView extends ItemView {
 			: visible.includes(this.currentRow) ? this.currentRow
 			: onScreen[0] ?? visible[0] ?? -1;
 		if (target < 0) this.focusSearch();
-		else this.moveFocus(target);
+		else this.moveFocus(target, select);
 	}
 
 	/** Index of the row that has keyboard focus, or -1. */
@@ -1179,12 +1277,48 @@ export class TranscriptView extends ItemView {
 		if (r) r.el.tabIndex = 0;
 	}
 
-	private moveFocus(index: number): void {
+	private moveFocus(index: number, select = true): void {
 		const r = this.rendered[index];
 		if (!r) return;
+		if (select) {
+			this.pauseFollowing();
+			this.selectRow(index);
+		}
 		this.setFocusRow(index);
 		r.el.focus({ preventScroll: true });
 		this.scrollToRow(r.el, true, false);
+	}
+
+	private selectRow(index: number): void {
+		this.selectedSourceStart = this.rendered[index]?.row.sourceStart ?? null;
+		this.updateSelection();
+	}
+
+	private updateSelection(): void {
+		const bar = this.selectionBar;
+		if (!bar) return;
+		const index = this.selectedSourceStart === null ? -1
+			: currentRowIndex(this.rendered.map((entry) => entry.row.sourceStart ?? 0), this.selectedSourceStart);
+		this.rendered.forEach((entry, i) => {
+			entry.el.toggleClass("is-selected", i === index);
+			entry.el.setAttribute("aria-selected", String(i === index));
+		});
+		bar.empty();
+		bar.hidden = index < 0;
+		const row = this.rendered[index]?.row;
+		if (!row) return;
+		const stamp = `${row.timingUncertain ? "≈ " : ""}${formatClock(row.startSec)}`;
+		bar.createSpan({ text: `Selected ${this.getNavigationUnit()} · ${stamp}` });
+		if (this.host.insertTimestampAt) {
+			this.iconButton(bar, "file-plus-2", "Insert selected timestamp into note", () => {
+				if (!this.filePath) return;
+				void this.host.insertTimestampAt?.(this.filePath, row.url, row.startSec).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not insert selected timestamp", error);
+					new Notice("Could not insert selected timestamp into the note.");
+				});
+			}).appendText(`Insert ${stamp}`);
+		}
+		this.iconButton(bar, "copy", "Copy selected timestamp link", () => void this.copyRowLink(index));
 	}
 
 	private moveFocusedRow(delta: 1 | -1, evt: KeyboardEvent): boolean {
@@ -1195,7 +1329,6 @@ export class TranscriptView extends ItemView {
 		const { visible, onScreen } = this.visibleRows();
 		this.moveFocus(stepRow(visible, index, delta, onScreen));
 		this.handledKey = evt;
-		this.userScrollAt = Date.now();
 		return false;
 	}
 
@@ -1248,7 +1381,6 @@ export class TranscriptView extends ItemView {
 		evt.preventDefault();
 		evt.stopPropagation();
 		this.handledKey = evt;
-		this.userScrollAt = Date.now();
 	}
 
 	private hasTextSelection(): boolean {

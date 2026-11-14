@@ -86,7 +86,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
 			"type" in item && item.type === "group" && item.heading === "Video viewer");
 		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Toolbar timestamp and screenshot action",
+			name: "Toolbar screenshot action",
 			control: {
 				type: "dropdown", key: "videoToolbarCaptureAction",
 				options: { insert: "Insert into note (default)", copy: "Copy to clipboard" },

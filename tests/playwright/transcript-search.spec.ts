@@ -1,5 +1,139 @@
 import { expect, test } from "@playwright/test";
 import path from "node:path";
+import { build } from "esbuild";
+
+test("rendered reading and video toolbars keep usable task groups at narrow widths", async ({ page }) => {
+	const bundled = await build({
+		stdin: { contents: 'export { TranscriptView } from "./src/litNote/transcriptView"; export { VideoView } from "./src/video/videoView";', resolveDir: process.cwd(), loader: "ts" },
+		bundle: true, write: false, format: "iife", globalName: "ReadingUI",
+		external: ["obsidian", "crypto", "commons/windows", "commons/workspace", "commons/os"],
+	});
+	await page.setContent(`<style>
+		* { box-sizing: border-box; } body { margin: 0; font: 14px/20px sans-serif; }
+		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --text-selection: rgba(100,80,220,.2); --text-faint: #888; }
+		.view-content { width: 700px; height: 300px; padding: 8px; overflow: auto; }
+		.clickable-icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: 0; }
+		.clickable-icon svg { width: 16px; height: 16px; } select { height: 28px; }
+		</style><div class="workspace-tabs"><div class="workspace-tab-container"><div class="workspace-leaf"><div class="workspace-leaf-content"><div id="transcript" class="view-content"></div></div></div></div></div><div id="video" class="view-content"></div>`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	await page.addScriptTag({ content: `
+		const p = HTMLElement.prototype;
+		p.createEl = function(tag, opts = {}) {
+			const el = this.ownerDocument.createElement(tag);
+			if (opts.cls) el.className = Array.isArray(opts.cls) ? opts.cls.join(" ") : opts.cls;
+			if (opts.text) el.textContent = opts.text;
+			for (const [k,v] of Object.entries(opts.attr || {})) el.setAttribute(k, v);
+			for (const k of ["href", "title", "type"]) if (opts[k]) el.setAttribute(k, opts[k]);
+			this.appendChild(el); return el;
+		};
+		p.createDiv = function(o) { return this.createEl("div", o); };
+		p.createSpan = function(o) { return this.createEl("span", o); };
+		p.addClass = function(...c) { this.classList.add(...c); };
+		p.removeClass = function(...c) { this.classList.remove(...c); };
+		p.hasClass = function(c) { return this.classList.contains(c); };
+		p.toggleClass = function(c,v) { this.classList.toggle(c,v); };
+		p.empty = function() { this.replaceChildren(); };
+		p.setText = function(t) { this.textContent = t; };
+		p.getText = function() { return this.textContent; };
+		p.appendText = function(t) { this.append(t); };
+		p.setAttr = function(k,v) { this.setAttribute(k,v); };
+		p.setCssProps = function(o) { for (const [k,v] of Object.entries(o)) this.style.setProperty(k,v); };
+		p.isShown = function() { return this.getClientRects().length > 0 && !this.closest("[hidden]"); };
+		class ItemView {
+			constructor(leaf) { this.leaf = leaf; this.app = leaf.app; }
+			register() {} registerEvent() {} getState() { return {}; } async setState() {}
+			registerDomEvent(el,type,fn,opts) { el.addEventListener(type,fn,opts); }
+		}
+		class DropdownComponent {
+			constructor(parent) { this.selectEl = parent.createEl("select"); }
+			addOptions(o) { for (const [value,text] of Object.entries(o)) { const el = this.selectEl.createEl("option",{text}); el.value = value; } return this; }
+			setValue(v) { this.selectEl.value = v; return this; }
+			onChange(fn) { this.selectEl.addEventListener("change",()=>fn(this.selectEl.value)); return this; }
+		}
+		class SearchComponent {
+			constructor(parent) { this.inputEl = parent.createEl("div",{cls:"search-input-container"}).createEl("input"); }
+			setPlaceholder(v) { this.inputEl.placeholder=v; return this; } setValue(v) { this.inputEl.value=v; return this; }
+			getValue() { return this.inputEl.value; } onChange(fn) { this.inputEl.addEventListener("input",()=>fn(this.inputEl.value)); return this; }
+		}
+		const obsidian = { ItemView, DropdownComponent, SearchComponent, Platform:{isDesktopApp:true}, Notice:class {}, Scope:class {register(){}},
+			setIcon(el,name) { el.dataset.icon=name; el.querySelectorAll("svg").forEach(svg=>svg.remove()); const svg=el.ownerDocument.createElementNS("http://www.w3.org/2000/svg","svg"); el.appendChild(svg); } };
+		globalThis.require = name => name === "obsidian" ? new Proxy(obsidian,{get:(o,k)=>o[k] || class {}})
+			: name === "crypto" ? { createHash:()=>({update(){return this;},digest:()=>"a".repeat(64)}) }
+			: name === "commons/workspace" ? { getWindowForLeaf:()=>window }
+			: name === "commons/windows" ? { requestFrameIn:()=>()=>{} }
+			: {};
+	` });
+	await page.addScriptTag({ content: bundled.outputFiles[0].text });
+	await page.addScriptTag({ content: `
+		(async () => {
+			const text = "# Transcript\\n<!-- saver-transcript-language: en -->\\n" + Array.from({length:40},(_,i)=>
+				'[0:00](https://youtu.be/abcdefghijk?t='+i*4+' "'+i*4+'-'+(i*4+4)+'") Sentence '+i+' contains enough words for comfortable paragraph reading.\\n').join("");
+			const app = { scope:{}, vault:{getFileByPath:()=>({path:"note.md",basename:"A very long literature note title for this transcript"}),cachedRead:async()=>text,on:()=>({})},
+				metadataCache:{on:()=>({}),getFileCache:()=>({headings:[{heading:"Transcript",level:1,position:{start:{offset:0},end:{offset:12}}}]})},
+				workspace:{on:()=>({}),requestSaveLayout(){}} };
+			const host = { getHeadingName:()=>"Transcript",getSearchSettings:()=>({keyboard:"obsidian",matching:"all-words",highlights:"always"}),
+				playAt(){},insertTimestampAt:async()=>{},toggleOrientation:async()=>{},getOrientation:()=>"below",runPlaybackControl(){},isVideoVisible:()=>false };
+			const transcript = new ReadingUI.TranscriptView({app},host);
+			transcript.contentEl = document.querySelector("#transcript");
+			await transcript.setState({file:"note.md"},{history:false}); await transcript.onOpen();
+			globalThis.transcriptView=transcript;
+			const video = new ReadingUI.VideoView({app},{getTranscriptHeading:()=>"Transcript",getToolbarCaptureAction:()=>"insert",
+				getShowYoutubeCaptions:()=>false,isTranscriptShown:()=>true,onPlayback(){}});
+			video.contentEl=document.querySelector("#video"); await video.onOpen(); video.videoId="abcdefghijk"; video.updateEmpty();
+			video.update({currentTime:7954,duration:9956,playbackRate:1.75,playerState:2});
+			globalThis.videoView=video;
+			globalThis.uiReady=true;
+		})().catch(error=>{ globalThis.uiError=error.message; });
+	` });
+	await expect.poll(() => page.evaluate(() => (globalThis as unknown as { uiReady?: boolean; uiError?: string }).uiError ?? (globalThis as unknown as { uiReady?: boolean }).uiReady)).toBe(true);
+	await expect(page.locator("#transcript select option")).toHaveText(["Paragraphs", "Sentences", "Captions"]);
+	await expect(page.locator("#transcript select")).toHaveValue("readable-paragraphs");
+	await expect(page.getByRole("button", { name: "Compare segmentations" })).toHaveCount(0);
+	await expect(page.locator("#transcript .perplexity-saver-transcript-time")).toHaveCount(0);
+	await expect(page.locator("#transcript .perplexity-saver-transcript-count")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Move transcript beside video" })).toHaveText("Beside video");
+	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveAttribute("aria-pressed", "true");
+	await page.locator("#transcript .perplexity-saver-transcript-row").first().click();
+	await page.evaluate(() => (globalThis as unknown as { transcriptView: { showPlayback(t: number): void } }).transcriptView.showPlayback(4));
+	await expect(page.locator("#transcript .is-selected")).toHaveCount(1);
+	expect(await page.locator("#transcript .perplexity-saver-transcript-row.is-playing").evaluate(el => getComputedStyle(el).backgroundColor)).toBe("rgba(0, 0, 0, 0)");
+	expect(await page.locator("#transcript .perplexity-saver-transcript-paragraph.is-playing").evaluate(el => getComputedStyle(el, "::before").width)).toBe("3px");
+	for (const width of [240, 320, 700]) {
+		await page.locator(".view-content").evaluateAll((els, w) => els.forEach((el) => { (el as HTMLElement).style.width = w + "px"; }), width);
+		await page.evaluate(() => (globalThis as unknown as { videoView: { onResize(): void } }).videoView.onResize());
+		for (const panel of await page.locator(".view-content").all()) {
+			const sizing = await panel.evaluate((el) => ({
+				panel: el.id, overflow: el.scrollWidth - el.clientWidth,
+				groups: Array.from(el.querySelectorAll('[role="group"]')).map(group => ({ name: group.getAttribute("aria-label"), width: group.getBoundingClientRect().width })),
+				overflowing: Array.from(el.querySelectorAll("*")).filter(child => child.getBoundingClientRect().right > el.getBoundingClientRect().right + 1).map(child => ({ cls: child.className, width: child.getBoundingClientRect().width })).slice(0, 8),
+			}));
+			expect(sizing.overflow, JSON.stringify({ width, ...sizing })).toBeLessThanOrEqual(1);
+		}
+		for (const group of await page.locator(".perplexity-saver-video-control-group, .perplexity-saver-transcript-control-group").all()) {
+			if (!await group.isVisible()) continue;
+			const tops = await group.locator(":scope > button").evaluateAll((buttons) => buttons.map((el) => el.getBoundingClientRect().top));
+			if (tops.length) expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1);
+		}
+		await page.getByRole("button", { name: "Video keyboard help", exact: true }).click();
+		await expect(page.getByRole("region", { name: "Video keyboard shortcuts" })).toBeVisible();
+		expect((await page.getByRole("region", { name: "Video keyboard shortcuts" }).boundingBox())!.height).toBeGreaterThanOrEqual(60);
+		await expect(page.locator(".perplexity-saver-video-help .perplexity-saver-hint-key").first()).toHaveText("Unassigned");
+		expect(await page.locator("#video").evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
+		expect(await page.locator("#video").evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(1);
+		await page.getByRole("button", { name: "Close video keyboard help" }).click();
+	}
+	await page.locator("#transcript select").selectOption("sentences");
+	await expect(page.locator("#transcript .perplexity-saver-transcript-row")).toHaveCount(40);
+	await page.locator("#transcript select").selectOption("readable-paragraphs");
+	await expect(page.locator("#transcript .perplexity-saver-transcript-row")).toHaveCount(40);
+	const close = page.locator(".perplexity-saver-transcript-close");
+	await expect(close).toBeVisible();
+	await page.locator("#transcript").evaluate(el => el.classList.add("show-pane-chrome"));
+	await expect(close).toBeHidden();
+	await page.locator("#transcript").evaluate(el => el.classList.remove("show-pane-chrome"));
+	await page.locator(".workspace-tabs").evaluate(el => el.classList.add("mod-top"));
+	await expect(close).toBeHidden();
+});
 
 test("readable paragraphs flow inline, retain sentence controls and hide empty filtered paragraphs", async ({ page }) => {
 	await page.setContent(`
@@ -12,12 +146,12 @@ test("readable paragraphs flow inline, retain sentence controls and hide empty f
 		<div class="view-content perplexity-saver-transcript-view">
 			<div class="perplexity-saver-transcript-list is-readable-paragraphs" role="listbox">
 				<div class="perplexity-saver-transcript-paragraph" role="group">
-					<span class="perplexity-saver-transcript-row" tabindex="0" role="option"><a class="perplexity-saver-transcript-time">0:00</a><span class="perplexity-saver-transcript-text">Orchard apples are ready.</span></span>
-					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:04</a><span class="perplexity-saver-transcript-text">Farmers pick ripe fruit.</span></span>
+					<span class="perplexity-saver-transcript-row" tabindex="0" role="option"><span class="perplexity-saver-transcript-text">Orchard apples are ready.</span></span>
+					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><span class="perplexity-saver-transcript-text">Farmers pick ripe fruit.</span></span>
 				</div>
 				<div class="perplexity-saver-transcript-paragraph" role="group">
-					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:08</a><span class="perplexity-saver-transcript-text">Bond prices respond to interest rates.</span></span>
-					<span class="perplexity-saver-transcript-row is-match" tabindex="-1" role="option"><a class="perplexity-saver-transcript-time">0:12</a><span class="perplexity-saver-transcript-text">Markets adjust their expectations.</span></span>
+					<span class="perplexity-saver-transcript-row" tabindex="-1" role="option"><span class="perplexity-saver-transcript-text">Bond prices respond to interest rates.</span></span>
+					<span class="perplexity-saver-transcript-row is-match" tabindex="-1" role="option"><span class="perplexity-saver-transcript-text">Markets adjust their expectations.</span></span>
 				</div>
 			</div>
 		</div>
@@ -43,7 +177,7 @@ test("readable paragraphs flow inline, retain sentence controls and hide empty f
 	await expect(page.locator(".perplexity-saver-transcript-row").nth(3)).toBeVisible();
 });
 
-test("experimental sentence comparison controls and saved-results status fit narrow transcript panes", async ({ page }) => {
+test("reading controls fit narrow transcript panes without experimental controls", async ({ page }) => {
 	await page.setContent(`
 		<style>
 			* { box-sizing: border-box; }
@@ -56,15 +190,14 @@ test("experimental sentence comparison controls and saved-results status fit nar
 			<div class="perplexity-saver-transcript-header">
 				<div class="perplexity-saver-transcript-controls">
 					<a class="perplexity-saver-transcript-title">A long literature note title</a>
-					<span class="perplexity-saver-transcript-count">1234 Punctuation sentences</span>
+					<span class="perplexity-saver-transcript-count">1234 sentences</span>
 					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
-						<option>Original captions / lines</option><option>Punctuation sentences</option><option>Word-timed sentences</option>
+						<option>Paragraphs</option><option>Sentences</option><option>Captions</option>
 					</select>
-					<button aria-label="Compare segmentations">Compare</button>
-					<button>Time words</button><button>Cancel alignment</button><button class="clickable-icon">S</button><button>Layout</button>
-				</div>
-				<div class="perplexity-saver-transcript-experiment-status">
-					Sentence timing: 123/125 sentence starts timed; 2 approximate. Saved offline. ≈ marks estimated starts.
+					<button class="clickable-icon" aria-label="Search transcript">S</button>
+					<button class="clickable-icon" aria-label="Show pane tabs">T</button>
+					<button class="clickable-icon" aria-label="Transcript placement">L</button>
+					<button class="clickable-icon" aria-label="More transcript options">M</button>
 				</div>
 			</div>
 			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">A sentence.</div></div>
@@ -76,7 +209,7 @@ test("experimental sentence comparison controls and saved-results status fit nar
 		await panel.evaluate((el, value) => { (el as HTMLElement).style.width = value + "px"; }, width);
 		expect(await panel.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThanOrEqual(1);
 		await expect(page.getByRole("combobox")).toBeVisible();
-		await expect(page.getByRole("button", { name: "Compare segmentations" })).toBeVisible();
+		await expect(page.getByRole("button", { name: "More transcript options" })).toBeVisible();
 		expect(await page.locator(".perplexity-saver-transcript-row").evaluate((el) => el.getBoundingClientRect().top))
 			.toBeLessThan(350);
 	}
@@ -99,11 +232,12 @@ test("browsing has a compact toolbar, no idle search/hints and substantially mor
 					<a class="perplexity-saver-transcript-title">Kashlak21garchProcess with a very long title</a>
 					<span class="perplexity-saver-transcript-count">381 lines</span>
 					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
-						<option>Original captions / lines</option><option>Original paragraphs</option><option>Readable paragraphs</option>
+						<option>Paragraphs</option><option>Sentences</option><option>Captions</option>
 					</select>
 					<button class="clickable-icon" aria-label="Search">S</button>
-					<button aria-label="Transcript layout">Layout</button>
-					<button class="clickable-icon" aria-label="Help">?</button>
+					<button class="clickable-icon" aria-label="Show pane tabs and navigation">T</button>
+					<button class="clickable-icon" aria-label="Move transcript beside video">O</button>
+					<button class="clickable-icon" aria-label="More transcript options">M</button>
 					<button class="clickable-icon" aria-label="Close">X</button>
 				</div>
 				<div class="perplexity-saver-transcript-search" hidden><input></div>
@@ -151,16 +285,16 @@ test("transcript-only playback controls remain reachable in narrow panes", async
 					<a class="perplexity-saver-transcript-title">A long literature note title</a>
 					<span class="perplexity-saver-transcript-count">381 lines</span>
 					<select class="perplexity-saver-transcript-segmentation" aria-label="Transcript segmentation">
-						<option>Original captions / lines</option><option>Original paragraphs</option><option>Readable paragraphs</option>
+						<option>Paragraphs</option><option>Sentences</option><option>Captions</option>
 					</select>
-					<button class="clickable-icon">S</button><button>Layout</button>
+					<button class="clickable-icon">S</button><button class="clickable-icon">T</button><button class="clickable-icon">O</button>
 					<div class="perplexity-saver-transcript-playback">
+						<button class="clickable-icon" aria-label="Previous sentence">B</button>
 						<button class="clickable-icon" aria-label="Play">P</button>
-						<button class="clickable-icon" aria-label="Previous transcript row">B</button>
-						<button class="clickable-icon" aria-label="Next transcript row">N</button>
+						<button class="clickable-icon" aria-label="Next sentence">N</button>
 						<button class="clickable-icon" aria-label="Insert current timestamp">I</button>
 					</div>
-					<button class="clickable-icon">?</button><button class="clickable-icon">X</button>
+					<button class="clickable-icon">M</button><button class="clickable-icon">X</button>
 				</div>
 			</div>
 			<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row">Transcript text</div></div>

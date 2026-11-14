@@ -166,7 +166,7 @@ test("a short viewer pane fits the whole 16:9 picture and its controls after res
 	const bundled = await build({
 		entryPoints: [path.resolve("src/video/videoView.ts")],
 		bundle: true, write: false, format: "iife", globalName: "SaverVideo",
-		external: ["obsidian", "commons/os"],
+		external: ["obsidian", "commons/os", "crypto"],
 	});
 	await page.setContent(`
 		<style>
@@ -262,7 +262,7 @@ test("focus lines are 2px accent underlines without changing header size; playba
 			<div class="view-header">Native header</div>
 			<div class="perplexity-saver-transcript-view">
 				<div class="perplexity-saver-transcript-header">Transcript controls</div>
-				<div class="perplexity-saver-transcript-row is-playing">Current chunk</div>
+				<div class="perplexity-saver-transcript-list"><div class="perplexity-saver-transcript-row is-playing">Current chunk</div></div>
 			</div>
 			</div>
 		</div>

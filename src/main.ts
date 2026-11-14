@@ -67,6 +67,7 @@ import {
 } from "./video/videoView";
 import {
 	createNoteInsertionAnchor,
+	insertPlaybackTimestamp,
 	noteInsertionAnchors,
 	releaseNoteInsertionAnchor,
 	type NoteInsertionTarget,
@@ -255,6 +256,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private litNoteServer: http.Server | null = null;
 	private refreshVideoNoteFocusIndicator: (() => void) | null = null;
 	private transcriptLocations = new Map<string, TranscriptPanelLocation>();
+	private readonly paragraphWarnings = new Set<string>();
 	/** Pending "open the transcript if the video cannot start" checks, keyed by note path. */
 	private transcriptFallbacks = new Map<string, CancelTimer>();
 
@@ -315,6 +317,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
 					getAlignmentEnabled: () => this.settings.captionWordTiming,
+					paragraphWarnings: this.paragraphWarnings,
+					insertTimestampAt: (filePath, url, seconds) => this.insertTranscriptTimestamp(filePath, url, seconds),
 					alignTranscript: async (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) throw new Error("Transcript note not found.");
@@ -365,6 +369,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 						if (!file) throw new Error(`Transcript note not found: ${filePath}`);
 						await this.toggleTranscriptOrientation(file, this.partLeaves(file).video);
 					},
+					getOrientation: (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						return file && this.transcriptLocation(file, this.partLeaves(file).video) === "viewer" ? "below" : "beside";
+					},
+					onFormatChanged: (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						const view = file ? this.partLeaves(file).video?.view : null;
+						if (view instanceof VideoView) view.refreshTranscriptControls();
+					},
 					closePanel: (leaf) => this.closeTranscript(leaf),
 				})
 		);
@@ -380,6 +393,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 					getTimestampListStyle: () => this.settings.timestampListStyle,
 					getToolbarCaptureAction: () => this.settings.videoToolbarCaptureAction,
 					getShowYoutubeCaptions: () => this.settings.showYoutubeCaptions,
+					getTranscriptUnit: (filePath) => {
+						const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+						const view = file ? this.partLeaves(file).transcript?.view : null;
+						return view instanceof TranscriptView ? view.getNavigationUnit() : "caption";
+					},
 					insertTimestamp: (view) => this.insertTimestampIntoNote(view),
 					insertScreenshot: (view, whole) => this.insertScreenshotIntoNote(view, whole),
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
@@ -1273,6 +1291,23 @@ export default class PerplexitySaverPlugin extends Plugin {
 			console.error("Perplexity Saver: could not insert timestamp", error);
 			new Notice("Could not insert a timestamp into the literature note.");
 		}
+
+	}
+
+	private async insertTranscriptTimestamp(filePath: string, url: string, seconds: number): Promise<void> {
+		const videoId = parseYouTubeUrl(url)?.videoId;
+		const file = this.app.vault.getFileByPath(filePath);
+		if (!file || !videoId || !Number.isFinite(seconds) || seconds < 0) throw new Error("The selected transcript timestamp is no longer available.");
+		const target = this.createNoteInsertionTarget({ getFilePath: () => filePath });
+		if (!target) return;
+		try {
+			const playback = playerForNote(this.app, file)?.view ?? this.existingBackgroundPlayback(filePath);
+			if (insertPlaybackTimestamp(target, videoId, seconds, () => playback?.pausePlayback(), this.settings.timestampListStyle)) {
+				await this.focusNoteInsertionTarget(target);
+			}
+		} finally {
+			releaseNoteInsertionAnchor(target.anchor);
+		}
 	}
 
 	private async insertScreenshotIntoNote(view: VideoView, whole: boolean): Promise<void> {
@@ -1404,7 +1439,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.showTranscript(file, viewer);
 	}
 
-	async toggleTranscriptOrientation(file: TFile, viewer: WorkspaceLeaf | null): Promise<void> {
+	private transcriptLocation(file: TFile, viewer: WorkspaceLeaf | null): TranscriptPanelLocation {
 		let current = this.transcriptLocations.get(file.path) ?? this.settings.transcriptPanelLocation;
 		const panel = this.partLeaves(file).transcript;
 		if (panel && isSidebarLeaf(this.app, panel)) current = "sidebar";
@@ -1413,6 +1448,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 			if (direction === "below" || direction === "above") current = "viewer";
 			else if (direction === "left" || direction === "right") current = "beside";
 		}
+		return current;
+	}
+
+	async toggleTranscriptOrientation(file: TFile, viewer: WorkspaceLeaf | null): Promise<void> {
+		const current = this.transcriptLocation(file, viewer);
 		await this.showTranscript(file, viewer, current === "viewer" ? "beside" : "viewer");
 	}
 
@@ -2086,7 +2126,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Caption word timing",
-						desc: "Use saved native YouTube timestamps for sentence starts; missing offsets stay approximate. New per-caption downloads include timings automatically. Time words asks before fetching JSON3 for older notes. Compact saved timings migrates old caches offline. No Python, audio or model downloads.",
+						desc: "Allow Get timings in the transcript's More menu to fetch JSON3 for older notes, after asking. Available saved timings are always used automatically; missing starts stay approximate. New per-caption downloads include timings. No Python, audio or model downloads.",
 						control: { type: "toggle", key: "captionWordTiming" },
 					},
 				],
@@ -2124,7 +2164,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Default transcript panel location",
-						desc: "Initial placement. Use the transcript's Layout menu or orientation toggle command to change the current note's layout without changing this default.",
+						desc: "Initial placement. Use the transcript's below/beside icon or orientation toggle command to change the current note's layout without changing this default.",
 						control: {
 							type: "dropdown",
 							key: "transcriptPanelLocation",
@@ -2170,8 +2210,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						},
 					},
 					{
-						name: "Toolbar timestamp and screenshot action",
-						desc: "Default click action for the player's timestamp and screenshot icons. Right-click either icon for both actions. Shift-click the camera captures the whole picture using this destination. Insert requires the associated note in editing view.",
+						name: "Toolbar screenshot action",
+						desc: "Default click action for the camera. Right-click it or use its alternatives button for both destinations. Shift-click captures the whole picture. Timestamp insert and copy buttons are always explicit. Insert requires the associated note in editing view.",
 						control: {
 							type: "dropdown",
 							key: "videoToolbarCaptureAction",

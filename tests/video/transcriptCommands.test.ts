@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarkdownView, Platform, type App, type TFile, type WorkspaceLeaf } from "obsidian";
-import type { EditorView } from "@codemirror/view";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import PerplexitySaverPlugin from "../../src/main";
 import { TranscriptView } from "../../src/litNote/transcriptView";
 import { VideoView } from "../../src/video/videoView";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "../../src/video/youtubePlayer";
 import { VideoWorkspaceModal } from "../../src/video/workspaceLayout";
 import { createdNotices } from "../__mocks__/obsidian";
-import type { NoteInsertionTarget } from "../../src/video/noteInsertion";
+import { noteInsertionAnchors, type NoteInsertionTarget } from "../../src/video/noteInsertion";
 import "commons/testing";
 import * as workspaceApi from "commons/workspace";
 import { runCaptionTiming } from "../../src/litNote/captionTiming";
@@ -55,6 +56,7 @@ beforeEach(() => {
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
 	HTMLElement.prototype.isShown = function () { return true; };
 	HTMLElement.prototype.scrollIntoView = vi.fn();
+	HTMLElement.prototype.appendText = function (text) { this.append(text); };
 });
 
 async function harness() {
@@ -90,7 +92,7 @@ async function harness() {
 	transcript.contentEl = document.createElement("div");
 	transcript.containerEl = transcript.contentEl;
 	transcript.containerEl.isShown = () => true;
-	Object.assign(transcript, { filePath: file.path });
+	Object.assign(transcript, { filePath: file.path, mode: "lines" });
 	const transcriptLeaf = { view: transcript, setViewState: vi.fn(async () => {}), detach: vi.fn(), getViewState: () => ({ state: { file: file.path } }) } as unknown as WorkspaceLeaf;
 	vi.spyOn(transcript, "showFile").mockResolvedValue();
 	vi.spyOn(transcript, "getFilePath").mockReturnValue(file.path);
@@ -151,7 +153,7 @@ async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = docum
 	h.leaves.push(h.transcriptLeaf);
 	await panel.setState({ file: h.file.path }, { history: false });
 	await panel.onOpen();
-	const button = panel.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+	const button = panel.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle")!;
 	return { panel, button, commands, events, videoFactory };
 }
 
@@ -305,7 +307,7 @@ describe("transcript playback state", () => {
 		const otherLeaf = { view: other } as unknown as WorkspaceLeaf;
 		h.leaves.push(otherLeaf);
 		await other.setState({ file: h.file.path }, { history: false });
-		const otherButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+		const otherButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle")!;
 		await h.plugin["applyVideoWorkspace"](h.file as TFile, "transcript");
 		events.get("layout-change")!();
 		expect(panel.getBackgroundPlayback()?.isPlaying()).toBe(true);
@@ -314,7 +316,7 @@ describe("transcript playback state", () => {
 		expect(otherButton.getAttribute("aria-label")).toBe("Pause");
 		expect(otherButton.dataset.icon).toBe("pause");
 		other.copySessionFrom(panel);
-		const movedButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback button")!;
+		const movedButton = other.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-play-toggle")!;
 		expect(panel.getBackgroundPlayback()).toBeNull();
 		expect(other.getBackgroundPlayback()?.isPlaying()).toBe(true);
 		expect(button.getAttribute("aria-label")).toBe("Pause");
@@ -789,7 +791,7 @@ describe("transcript activation commands", () => {
 		await h.plugin.showTranscript(h.file as TFile, h.viewerLeaf, "viewer");
 		expect(split).toHaveBeenCalledWith(h.viewerLeaf, "horizontal");
 		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
-		expect(next.getState().mode).toBe("paragraphs");
+		expect(next.getState().mode).toBe("readable-paragraphs");
 		expect(next["previousQuery"]).toBe("target");
 		expect(h.plugin.settings.transcriptPanelLocation).toBe("sidebar");
 		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
@@ -1458,6 +1460,29 @@ describe("transcript activation commands", () => {
 		expect(editorFocus).toHaveBeenCalledOnce();
 	});
 
+	it("inserts a selected sentence time without seeking the player or using its current time", async () => {
+		const h = await harness();
+		const note = addNote(h).view;
+		const editor = new EditorView({
+			state: EditorState.create({ doc: "- ", selection: { anchor: 2 }, extensions: [noteInsertionAnchors] }),
+			parent: note.containerEl,
+		});
+		const video = h.viewerLeaf.view as VideoView;
+		vi.spyOn(video, "getPlaybackSeconds").mockReturnValue(99);
+		const seek = vi.spyOn(video, "seekTo");
+		const pause = vi.fn();
+		Object.assign(video["player"]!, { pause });
+		try {
+			await h.plugin["insertTranscriptTimestamp"](h.file.path, "https://youtu.be/abcdefghijk?t=2", 2);
+			expect(editor.state.doc.toString()).toContain("https://www.youtube.com/watch?v=abcdefghijk&t=2");
+			expect(editor.state.doc.toString()).not.toContain("99");
+			expect(seek).not.toHaveBeenCalled();
+			expect(pause).toHaveBeenCalledOnce();
+		} finally {
+			editor.destroy();
+		}
+	});
+
 	it("does not close an unrelated note's visible transcript", async () => {
 		const h = await harness();
 		const other = Object.create(TranscriptView.prototype) as TranscriptView;
@@ -1585,7 +1610,7 @@ function delayedNavigationRead(h: NavigationHarness) {
 	h.app.vault.cachedRead = read;
 	return {
 		waitForStart: () => vi.waitFor(() => expect(read).toHaveBeenCalledOnce(), { timeout: 500 }),
-		finish: () => resolveRead(NAVIGATION_NOTE),
+		finish: (content = NAVIGATION_NOTE) => resolveRead(content),
 	};
 }
 
@@ -1605,9 +1630,9 @@ describe("transcript timestamp navigation", () => {
 		["note", "lines", 10.3],
 		["video", "lines", 10.3],
 		["transcript", "lines", 10.3],
-		["note", "paragraphs", 20.2],
-		["video", "paragraphs", 20.2],
-		["transcript", "paragraphs", 20.2],
+		["note", "readable-paragraphs", 10.3],
+		["video", "readable-paragraphs", 10.3],
+		["transcript", "readable-paragraphs", 10.3],
 	] as const)("uses %s focus and %s rows to seek to %s", async (context, mode, target) => {
 		const h = await harness();
 		navigationFixture(h);
@@ -1659,9 +1684,9 @@ describe("transcript timestamp navigation", () => {
 		["note", "lines", false, 10.5],
 		["video", "lines", true, 10.5],
 		["transcript", "lines", false, 10.5],
-		["note", "paragraphs", false, 20.5],
-		["video", "paragraphs", true, 20.5],
-		["transcript", "paragraphs", true, 20.5],
+		["note", "readable-paragraphs", false, 20.5],
+		["video", "readable-paragraphs", true, 20.5],
+		["transcript", "readable-paragraphs", true, 20.5],
 	] as const)("moves to the previous row from %s in %s mode while playing=%s", async (context, mode, playing, now) => {
 		const h = await harness();
 		navigationFixture(h);
@@ -1671,7 +1696,7 @@ describe("transcript timestamp navigation", () => {
 		player.info.currentTime = now;
 		const { previous } = navigationCommands(h);
 		expect(previous.checkCallback!(false)).toBe(true);
-		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(10.1), { timeout: 500 });
+		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(mode === "lines" ? 10.1 : 10.3), { timeout: 500 });
 		expect((h.viewerLeaf.view as VideoView).isPlaying()).toBe(playing);
 		expect(player.play).not.toHaveBeenCalled();
 		expect(player.pause).not.toHaveBeenCalled();
@@ -1734,7 +1759,7 @@ describe("transcript timestamp navigation", () => {
 		expect(player.seekTo).toHaveBeenCalledTimes(2);
 		player.info.currentTime = 20.2;
 		player.seekTo.mockClear();
-		next.checkCallback!(false);
+		expect(next.checkCallback!(false)).toBe(true);
 		await vi.waitFor(() => expect(createdNotices).toHaveLength(3));
 		expect(createdNotices[2]?.message).toMatch(/no.*later.*transcript/i);
 		expect(player.seekTo).not.toHaveBeenCalled();
@@ -1757,8 +1782,8 @@ describe("transcript timestamp navigation", () => {
 
 	it.each([
 		["note", false, "lines", 10.3],
-		["note", true, "paragraphs", 20.2],
-		["transcript", false, "paragraphs", 20.2],
+		["note", true, "readable-paragraphs", 10.3],
+		["transcript", false, "readable-paragraphs", 10.3],
 		["transcript", true, "lines", 10.3],
 	] as const)("navigates background audio from %s, playing=%s, with %s rows", async (context, playing, mode, target) => {
 		const h = await harness();
@@ -1874,8 +1899,11 @@ describe("transcript timestamp navigation", () => {
 		const { next } = navigationCommands(h);
 		next.checkCallback!(false);
 		await pending.waitForStart();
-		Object.assign(h.transcript, { mode: "paragraphs" });
-		pending.finish();
+		Object.assign(h.transcript, { mode: "sentences" });
+		pending.finish(NAVIGATION_NOTE.slice(0, NAVIGATION_NOTE.indexOf("# Transcript")) + "# Transcript\n" +
+			`[0:10](https://youtu.be/${NAVIGATION_VIDEO}?t=10 "10.1-10.2") First\n` +
+			`[0:10](https://youtu.be/${NAVIGATION_VIDEO}?t=10 "10.3-10.6") continues.\n` +
+			`[0:20](https://youtu.be/${NAVIGATION_VIDEO}?t=20 "20.2-21") Another sentence.\n`);
 		await vi.waitFor(() => expect(player.seekTo).toHaveBeenCalledWith(20.2));
 	});
 
