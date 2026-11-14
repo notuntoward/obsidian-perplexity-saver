@@ -281,6 +281,11 @@
 	border-radius: var(--radius-s);
 }
 
+/* While following, focus rides with playback, so the playing tint alone marks that row (no grey ring around it). */
+.perplexity-saver-transcript-list.is-following .perplexity-saver-transcript-row.is-playing:focus {
+	outline: none;
+}
+
 /* With the filter on, only matching rows are shown. */
 .perplexity-saver-transcript-list.is-filtered .perplexity-saver-transcript-row:not(.is-match) {
 	display: none;
@@ -297,7 +302,9 @@
 	border-radius: var(--radius-s);
 }
 
-.perplexity-saver-transcript-row.is-selected {
+/* The selected line. While it has keyboard focus, the grey focus outline alone marks it (the
+   keyboard cursor is an empty box); the fill shows once focus moves elsewhere. */
+.perplexity-saver-transcript-row.is-selected:not(:focus) {
 	background-color: var(--text-selection);
 	border-radius: var(--radius-s);
 }

@@ -10,7 +10,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	});
 	await page.setContent(`<style>
 		* { box-sizing: border-box; } body { margin: 0; font: 14px/20px sans-serif; }
-		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --text-selection: rgba(100,80,220,.2); --text-faint: #888; --interactive-accent-hsl: 254, 80%, 68%; --radius-s: 4px; }
+		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --background-modifier-border-focus: #999; --text-selection: rgba(100,80,220,.2); --text-faint: #888; --interactive-accent-hsl: 254, 80%, 68%; --radius-s: 4px; }
 		.view-content { width: 700px; height: 300px; padding: 8px; overflow: auto; }
 		.clickable-icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: 0; }
 		.clickable-icon svg { width: 16px; height: 16px; } select { height: 28px; }
@@ -72,7 +72,9 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 				metadataCache:{on:()=>({}),getFileCache:()=>({headings:[{heading:"Transcript",level:1,position:{start:{offset:0},end:{offset:12}}}]})},
 				workspace:{on:()=>({}),requestSaveLayout(){}} };
 			const host = { getHeadingName:()=>"Transcript",getSearchSettings:()=>({keyboard:"obsidian",matching:"all-words",highlights:"always"}),
-				playAt(){},insertTimestampAt:async()=>{},toggleOrientation:async()=>{},getOrientation:()=>"below",runPlaybackControl(){},isVideoVisible:()=>false };
+				playAt(){},insertTimestampAt:async()=>{},toggleOrientation:async()=>{},getOrientation:()=>"below",runPlaybackControl(){},
+				// Like the real host (leaf.containerEl.isShown()), this reads layout, mid-render, while the list is empty.
+				isVideoVisible:()=>{ document.querySelector("#video").isShown(); return false; } };
 			const transcript = new ReadingUI.TranscriptView({app},host);
 			transcript.contentEl = document.querySelector("#transcript");
 			await transcript.setState({file:"note.md"},{history:false}); await transcript.onOpen();
@@ -115,6 +117,39 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	expect(painted[2].bg).not.toBe(unmarked);
 	expect(painted[1].bg).toBe(unmarked);
 	await expect(page.locator("#transcript .perplexity-saver-transcript-paragraph.is-playing")).toHaveCount(0);
+	// REGRESSION GUARD: the keyboard cursor (the focused, selected row) is an EMPTY grey outline. A selection fill under
+	// it looked like a second, darker "playing" mark. The fill may return only once focus leaves the row, so the
+	// selection stays visible. Checked by painted color because jsdom cannot see CSS.
+	const transcriptRows = page.locator("#transcript .perplexity-saver-transcript-row");
+	const cursorPaint = (index: number) => transcriptRows.nth(index).evaluate((el) => ({
+		bg: getComputedStyle(el).backgroundColor, outline: getComputedStyle(el).outlineStyle, focused: el === el.ownerDocument.activeElement,
+		selected: el.classList.contains("is-selected"), playing: el.classList.contains("is-playing"),
+	}));
+	await transcriptRows.nth(3).click();
+	expect(await cursorPaint(3)).toEqual({ bg: unmarked, outline: "solid", focused: true, selected: true, playing: false });
+	await page.keyboard.press("ArrowDown");
+	expect(await cursorPaint(4)).toEqual({ bg: unmarked, outline: "solid", focused: true, selected: true, playing: false });
+	expect((await cursorPaint(3)).bg).toBe(unmarked);
+	await transcriptRows.nth(4).evaluate((el) => (el as HTMLElement).blur());
+	const blurred = await cursorPaint(4);
+	expect(blurred.selected).toBe(true);
+	expect(blurred.bg).not.toBe(unmarked);
+	// REGRESSION GUARD: while following, keyboard focus rides on the playing row. That row must show only its tint,
+	// not the grey focus ring around it. Once the user browses (following pauses), the ring is the cursor again.
+	await page.getByRole("button", { name: "Follow video", exact: true }).click();
+	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveAttribute("aria-pressed", "true");
+	const playingIndex = () => transcriptRows.evaluateAll((els) => els.findIndex((el) => el.classList.contains("is-playing")));
+	await transcriptRows.nth(await playingIndex()).focus();
+	await page.evaluate(() => (globalThis as unknown as { transcriptView: { showPlayback(t: number, follow?: boolean, stateChanged?: boolean): void } }).transcriptView.showPlayback(10, true, false));
+	const ridden = await playingIndex();
+	const riding = await cursorPaint(ridden);
+	expect({ focused: riding.focused, playing: riding.playing, outline: riding.outline }).toEqual({ focused: true, playing: true, outline: "none" });
+	expect(riding.bg).not.toBe(unmarked);
+	await page.keyboard.press("ArrowDown");
+	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveAttribute("aria-pressed", "false");
+	expect((await cursorPaint(ridden + 1)).outline).toBe("solid");
+	await page.keyboard.press("ArrowUp");
+	expect(await cursorPaint(ridden)).toMatchObject({ focused: true, playing: true, outline: "solid" });
 	for (const width of [240, 320, 700]) {
 		await page.locator(".view-content").evaluateAll((els, w) => els.forEach((el) => { (el as HTMLElement).style.width = w + "px"; }), width);
 		await page.evaluate(() => (globalThis as unknown as { videoView: { onResize(): void } }).videoView.onResize());
@@ -161,6 +196,86 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 		await page.locator("#transcript select").selectOption(mode);
 		expect(await playingInView(), mode).toEqual({ count: 1, inView: true });
 	}
+	// REGRESSION GUARD: inserting a timestamp edits the note, which reloads and re-renders the transcript. The list must
+	// not move at all: no jump to the top and no smooth scroll back to the playing row. Every scroll position seen during
+	// the reload is recorded, so even a jump that ends back in place fails. The second case leaves the playing row
+	// visible but at the bottom edge (as after reading on while following), where a "re-center if needed" scroll fires.
+	const reloadScroll = (edge: boolean) => page.locator("#transcript").evaluate(async (box, edge) => {
+		if (edge) {
+			const playing = box.querySelector<HTMLElement>(".perplexity-saver-transcript-row.is-playing")!;
+			box.scrollTop += playing.getBoundingClientRect().bottom - box.getBoundingClientRect().bottom + 2;
+		}
+		// Start from a settled list, so a scroll left over from the previous step is not blamed on the reload.
+		for (let last = -1; last !== box.scrollTop;) { last = box.scrollTop; await new Promise((resolve) => setTimeout(resolve, 300)); }
+		const before = box.scrollTop;
+		const seen: number[] = [];
+		const record = () => seen.push(box.scrollTop);
+		box.addEventListener("scroll", record);
+		// Follow comes from the setting in real use, not from the Follow button's override. Without an override, a reload
+		// that suppresses scrolling by passing follow=false to showPlayback would silently turn Follow off.
+		const view = (globalThis as unknown as { transcriptView: { reload(): Promise<void>; followOverride: boolean | null } }).transcriptView;
+		view.followOverride = null;
+		await view.reload();
+		seen.push(box.scrollTop);
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		box.removeEventListener("scroll", record);
+		const follow = box.querySelector('[aria-label="Follow video"]')?.getAttribute("aria-pressed");
+		return { before, positions: [...new Set([...seen, box.scrollTop])], follow };
+	}, edge);
+	for (const edge of [false, true]) {
+		const scroll = await reloadScroll(edge);
+		expect(scroll.before, `edge=${edge}`).toBeGreaterThan(0);
+		expect(scroll.positions, `edge=${edge}`).toEqual([scroll.before]);
+		expect(scroll.follow, `edge=${edge}`).toBe("true");
+		expect(await playingInView(), `edge=${edge}`).toEqual({ count: 1, inView: true });
+	}
+	// REGRESSION GUARD: clicking a sentence while following must select THAT sentence and must not move the rows.
+	// The press pauses Follow, which shows "Show playing passage" in the sticky header; that used to push the list
+	// down between press and release, so the release landed elsewhere and the click selected nothing. Real mouse
+	// clicks, at the top of the list (no room to scroll up) and mid-list.
+	const followButton = page.getByRole("button", { name: "Follow video", exact: true });
+	for (const [atTop, rowIndex] of [[true, 3], [false, 18]] as const) {
+		if (await followButton.getAttribute("aria-pressed") !== "true") await followButton.click();
+		await expect(followButton).toHaveAttribute("aria-pressed", "true");
+		await page.locator("#transcript").evaluate(async (box, [atTop, rowIndex]) => {
+			const target = box.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[rowIndex];
+			box.scrollTop = atTop ? 0 : box.scrollTop + target.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 2;
+			for (let last = -1; last !== box.scrollTop;) { last = box.scrollTop; await new Promise((resolve) => setTimeout(resolve, 300)); }
+		}, [atTop, rowIndex] as const);
+		const row = page.locator("#transcript .perplexity-saver-transcript-row").nth(rowIndex);
+		// Paragraph rows are inline spans that wrap; click the middle of the first line box, which is inside the row.
+		const before = await row.evaluate((el) => { const r = el.getClientRects()[0]; return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+		expect(before.y, `row ${rowIndex} is on screen before the click`).toBeGreaterThan(0);
+		await page.mouse.click(before.x, before.y);
+		await expect(page.locator("#transcript .is-selected"), `row ${rowIndex} selected`).toHaveText(new RegExp(`^Sentence ${rowIndex} `));
+		await expect(followButton).toHaveAttribute("aria-pressed", "false");
+		expect(Math.abs(await row.evaluate((el) => el.getClientRects()[0].top + el.getClientRects()[0].height / 2) - before.y), `row ${rowIndex} stayed put`).toBeLessThanOrEqual(1);
+	}
+	// REGRESSION GUARD: with Follow paused (a sentence selected far from the playing one) the user owns the scroll
+	// position. Inserting a timestamp (reload) and coming back with "cycle panes" (focusPlayback) must not scroll to the
+	// playing row; focus returns to the selected row. Every scroll position during the round trip is recorded.
+	const returnToPane = await page.locator("#transcript").evaluate(async (box) => {
+		for (let last = -1; last !== box.scrollTop;) { last = box.scrollTop; await new Promise((resolve) => setTimeout(resolve, 300)); }
+		const before = box.scrollTop;
+		const seen: number[] = [];
+		const record = () => seen.push(box.scrollTop);
+		box.addEventListener("scroll", record);
+		(box.ownerDocument.activeElement as HTMLElement | null)?.blur();
+		const view = (globalThis as unknown as { transcriptView: { reload(): Promise<void>; focusPlayback(seconds: number, follow: boolean): void } }).transcriptView;
+		await view.reload();
+		view.focusPlayback(130, true);
+		seen.push(box.scrollTop);
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		box.removeEventListener("scroll", record);
+		const active = box.ownerDocument.activeElement;
+		return {
+			before,
+			positions: [...new Set([before, ...seen, box.scrollTop])],
+			focusedSelected: !!active?.classList.contains("is-selected"),
+			follow: box.querySelector('[aria-label="Follow video"]')?.getAttribute("aria-pressed"),
+		};
+	});
+	expect(returnToPane).toEqual({ before: returnToPane.before, positions: [returnToPane.before], focusedSelected: true, follow: "false" });
 	const close = page.locator(".perplexity-saver-transcript-close");
 	await expect(close).toBeVisible();
 	await page.locator("#transcript").evaluate(el => el.classList.add("show-pane-chrome"));

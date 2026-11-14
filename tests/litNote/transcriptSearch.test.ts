@@ -95,7 +95,7 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 		metadataCache: {
 			getFileCache: () => ({ frontmatter: { whisperx_transcript: alignment }, headings: [{ heading: "Transcript", level: 1, position: { start: { offset: 0 }, end: { offset: 12 } } }] }),
 		},
-		workspace: { requestSaveLayout: vi.fn() },
+		workspace: { requestSaveLayout: vi.fn(), iterateAllLeaves: () => {} },
 		hotkeyManager: {
 			printHotkeyForCommand: (id: string) => id === "perplexity-saver:transcript-search-forward" ? "Ctrl + S"
 				: id === "perplexity-saver:transcript-search-backward" ? "Ctrl + R" : "",
@@ -1489,7 +1489,9 @@ describe("transcript playing marker (regression guard)", () => {
 		const input = search(view, "number 3");
 		expect(markedRows(view)).toEqual([rows(view)[0], rows(view)[2]]);
 		key(input, "Tab");
-		expect(rows(view)[2].classList.contains("is-selected")).toBe(true);
+		// Searching never changes Follow, so accepting puts the cursor on the match without selecting it.
+		expect(followPressed(view)).toBe("true");
+		expect(rows(view)[2].classList.contains("is-selected")).toBe(false);
 		expect(document.activeElement).toBe(rows(view)[2]);
 		key(rows(view)[2], "Enter");
 		view.showPlayback(4, true, false);
@@ -1543,6 +1545,120 @@ describe("transcript playing marker (regression guard)", () => {
 		expect(playingRows(view)).toEqual([first]);
 		// The marker is the sentence, never a whole-paragraph indicator that cannot show intra-paragraph steps.
 		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-paragraph.is-playing")).toHaveLength(0);
+	});
+
+	// Every way a search can end. Searching is reading help, not a decision to stop following.
+	const endSearch: [string, (view: TranscriptView, input: HTMLInputElement) => void][] = [
+		["Tab (accept)", (_view, input) => key(input, "Tab")],
+		["the accept button", (view) => view.contentEl.querySelector<HTMLElement>('[aria-label^="Accept match"]')!.click()],
+		["Escape (cancel)", (_view, input) => key(input, "Escape")],
+		["the cancel button", (view) => view.contentEl.querySelector<HTMLElement>('[aria-label="Cancel transcript search"]')!.click()],
+	];
+
+	it.each(endSearch)("leaves Follow on when a search during playback ends by %s", async (_name, finish) => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		const input = search(view, "number 4");
+		expect(followPressed(view)).toBe("true");
+		view.showPlayback(3, true, false);
+		finish(view, input);
+		expect(followPressed(view)).toBe("true");
+		expect(selectionBarHidden(view)).toBe(true);
+		// Following still drives the panel: the next playing row is the only mark, and it is scrolled into view.
+		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+		view.showPlayback(10, true, false);
+		expect(markedRows(view)).toEqual([rows(view)[5]]);
+		expect(lastScrolled()).toBe(rows(view)[5]);
+	});
+
+	it("keeps Follow paused when a search ends after the user paused it", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[4].click();
+		expect(followPressed(view)).toBe("false");
+		key(search(view, "number 3"), "Tab");
+		expect(followPressed(view)).toBe("false");
+		expect(rows(view)[2].classList.contains("is-selected")).toBe(true);
+	});
+
+	/*
+	 * Keyboard browsing must start from wherever focus is in the pane. Earlier tests
+	 * always focused a row first (rows(view)[n].focus()), which is exactly the state a
+	 * user cannot reach without the mouse, so they passed while ArrowDown and Ctrl+N did
+	 * nothing after clicking a toolbar button, switching format, or activating the pane.
+	 * Each key is delivered the way Obsidian delivers it: a DOM keydown on the element
+	 * that has focus, plus (for Ctrl+N/P) the view scope handler on the same event.
+	 */
+	const paneFocus: [string, (view: TranscriptView) => void][] = [
+		["a toolbar button", (view) => view.contentEl.querySelector<HTMLElement>('[aria-label="Follow video"]')!.focus()],
+		["nothing (body) while the transcript is the active leaf", (view) => {
+			view.containerEl = view.contentEl;
+			Object.assign(view.leaf, { view });
+			Object.assign(view.app.workspace, {
+				activeLeaf: view.leaf,
+				iterateAllLeaves: (fn: (leaf: unknown) => void) => fn(view.leaf),
+			});
+			(document.activeElement as HTMLElement | null)?.blur();
+		}],
+	];
+
+	const down: [string, () => void][] = [
+		["ArrowDown", () => key(document.activeElement as HTMLElement, "ArrowDown")],
+		["Ctrl+N", () => {
+			const evt = new KeyboardEvent("keydown", { key: "n", ctrlKey: true, bubbles: true, cancelable: true });
+			// The view scope must consume it, or Obsidian also runs the global Ctrl+N hotkey.
+			expect(scopeHandlers.get("N")!(evt)).toBe(false);
+			(document.activeElement as HTMLElement).dispatchEvent(evt);
+		}],
+	];
+
+	describe.each(paneFocus)("keyboard cursor with focus on %s", (_where, focusPane) => {
+		it.each(down)("%s lands on the playing row, steps one row per press, and Enter plays the cursor row", async (_key, press) => {
+			const playing = { value: true };
+			const view = await playingPanel(playing);
+			setFormat(view, "sentences");
+			view.showPlayback(4, true, true);
+			focusPane(view);
+			expect(rows(view)).not.toContain(document.activeElement);
+			press();
+			expect(document.activeElement).toBe(rows(view)[2]);
+			press();
+			expect(document.activeElement).toBe(rows(view)[3]);
+			// Browsing with the cursor pauses following, so playback cannot drag the cursor away.
+			view.showPlayback(8, true, false);
+			expect(document.activeElement).toBe(rows(view)[3]);
+			key(rows(view)[3], "Enter");
+			expect(play).toHaveBeenCalledWith("note.md", expect.any(String), 6, true);
+		});
+	});
+
+	it.each(["sentences", "readable-paragraphs", "lines"])("ArrowUp/ArrowDown move the cursor from pane focus in %s", async (mode) => {
+		const playing = { value: false };
+		const view = await playingPanel(playing);
+		setFormat(view, mode);
+		view.showPlayback(6, true, true);
+		view.contentEl.querySelector<HTMLElement>('[aria-label="Follow video"]')!.focus();
+		key(document.activeElement as HTMLElement, "ArrowUp");
+		expect(document.activeElement).toBe(rows(view)[3]);
+		key(document.activeElement as HTMLElement, "ArrowUp");
+		expect(document.activeElement).toBe(rows(view)[2]);
+	});
+
+	it("leaves arrow keys alone in the search box and the format menu", async () => {
+		const playing = { value: false };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		const select = view.contentEl.querySelector("select")!;
+		select.focus();
+		key(select, "ArrowDown");
+		expect(document.activeElement).toBe(select);
+		const input = search(view, "number");
+		key(input, "ArrowDown");
+		expect(document.activeElement).toBe(input);
 	});
 });
 

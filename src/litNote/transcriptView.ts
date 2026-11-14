@@ -341,7 +341,12 @@ export class TranscriptView extends ItemView {
 	private highlightBtn: HTMLElement | null = null;
 	private demandHighlights = false;
 	private searchOrigin: { row: number; scrollTop: number } | null = null;
+	/** The note the list was last rendered from; a re-render of the same note keeps its scroll position. */
+	private renderedPath: string | null = null;
+	/** Set while a re-render re-marks the playing row: the row did not move, so following must not scroll to it. */
+	private holdFollowScroll = false;
 	private searchNavigationCleanup: (() => void) | null = null;
+	private paneKeysCleanup: (() => void) | null = null;
 	private searchHintsEl: HTMLElement | null = null;
 	private previousMatchBtn: HTMLElement | null = null;
 	private nextMatchBtn: HTMLElement | null = null;
@@ -579,7 +584,7 @@ export class TranscriptView extends ItemView {
 		const input = this.search?.inputEl;
 		if (!input) return;
 		this.setSearchOpen(true);
-		this.pauseFollowing();
+		// Searching only suspends scrolling while a query is shown (see isFollowing); it never turns Follow off.
 		this.rememberSearchOrigin();
 		input.focus();
 		input.select();
@@ -626,7 +631,7 @@ export class TranscriptView extends ItemView {
 		if (reveal || (resumed && follow && !this.followingPaused)) {
 			this.revealSeconds = seconds;
 			this.retryReveal();
-		} else if (changed && follow && !this.followingPaused && !this.query.trim()) {
+		} else if (changed && follow && !this.followingPaused && !this.query.trim() && !this.holdFollowScroll) {
 			this.scrollToRow(current.el, true);
 		}
 		this.retryReveal();
@@ -658,7 +663,30 @@ export class TranscriptView extends ItemView {
 		const enabled = this.follow && !this.followingPaused;
 		this.followBtn?.setAttribute("aria-pressed", String(enabled));
 		this.followBtn?.toggleClass("is-active", enabled);
-		if (this.playingPassageBtn) this.playingPassageBtn.hidden = enabled || this.playbackSec === null;
+		// While following, focus rides on the playing row; its tint is the only mark there, so CSS drops the focus ring.
+		this.listEl?.toggleClass("is-following", enabled);
+		if (this.playingPassageBtn) {
+			const btn = this.playingPassageBtn;
+			const hide = enabled || this.playbackSec === null;
+			if (btn.hidden !== hide) this.keepListInPlace(() => { btn.hidden = hide; });
+		}
+	}
+
+	/**
+	 * Apply a change to the sticky header without moving the rows. The header sits
+	 * inside the scroller, so a line appearing in it pushes every row down; when that
+	 * happens on pointerdown (clicking a row pauses Follow, which shows "Show playing
+	 * passage"), the release lands on a different element and the click selects nothing.
+	 */
+	private keepListInPlace(change: () => void): void {
+		const list = this.listEl;
+		// Skip while render() is rebuilding an empty list: reading layout then clamps the scroll position.
+		const box = list?.isConnected && list.firstElementChild ? scrollParent(list) : null;
+		const before = box ? list!.getBoundingClientRect().top : 0;
+		change();
+		if (!box) return;
+		const shift = list!.getBoundingClientRect().top - before;
+		if (shift) box.scrollTop += shift;
 	}
 
 	private revealPlayingPassage(): void {
@@ -694,7 +722,21 @@ export class TranscriptView extends ItemView {
 		this.demandHighlights = false;
 		this.applySearch(false);
 		this.showPlayback(seconds, follow);
-		this.focusLines(false);
+		if (this.isFollowing()) {
+			this.focusLines(false);
+			return;
+		}
+		// Not following: the user owns the scroll position, so returning to the pane (cycle panes, after a timestamp
+		// insert) must not move it. Focus the row they were reading if it is on screen, else any row on screen.
+		const { onScreen } = this.visibleRows();
+		const target = [this.selectedRowIndex(), this.focusRow, this.currentRow].find((i) => onScreen.includes(i)) ?? onScreen[0];
+		const row = target === undefined ? undefined : this.rendered[target];
+		if (target === undefined || !row) {
+			this.focusLines(false);
+			return;
+		}
+		this.setFocusRow(target);
+		row.el.focus({ preventScroll: true });
 	}
 
 	private async followFile(file: TFile): Promise<void> {
@@ -764,6 +806,10 @@ export class TranscriptView extends ItemView {
 		const input = this.search?.inputEl;
 		const searchFocused = !!input && input.ownerDocument.activeElement === input;
 		const rowHadFocus = this.focusedRowIndex() >= 0;
+		// Rebuilding empties the list, and any layout read mid-render clamps its scroller to the top; restore the
+		// position afterwards so re-rendering the same note (for example after a timestamp insert edits it) never scrolls.
+		const scroller = this.listEl ? scrollParent(this.listEl) : null;
+		const keptScrollTop = scroller && this.renderedPath === this.filePath ? scroller.scrollTop : null;
 		this.searchNavigationCleanup?.();
 		this.searchVisibilityCleanup?.();
 		this.searchNavigationCleanup = null;
@@ -936,9 +982,11 @@ export class TranscriptView extends ItemView {
 			cls: `perplexity-saver-transcript-list is-${this.mode}`,
 		});
 		this.listEl = list;
+		this.updateFollowButton();
 		this.observeRevealTarget(list);
 		list.setAttribute("role", "listbox");
 		list.addEventListener("keydown", (evt) => this.onListKey(evt));
+		this.bindPaneKeys();
 		list.addEventListener("focusin", (evt) => {
 			const idx = this.rendered.findIndex((r) => r.el === evt.target);
 			if (idx >= 0) this.setFocusRow(idx);
@@ -986,6 +1034,7 @@ export class TranscriptView extends ItemView {
 		}
 
 		this.focusRow = Math.min(this.focusRow, this.rendered.length - 1);
+		this.renderedPath = file.path;
 		this.setFocusRow(this.focusRow >= 0 ? this.focusRow : 0);
 		this.updateSelection();
 		if (rowHadFocus) this.rendered[this.focusRow]?.el.focus({ preventScroll: true });
@@ -993,7 +1042,17 @@ export class TranscriptView extends ItemView {
 		this.applySearch(false);
 		if (this.matches.length && keep >= 0) this.selectMatch(Math.min(keep, this.matches.length - 1), false);
 		if (searchFocused) this.focusSearch();
-		if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow, false);
+		const keptPosition = !!scroller && keptScrollTop !== null;
+		if (scroller && keptScrollTop !== null) scroller.scrollTop = keptScrollTop;
+		this.holdFollowScroll = keptPosition;
+		try {
+			if (this.playbackSec !== null) this.showPlayback(this.playbackSec, this.follow, false);
+		} finally {
+			this.holdFollowScroll = false;
+		}
+		// The playing row did not change, so the restored position stands; only a layout change that left it off screen moves the list.
+		const playing = this.rendered[this.currentRow];
+		if (keptPosition && playing && this.isFollowing() && !this.visibleRows().onScreen.includes(this.currentRow)) this.scrollToRow(playing.el, false, false);
 		this.retryReveal();
 		this.host.onFormatChanged?.(file.path);
 	}
@@ -1173,6 +1232,8 @@ export class TranscriptView extends ItemView {
 		this.searchVisibilityCleanup?.();
 		this.searchVisibilityCleanup = null;
 		this.searchNavigationCleanup = null;
+		this.paneKeysCleanup?.();
+		this.paneKeysCleanup = null;
 	}
 
 	/** Hide the rows that do not match while the filter is on and there is a query. */
@@ -1262,7 +1323,12 @@ export class TranscriptView extends ItemView {
 
 	private finishSearch(accept: boolean, refocus = true): void {
 		const origin = this.searchOrigin;
-		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow : origin?.row ?? this.focusRow;
+		// A search leaves Follow as it found it. While following, accepting only puts the cursor on
+		// the match (no selection, which would pause following), and cancelling returns to playback.
+		const following = this.follow && !this.followingPaused;
+		const toPlayback = !accept && following && !!this.rendered[this.currentRow];
+		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow
+			: toPlayback ? this.currentRow : origin?.row ?? this.focusRow;
 		if (this.query) this.previousQuery = this.query;
 		this.query = "";
 		this.setSearchOpen(false);
@@ -1270,8 +1336,8 @@ export class TranscriptView extends ItemView {
 		this.demandHighlights = false;
 		this.applySearch(false);
 		this.searchOrigin = null;
-		if (refocus) this.moveFocus(target);
-		if (!accept && origin && this.listEl) {
+		if (refocus) this.moveFocus(target, !following);
+		if (!accept && !toPlayback && origin && this.listEl) {
 			const box = scrollParent(this.listEl);
 			if (box) box.scrollTop = origin.scrollTop;
 		}
@@ -1343,15 +1409,24 @@ export class TranscriptView extends ItemView {
 		this.updateSelection();
 	}
 
+	private selectedRowIndex(): number {
+		return this.selectedSourceStart === null ? -1
+			: currentRowIndex(this.rendered.map((entry) => entry.row.sourceStart ?? 0), this.selectedSourceStart);
+	}
+
 	private updateSelection(): void {
 		const bar = this.selectionBar;
 		if (!bar) return;
-		const index = this.selectedSourceStart === null ? -1
-			: currentRowIndex(this.rendered.map((entry) => entry.row.sourceStart ?? 0), this.selectedSourceStart);
+		const index = this.selectedRowIndex();
 		this.rendered.forEach((entry, i) => {
 			entry.el.toggleClass("is-selected", i === index);
 			entry.el.setAttribute("aria-selected", String(i === index));
 		});
+		if (bar.hidden !== index < 0) this.keepListInPlace(() => this.fillSelectionBar(bar, index));
+		else this.fillSelectionBar(bar, index);
+	}
+
+	private fillSelectionBar(bar: HTMLElement, index: number): void {
 		bar.empty();
 		bar.hidden = index < 0;
 		const row = this.rendered[index]?.row;
@@ -1374,11 +1449,69 @@ export class TranscriptView extends ItemView {
 		if (evt === this.handledKey) return false;
 		if (!evt.ctrlKey || evt.metaKey || evt.altKey || evt.shiftKey) return true;
 		const index = this.focusedRowIndex();
-		if (index < 0) return true;
+		if (index < 0) return !this.startKeyboardCursor(evt);
 		const { visible, onScreen } = this.visibleRows();
 		this.moveFocus(stepRow(visible, index, delta, onScreen));
 		this.handledKey = evt;
 		return false;
+	}
+
+	/**
+	 * ArrowUp/ArrowDown and Ctrl+N/P put the keyboard cursor on a row when the pane has
+	 * focus but no row does (a toolbar button, the pane itself, or nothing while this is
+	 * the active leaf). Without this the cursor needs a mouse click first. The first
+	 * press lands on the cursor row; later presses reach onListKey and step from there.
+	 */
+	private startKeyboardCursor(evt: KeyboardEvent): boolean {
+		if (evt === this.handledKey || evt.isComposing || this.focusedRowIndex() >= 0) return false;
+		const name = evt.key.toLowerCase();
+		const plain = !evt.ctrlKey && !evt.metaKey && !evt.altKey && !evt.shiftKey;
+		const emacs = evt.ctrlKey && !evt.metaKey && !evt.altKey && !evt.shiftKey;
+		const navigation = (plain && (evt.key === "ArrowDown" || evt.key === "ArrowUp")) || (emacs && (name === "n" || name === "p"));
+		if (!navigation || !this.paneHasKeyboard()) return false;
+		const target = this.cursorStartRow();
+		if (target < 0) return false;
+		this.moveFocus(target);
+		evt.preventDefault();
+		evt.stopPropagation();
+		this.handledKey = evt;
+		return true;
+	}
+
+	/** Whether keys typed now belong to this pane and are not for a text field or menu inside it. */
+	private paneHasKeyboard(): boolean {
+		const root = this.containerEl ?? this.contentEl;
+		const doc = root.ownerDocument;
+		const active = doc.activeElement;
+		if (!active || active === doc.body) {
+			return root.isConnected && getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view === this;
+		}
+		return root.contains(active) && !active.closest("input, textarea, select, [contenteditable]:not([contenteditable=false])");
+	}
+
+	/** Where the keyboard cursor starts: the last cursor row or the playing row if on screen, else the first row on screen. */
+	private cursorStartRow(): number {
+		const { visible, onScreen } = this.visibleRows();
+		const onScreenRow = [this.focusRow, this.currentRow].find((i) => onScreen.includes(i));
+		if (onScreenRow !== undefined) return onScreenRow;
+		return onScreen[0] ?? (visible.includes(this.currentRow) ? this.currentRow : visible[0] ?? -1);
+	}
+
+	/** Listen where pane keys arrive when no row has focus: the pane itself, and the body while this is the active leaf. */
+	private bindPaneKeys(): void {
+		this.paneKeysCleanup?.();
+		const root = this.containerEl ?? this.contentEl;
+		const body = root.ownerDocument.body;
+		const inPane = (evt: KeyboardEvent): void => { this.startKeyboardCursor(evt); };
+		const onBody = (evt: KeyboardEvent): void => {
+			if (evt.target === body) this.startKeyboardCursor(evt);
+		};
+		root.addEventListener("keydown", inPane);
+		body.addEventListener("keydown", onBody);
+		this.paneKeysCleanup = () => {
+			root.removeEventListener("keydown", inPane);
+			body.removeEventListener("keydown", onBody);
+		};
 	}
 
 	/** Rows not hidden by the filter, and the subset scrolled into view. */
