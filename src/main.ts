@@ -39,6 +39,7 @@ import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
+import { isTranscriptCapturePosition, registerTranscriptProtection } from "./litNote/transcriptProtection";
 import { registerCaptionTimingRepair, runCaptionTiming } from "./litNote/captionTiming";
 import {
 	TRANSCRIPT_VIEW_TYPE,
@@ -259,6 +260,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.loadSettings();
 		this.refreshVideoNoteFocusIndicator = registerVideoNoteFocusIndicator(this, () => this.settings.videoNoteFocusIndicator);
 		this.registerEditorExtension(noteInsertionAnchors);
+		registerTranscriptProtection(this, () => this.settings.transcriptHeading);
 		registerFootnoteNavigation(this);
 		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		registerCaptionTimingRepair(this, () => this.settings.transcriptHeading, (file) => this.timeTranscriptFromCaptions(file));
@@ -1408,6 +1410,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const editorView = editorEl ? EditorView.findFromDOM(editorEl as HTMLElement) : null;
 		if (!editorView) {
 			new Notice("Switch the literature note to editing view and place the Cursor where you want the insertion.");
+			return null;
+		}
+		if (isTranscriptCapturePosition(editorView.state, editorView.state.selection.main.head)) {
+			new Notice("Cannot insert into the transcript. Choose a location in your notes.");
 			return null;
 		}
 		const anchor = createNoteInsertionAnchor(editorView);

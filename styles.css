@@ -790,3 +790,17 @@
 	font-variant-numeric: tabular-nums;
 	min-width: 4em;
 }
+
+.saver-transcript-lock {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.5em;
+	margin-left: 0.75em;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	font-weight: normal;
+}
+
+.saver-transcript-lock button {
+	font-size: inherit;
+}

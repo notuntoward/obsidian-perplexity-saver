@@ -11,6 +11,7 @@ export type NoteDecision =
 	| "open-existing"
 	| "create"
 	| "skip"
+	| "unlock"
 	| "cancel";
 
 export interface DecisionButton {

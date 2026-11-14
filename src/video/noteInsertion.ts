@@ -2,6 +2,7 @@ import { StateEffect, StateField, type Text } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { Notice, type WorkspaceLeaf } from "obsidian";
 import { timestampLink } from "./youtubeLinks";
+import { isTranscriptCapturePosition } from "../litNote/transcriptProtection";
 
 interface InsertionAnchors {
 	[id: number]: number;
@@ -247,13 +248,20 @@ export function insertAtNoteInsertionAnchor(
 	if (position === null || !anchor.view.dom.isConnected) return false;
 	const from = replace?.from ?? position;
 	const to = replace?.to ?? position;
+	if (isTranscriptCapturePosition(anchor.view.state, from, to)) {
+		releaseNoteInsertionAnchor(anchor);
+		new Notice("Cannot insert into the transcript. Choose a location in your notes.");
+		return false;
+	}
 	anchor.view.dispatch({
 		changes: { from, to, insert: text },
 		selection: { anchor: from + cursorOffset },
 		scrollIntoView: true,
 		effects: clearInsertionAnchor.of(anchor.id),
 	});
-	return true;
+	const inserted = getNoteInsertionPosition(anchor) === null;
+	if (!inserted) releaseNoteInsertionAnchor(anchor);
+	return inserted;
 }
 
 /** First-line content and any indented block lines for a timestamped list item. */

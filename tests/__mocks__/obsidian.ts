@@ -1,6 +1,19 @@
 // Minimal mock of the type-only `obsidian` package so that unit tests can
 // resolve `import { ... } from "obsidian"` without the real Obsidian runtime.
 // Extend these stubs as your tests need them.
+import { StateField } from "@codemirror/state";
+
+export const editorInfoField = StateField.define<{ file: { path: string } | null }>({
+	create: () => ({ file: null }),
+	update: (value) => value,
+});
+
+export function getFrontMatterInfo(content: string): { exists: boolean; frontmatter: string; contentStart: number } {
+	const match = /^(?:\uFEFF)?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+	return match
+		? { exists: true, frontmatter: match[1], contentStart: match[0].length }
+		: { exists: false, frontmatter: "", contentStart: 0 };
+}
 
 export class Plugin {
 	app: any;
@@ -113,6 +126,27 @@ export class Notice {
 }
 
 export const createdNotices: Notice[] = [];
+
+export function installEditorDomHelpers(doc: Document): void {
+	const createEl = function(this: HTMLElement | DocumentFragment, tag: string, options?: { cls?: string; text?: string }): HTMLElement {
+		const el = this.ownerDocument!.createElement(tag);
+		if (options?.cls) el.className = options.cls;
+		if (options?.text) el.textContent = options.text;
+		this.appendChild(el);
+		return el;
+	};
+	const elementPrototype = Object.getPrototypeOf(Object.getPrototypeOf(doc.createElement("div")));
+	const fragmentPrototype = Object.getPrototypeOf(doc.createDocumentFragment());
+	for (const prototype of [elementPrototype, fragmentPrototype]) {
+		Object.defineProperty(prototype, "createEl", { value: createEl, configurable: true });
+		Object.defineProperty(prototype, "createSpan", {
+			value: function(this: HTMLElement | DocumentFragment, options?: { cls?: string; text?: string }) {
+				return createEl.call(this, "span", options);
+			},
+			configurable: true,
+		});
+	}
+}
 
 export class Modal {
 	app: any;

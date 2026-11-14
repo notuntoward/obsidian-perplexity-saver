@@ -16,12 +16,6 @@ vi.mock("../../src/litNote/youtubeTranscript", async (original) => ({
 }));
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
-	getFrontMatterInfo: (content: string) => {
-		const end = content.indexOf("\n---\n", 4);
-		return content.startsWith("---\n") && end >= 0
-			? { exists: true, frontmatter: content.slice(4, end), contentStart: end + 5 }
-			: { exists: false, frontmatter: "", contentStart: 0 };
-	},
 	parseYaml: (text: string) => JSON.parse(text),
 }));
 

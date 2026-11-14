@@ -3,6 +3,7 @@ import { askNoteDecision } from "./decisionModal";
 import { prepareTranscript, type PreparedTranscript } from "./transcriptSentences";
 import { findTranscriptRange, parseStoredTranscript, type StoredTranscriptLine } from "./transcriptSection";
 import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage";
+import { approveTranscriptUpdate } from "./transcriptProtection";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
 import { fetchYouTubeCaptions, formatNativeTranscript } from "./youtubeTranscript";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
@@ -108,7 +109,9 @@ export async function runCaptionTiming(
 				if (current.slice(currentBodyStart) !== body) {
 					throw new Error("The note body changed during caption timing. Results were not applied to edited text.");
 				}
-				return current.slice(0, currentBodyStart) + expectedBody;
+				const updated = current.slice(0, currentBodyStart) + expectedBody;
+				approveTranscriptUpdate(file, updated);
+				return updated;
 			});
 			const saved = await app.vault.cachedRead(file);
 			const savedBody = saved.slice(getFrontMatterInfo(saved).contentStart);
