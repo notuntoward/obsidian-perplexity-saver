@@ -381,6 +381,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 						if (view instanceof VideoView) view.refreshTranscriptControls();
 					},
 					closePanel: (leaf) => this.closeTranscript(leaf),
+					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
 				})
 		);
 		this.registerTranscriptCommands();
@@ -405,6 +406,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
+					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
 					jumpToTranscriptTimestamp: (view, direction) => {
 						void this.jumpToTranscriptTimestamp(view, direction).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not navigate transcript timestamps", error);
@@ -558,6 +560,18 @@ export default class PerplexitySaverPlugin extends Plugin {
 				return true;
 			},
 		});
+		this.addCommand({
+			id: "video-close-media",
+			name: "Video: close player and transcript",
+			checkCallback: (checking) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				const { video, transcript } = this.partLeaves(file);
+				if (!video && !transcript) return false;
+				if (!checking) this.closeVideoWorkspace(file.path);
+				return true;
+			},
+		});
 		this.registerEvent(this.app.workspace.on("file-menu", (menu, file) => {
 			if (file instanceof TFile && file.extension === "md") {
 				menu.addItem((item) => item.setTitle("Video workspace...").setIcon("youtube").onClick(() => choose(file)));
@@ -599,9 +613,21 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}).open();
 	}
 
+	private closeVideoWorkspace(filePath: string): void {
+		const file = this.app.vault.getFileByPath(filePath);
+		if (!file) {
+			new Notice("The literature note is no longer available.");
+			return;
+		}
+		void this.applyVideoWorkspace(file, "note", false).catch((error: unknown) => {
+			console.error("Perplexity Saver: could not close player and transcript", error);
+			new Notice("Could not close player and transcript.");
+		});
+	}
+
 	private changingVideoWorkspace = false;
 
-	private async applyVideoWorkspace(file: TFile, layout: VideoWorkspaceLayout): Promise<void> {
+	private async applyVideoWorkspace(file: TFile, layout: VideoWorkspaceLayout, openNote = true): Promise<void> {
 		if (this.changingVideoWorkspace) {
 			new Notice("A video workspace change is already in progress.");
 			return;
@@ -620,11 +646,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 				new Notice(`No timestamped transcript under a "${this.settings.transcriptHeading}" heading in ${file.basename}.`);
 				return;
 			}
-			if (!leaves.note) {
+			const needsNote = openNote || wantsVideo || wantsTranscript;
+			if (!leaves.note && needsNote) {
 				await openFileInLeaf(this.app, file, { raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined });
 				leaves.note = this.partLeaves(file).note;
 			}
-			if (!leaves.note) throw new Error("Could not open the literature note.");
+			if (!leaves.note && needsNote) throw new Error("Could not open the literature note.");
 			if (wantsVideo) {
 				if (!leaves.video) leaves.video = await this.openViewerForNote(file, false, true);
 				if (!leaves.video) throw new Error("Could not open the video player.");
@@ -672,7 +699,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			}
 			if (audio) await this.backgroundPlaybackFor(file, audio);
 			// Layout changes leave the user in the note, ready to take notes.
-			await this.activatePartLeaf(leaves.note, wantsVideo ? leaves.video : null);
+			if (leaves.note) await this.activatePartLeaf(leaves.note, wantsVideo ? leaves.video : null);
 			for (const win of closedWindows) closePopoutWindowIfEmpty(this.app, win);
 		} finally {
 			this.changingVideoWorkspace = false;

@@ -202,6 +202,7 @@ export interface TranscriptViewHost {
 	getOrientation?(filePath: string): "below" | "beside";
 	onFormatChanged?(filePath: string): void;
 	closePanel?(leaf: WorkspaceLeaf): Promise<void>;
+	closeMedia?(filePath: string): void;
 }
 
 /** Index of the row playing at `seconds`: the last row starting at or before it, or -1. `starts` is sorted. */
@@ -950,6 +951,10 @@ export class TranscriptView extends ItemView {
 			}
 			menu.addItem((item) => item.setTitle("Keyboard help").setChecked(el.hasClass("show-help"))
 				.onClick(() => el.toggleClass("show-help", !el.hasClass("show-help"))));
+			const filePath = this.filePath;
+			if (filePath && this.host.closeMedia) {
+				menu.addItem((item) => item.setTitle("Close player and transcript").onClick(() => this.host.closeMedia?.(filePath)));
+			}
 			const rect = more.getBoundingClientRect();
 			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
 		});

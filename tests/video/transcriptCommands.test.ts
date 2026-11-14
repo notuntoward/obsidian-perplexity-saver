@@ -10,7 +10,7 @@ import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "../../src/video/you
 import { VideoWorkspaceModal } from "../../src/video/workspaceLayout";
 import { createdNotices } from "../__mocks__/obsidian";
 import { noteInsertionAnchors, type NoteInsertionTarget } from "../../src/video/noteInsertion";
-import "commons/testing";
+import { MockMenu } from "commons/testing";
 import * as workspaceApi from "commons/workspace";
 import { runCaptionTiming } from "../../src/litNote/captionTiming";
 
@@ -19,6 +19,9 @@ vi.mock("obsidian", async (original) => ({
 	debounce: (callback: () => void) => callback,
 	Scope: class { register(): void {} },
 	Platform: { isDesktopApp: false },
+	Menu: class extends (await import("commons/testing")).MockMenu {
+		addSeparator(): this { return this; }
+	},
 	FileSystemAdapter: class {
 		getBasePath(): string { return "C:\\plugin-test"; }
 	},
@@ -1036,7 +1039,7 @@ describe("transcript activation commands", () => {
 		Object.assign(h.app.workspace, { on: vi.fn() });
 		h.plugin["registerVideoWorkspaceCommands"]();
 		expect(commands.map((command) => command.id)).toEqual([
-			"video-workspace", "cycle-note-video-transcript",
+			"video-workspace", "cycle-note-video-transcript", "video-close-media",
 		]);
 		expect(commands[1].name).toBe("Video: cycle panes");
 		commands[0].checkCallback!(true);
@@ -1044,6 +1047,87 @@ describe("transcript activation commands", () => {
 		commands[0].checkCallback!(false);
 		await vi.waitFor(() => expect(open).toHaveBeenCalledOnce());
 		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
+	});
+
+	it.each(["note", "video", "transcript"] as const)("closes associated media directly from the %s without closing the note or unrelated player", async (part) => {
+		const h = await harness();
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const other = await harness();
+		Object.assign(other.viewerLeaf.view, { filePath: "other.md" });
+		const unrelatedClose = vi.fn();
+		Object.assign(other.viewerLeaf, { detach: unrelatedClose });
+		h.leaves.push(other.viewerLeaf);
+		const noteClose = vi.fn();
+		const playerClose = vi.fn();
+		Object.assign(note, { detach: noteClose });
+		Object.assign(h.viewerLeaf, { detach: playerClose });
+		h.app.workspace.activeLeaf = { note, video: h.viewerLeaf, transcript: h.transcriptLeaf }[part];
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		Object.assign(h.app.workspace, { on: vi.fn() });
+		h.plugin["registerVideoWorkspaceCommands"]();
+		const command = commands.find(({ id }) => id === "video-close-media");
+		expect(command?.name).toBe("Video: close player and transcript");
+		expect(command?.checkCallback?.(true)).toBe(true);
+		expect(playerClose).not.toHaveBeenCalled();
+		command!.checkCallback!(false);
+		await vi.waitFor(() => expect(playerClose).toHaveBeenCalledOnce());
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
+		expect(noteClose).not.toHaveBeenCalled();
+		expect(unrelatedClose).not.toHaveBeenCalled();
+		expect(h.plugin.settings.videoPlayback[h.file.path]).toEqual({ videoId: "abc", seconds: 25.75 });
+		expect(h.plugin.settings.preferredVideoWorkspace).toBe("video");
+		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(note, { focus: true });
+	});
+
+	it.each([false, true])("both More menus close their own note's media rather than the active note (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		if (popout) {
+			Object.defineProperty(doc, "activeElement", { configurable: true, value: doc.body });
+			vi.stubGlobal("activeDocument", doc);
+			vi.stubGlobal("activeWindow", window);
+		}
+		try {
+			const h = await harness();
+			const { panel, videoFactory } = await playbackPanel(h, doc);
+			Object.assign(h.viewerLeaf, { app: h.app });
+			const viewer = videoFactory(h.viewerLeaf) as VideoView;
+			viewer.contentEl = doc.createElement("div");
+			Object.assign(viewer, { filePath: h.file.path, videoId: "abc" });
+			viewer["build"]();
+			const apply = vi.fn().mockResolvedValue(undefined);
+			Object.assign(h.plugin, { applyVideoWorkspace: apply });
+			const showMenu = vi.spyOn(MockMenu.prototype, "showAtPosition");
+			for (const view of [viewer, panel]) {
+				const label = view === viewer ? "More video options" : "More transcript options";
+				view.contentEl.querySelector<HTMLElement>(`[aria-label="${label}"]`)!.click();
+				expect(showMenu).toHaveBeenLastCalledWith(expect.any(Object), doc);
+				const close = MockMenu.last?.items.find(({ title }) => title === "Close player and transcript");
+				expect(close).toBeDefined();
+				h.app.workspace.activeLeaf = null;
+				close!.click();
+				expect(apply).toHaveBeenLastCalledWith(h.file, "note", false);
+			}
+			expect(apply).toHaveBeenCalledTimes(2);
+			showMenu.mockRestore();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("closes media without reopening an already-closed literature note", async () => {
+		const h = await harness();
+		vi.spyOn(workspaceApi, "findLeafForFile").mockReturnValue(null);
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(h.viewerLeaf, { detach: vi.fn() });
+		const reopen = vi.spyOn(workspaceApi, "openFileInLeaf").mockResolvedValue(h.viewerLeaf);
+		h.plugin["closeVideoWorkspace"](h.file.path);
+		await vi.waitFor(() => expect(h.viewerLeaf.detach).toHaveBeenCalledOnce());
+		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
+		expect(reopen).not.toHaveBeenCalled();
+		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+		expect(h.plugin.settings.videoPlayback[h.file.path]).toEqual({ videoId: "abc", seconds: 25.75 });
 	});
 
 	it("cycles between a pop-out note and its main-window transcript", async () => {

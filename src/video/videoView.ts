@@ -73,6 +73,7 @@ export interface VideoViewHost {
 	isTranscriptShown(viewer: WorkspaceLeaf): boolean;
 	/** Close that transcript panel if it is on screen, otherwise show the note's transcript (beside a pop-out viewer, else per the plugin setting). */
 	toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf): Promise<void>;
+	closeMedia?(filePath: string): void;
 	jumpToTranscriptTimestamp(view: VideoView, direction: 1 | -1): void;
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
 	onPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged?: boolean): void;
@@ -360,6 +361,11 @@ export class VideoView extends ItemView {
 			menu.addItem((item) => item.setTitle("Zoom in (+)").onClick(() => this.zoomBy(ZOOM_STEP)));
 			menu.addSeparator();
 			menu.addItem((item) => item.setTitle("Open in browser at this time").onClick(() => this.openInBrowser()));
+			const filePath = this.filePath;
+			if (filePath && this.host.closeMedia) {
+				menu.addSeparator();
+				menu.addItem((item) => item.setTitle("Close player and transcript").onClick(() => this.host.closeMedia?.(filePath)));
+			}
 			const rect = more.getBoundingClientRect();
 			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
 		});
@@ -393,6 +399,7 @@ export class VideoView extends ItemView {
 				["video-viewer-next-note-timestamp", "next segment"], ["video-viewer-insert-timestamp", "insert timestamp"],
 				["video-viewer-copy-timestamp", "copy timestamp"], ["show-youtube-transcript", "show / hide transcript"],
 				["video-viewer-faster", "faster"], ["video-viewer-slower", "slower"],
+				["video-close-media", "close player and transcript"],
 			].map(([id, action]) => {
 				const key = getCommandHotkeyLabel(this.app, `perplexity-saver:${id}`);
 				return [{ key: key || "Unassigned", action, disabled: !key }];
