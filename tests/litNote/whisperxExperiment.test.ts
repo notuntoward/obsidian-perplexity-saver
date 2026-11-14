@@ -138,6 +138,7 @@ describe("local word timing consent and offline persistence", () => {
 		expect(body).toContain("A fresh transcript.");
 		expect(body).not.toContain("we finished the experiment");
 		expect(body).toContain("; w=");
+		expect(body).toContain("<!-- saver-transcript-language: en -->");
 		expect(frontmatter.title).toBe("Keep me");
 		expect(frontmatter.whisperx_transcript).toBeUndefined();
 		expect(runWhisperx).toHaveBeenCalledTimes(2);

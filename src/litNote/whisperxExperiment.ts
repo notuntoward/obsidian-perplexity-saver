@@ -6,6 +6,7 @@ import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, readCaptionReplacement, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
 import { runWhisperx, type WhisperxProcessOptions } from "./whisperxProcess";
 import { formatTranscriptCues } from "./youtubeTranscript";
+import { withTranscriptLanguage } from "./transcriptLanguage";
 import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
 
 const running = new WeakMap<App, Set<TFile>>();
@@ -118,7 +119,7 @@ export async function runWhisperxExperiment(
 			const cache = readAlignmentCache(result, prepared);
 			if (!cache) throw new Error("WhisperX returned results for a different transcript or helper version.");
 			if (!cache.words.some((word) => word !== null)) throw new Error("WhisperX could not align any words; no results were saved.");
-			await save(cache, sourceSection);
+			await save(cache, withTranscriptLanguage(sourceSection, "en"));
 			const sentences = alignedSentenceRows(prepared, cache);
 			const approximate = sentences.filter((sentence) => sentence.timingUncertain).length;
 			const method = cache.engine === "youtube-json3"

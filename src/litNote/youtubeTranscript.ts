@@ -9,6 +9,7 @@
 
 import { requestUrl } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
+import { withTranscriptLanguage } from "./transcriptLanguage";
 
 export interface TranscriptLine {
 	text: string;
@@ -460,8 +461,8 @@ export async function downloadYouTubeTranscript(
 		return null;
 	}
 
-	if ((options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues") {
-		return formatTranscriptCues(lines, url);
-	}
-	return formatTranscript(lines, url, options.timestampMod ?? 5);
+	const formatted = (options.format ?? DEFAULT_TRANSCRIPT_FORMAT) === "cues"
+		? formatTranscriptCues(lines, url) : formatTranscript(lines, url, options.timestampMod ?? 5);
+	const language = new URL(captionTrack.baseUrl).searchParams.get("tlang") ?? captionTrack.languageCode;
+	return withTranscriptLanguage(formatted, language);
 }

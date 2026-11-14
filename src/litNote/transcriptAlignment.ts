@@ -144,14 +144,15 @@ export function alignedSentenceRows(transcript: PreparedTranscript, cache: WordT
 	let previousEnd = 0;
 	return sentences.map((sentence, index) => {
 		const nextStart = sentences[index + 1]?.sourceStart ?? transcript.text.length;
+		while (first < transcript.words.length && transcript.words[first].start < sentence.sourceStart) first++;
 		let last = first;
-		while (last + 1 < transcript.words.length && transcript.words[last + 1].start < nextStart) last++;
-		const timings = cache.words.slice(first, last + 1);
+		while (last < transcript.words.length && transcript.words[last].start < nextStart) last++;
+		const timings = cache.words.slice(first, last);
 		const known = timings.filter((word) => word !== null);
 		const startSec = known[0]?.[0] ?? previousEnd;
 		const endSec = known.at(-1)?.[1] ?? undefined;
-		const timingUncertain = cache.words[first] === null;
-		first = last + 1;
+		const timingUncertain = !cache.words[first] || transcript.words[first]?.start !== sentence.sourceStart;
+		first = last;
 		previousEnd = endSec ?? known.at(-1)?.[0] ?? startSec;
 		return { ...sentence, startSec, endSec, timingUncertain, url: watchUrl(cache.videoId, startSec) };
 	});

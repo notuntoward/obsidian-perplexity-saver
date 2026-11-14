@@ -1,5 +1,6 @@
 /// <reference lib="es2022.intl" />
 import { eng, removeStopwords } from "stopword";
+import { isEnglishTranscript, normalizeTranscriptLanguage } from "./transcriptLanguage";
 
 /**
  * Group timestamped transcript cues into paragraphs.
@@ -31,7 +32,7 @@ const SENTENCE_SEARCH_SEC = 15;
 /** At a pause, split at the last sentence end only if it leaves this much (seconds). */
 const MIN_SPLIT_SEC = 10;
 
-const SENTENCE_END = /[.!?。！？][\p{Pe}\p{Pf}"'\u200e\u200f\s]*$/u;
+export const SENTENCE_END = /[.!?。！？][\p{Pe}\p{Pf}"'\u200e\u200f\s]*$/u;
 const NO_SPACE_SCRIPT =
 	/[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}\p{scx=Hangul}\p{scx=Thai}\p{scx=Lao}\p{scx=Khmer}\p{scx=Myanmar}]/u;
 const TRAILING_DASH = /[-–—]$/;
@@ -163,52 +164,62 @@ export function buildTranscriptParagraphs<C extends TranscriptCue>(
 }
 
 /** Group complete sentences locally; timestamps are not measurements of silence. */
-export function groupSentencesIntoParagraphs<T extends { text: string }>(sentences: readonly T[]): T[][] {
+export function groupSentencesIntoParagraphs<T extends { text: string }>(sentences: readonly T[], language?: string): T[][] {
 	if (!sentences.length) return [];
-	const segmenter = new Intl.Segmenter("en", { granularity: "word" });
+	const locale = normalizeTranscriptLanguage(language);
+	const english = isEnglishTranscript(locale);
+	const characters = !english && (/^(?:zh|ja)(?:-|$)/.test(locale ?? "") ||
+		sentences.some((sentence) => /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u.test(sentence.text)));
+	const segmenter = new Intl.Segmenter(locale, { granularity: characters ? "grapheme" : "word" });
+	const target = characters ? 300 : 120;
+	const limit = characters ? 400 : 160;
 	const lengths: number[] = [];
 	const terms = sentences.map((sentence) => {
-		const words = Array.from(segmenter.segment(sentence.text), (part) => part.isWordLike ? part.segment.toLocaleLowerCase("en") : "")
+		const words = Array.from(segmenter.segment(sentence.text), (part) =>
+			(characters ? part.segment.trim() : part.isWordLike) ? part.segment.toLocaleLowerCase(locale) : "")
 			.filter(Boolean);
 		lengths.push(Math.max(1, words.length));
-		return removeStopwords(words, eng).filter((word) => word.length >= 3);
+		return english ? removeStopwords(words, eng).filter((word) => word.length >= 3) : [];
 	});
-	const frequency = new Map<string, number>();
-	for (const sentence of terms) for (const word of new Set(sentence)) {
-		frequency.set(word, (frequency.get(word) ?? 0) + 1);
-	}
-	const vector = (first: number, last: number): Map<string, number> => {
-		const counts = new Map<string, number>();
-		for (let i = first; i < last; i++) for (const word of terms[i]) counts.set(word, (counts.get(word) ?? 0) + 1);
-		for (const [word, count] of counts) {
-			counts.set(word, (1 + Math.log(count)) * (1 + Math.log((sentences.length + 1) / (frequency.get(word)! + 1))));
+	let boundary = Array<number>(sentences.length).fill(0);
+	if (english) {
+		const frequency = new Map<string, number>();
+		for (const sentence of terms) for (const word of new Set(sentence)) {
+			frequency.set(word, (frequency.get(word) ?? 0) + 1);
 		}
-		return counts;
-	};
-	const similarity = Array<number>(sentences.length).fill(0);
-	for (let i = 1; i < sentences.length; i++) {
-		const left = vector(Math.max(0, i - 3), i);
-		const right = vector(i, Math.min(sentences.length, i + 3));
-		let dot = 0;
-		let leftNorm = 0;
-		let rightNorm = 0;
-		for (const [word, weight] of left) {
-			dot += weight * (right.get(word) ?? 0);
-			leftNorm += weight * weight;
+		const vector = (first: number, last: number): Map<string, number> => {
+			const counts = new Map<string, number>();
+			for (let i = first; i < last; i++) for (const word of terms[i]) counts.set(word, (counts.get(word) ?? 0) + 1);
+			for (const [word, count] of counts) {
+				counts.set(word, (1 + Math.log(count)) * (1 + Math.log((sentences.length + 1) / (frequency.get(word)! + 1))));
+			}
+			return counts;
+		};
+		const similarity = Array<number>(sentences.length).fill(0);
+		for (let i = 1; i < sentences.length; i++) {
+			const left = vector(Math.max(0, i - 3), i);
+			const right = vector(i, Math.min(sentences.length, i + 3));
+			let dot = 0;
+			let leftNorm = 0;
+			let rightNorm = 0;
+			for (const [word, weight] of left) {
+				dot += weight * (right.get(word) ?? 0);
+				leftNorm += weight * weight;
+			}
+			for (const weight of right.values()) rightNorm += weight * weight;
+			similarity[i] = leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
 		}
-		for (const weight of right.values()) rightNorm += weight * weight;
-		similarity[i] = leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
+		boundary = similarity.map((value, i) => {
+			if (!i) return 0;
+			// Prefer a local cohesion valley, not merely an uncommon sentence.
+			const before = Math.max(...similarity.slice(Math.max(1, i - 3), i + 1));
+			const after = Math.max(...similarity.slice(i, Math.min(sentences.length, i + 4)));
+			const text = sentences[i].text.trimStart();
+			const transition = /^(?:let['\u2019]s (?:turn|move)|turning to|moving on|in (?:summary|conclusion)|to (?:sum up|conclude))\b/i.test(text) ? 0.5 : 0;
+			const continuation = /^(?:for example|for instance|in other words|that is)\b/i.test(text) ? 0.75 : 0;
+			return 1.5 * (before + after - 2 * value) + transition - continuation;
+		});
 	}
-	const boundary = similarity.map((value, i) => {
-		if (!i) return 0;
-		// Prefer a local cohesion valley, not merely an uncommon sentence.
-		const before = Math.max(...similarity.slice(Math.max(1, i - 3), i + 1));
-		const after = Math.max(...similarity.slice(i, Math.min(sentences.length, i + 4)));
-		const text = sentences[i].text.trimStart();
-		const transition = /^(?:let['\u2019]s (?:turn|move)|turning to|moving on|in (?:summary|conclusion)|to (?:sum up|conclude))\b/i.test(text) ? 0.5 : 0;
-		const continuation = /^(?:for example|for instance|in other words|that is)\b/i.test(text) ? 0.75 : 0;
-		return 1.5 * (before + after - 2 * value) + transition - continuation;
-	});
 	const cost = Array<number>(sentences.length + 1).fill(Infinity);
 	const next = Array<number>(sentences.length).fill(0);
 	cost[sentences.length] = 0;
@@ -217,8 +228,8 @@ export function groupSentencesIntoParagraphs<T extends { text: string }>(sentenc
 		let words = 0;
 		for (let last = first + 1; last <= sentences.length; last++) {
 			words += lengths[last - 1];
-			if (words > 160 && last > first + 1) break;
-			const candidate = ((words - 120) / 60) ** 2 + 0.6 + cost[last] - (boundary[last] ?? 0);
+			if (words > limit && last > first + 1) break;
+			const candidate = ((words - target) / (target / 2)) ** 2 + 0.6 + cost[last] - (boundary[last] ?? 0);
 			if (candidate < cost[first]) {
 				cost[first] = candidate;
 				next[first] = last;

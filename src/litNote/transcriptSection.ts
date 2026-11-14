@@ -15,6 +15,7 @@
 import type { HeadingCache } from "obsidian";
 import type { TranscriptCue } from "./transcriptParagraphs";
 import { unescapeCueText } from "./youtubeTranscript";
+import { resolveTranscriptLanguage, TRANSCRIPT_LANGUAGE_PREFIX } from "./transcriptLanguage";
 
 export const DEFAULT_TRANSCRIPT_HEADING = "Transcript";
 
@@ -28,6 +29,7 @@ export interface StoredTranscriptLine {
 	text: string;
 	wordTimings?: string;
 	timingMarker?: string;
+	language?: string;
 }
 
 /**
@@ -113,8 +115,13 @@ export function parseTimestamp(stamp: string): number {
 export function parseStoredTranscript(section: string): StoredTranscriptLine[] {
 	const lines: StoredTranscriptLine[] = [];
 	const markers: string[] = [];
+	const languages: unknown[] = [];
 	for (const raw of section.split(/\r?\n/)) {
 		if (!raw.trim()) continue;
+		if (raw.trim().startsWith(TRANSCRIPT_LANGUAGE_PREFIX)) {
+			languages.push(raw.trim().match(/^<!-- saver-transcript-language:\s*(.*?)\s*-->$/)?.[1]);
+			continue;
+		}
 		if (raw.trim().startsWith("<!-- saver-word-timing:")) {
 			markers.push(raw.trim());
 			continue;
@@ -152,7 +159,12 @@ export function parseStoredTranscript(section: string): StoredTranscriptLine[] {
 			previous.text = previous.text ? `${previous.text} ${raw.trim()}` : raw.trim();
 		}
 	}
-	return markers.length ? lines.map((line) => ({ ...line, timingMarker: markers.join("\n") })) : lines;
+	const language = resolveTranscriptLanguage(languages);
+	return markers.length || language ? lines.map((line) => ({
+		...line,
+		...(markers.length ? { timingMarker: markers.join("\n") } : {}),
+		...(language ? { language } : {}),
+	})) : lines;
 }
 
 export type StoredTranscriptCue = StoredTranscriptLine & TranscriptCue;

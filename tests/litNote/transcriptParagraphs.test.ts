@@ -139,7 +139,7 @@ describe("buildTranscriptParagraphs", () => {
 		it("prefers a vocabulary transition over an arbitrary equal-length split", () => {
 			const sentences = [...Array<string>(7).fill(orchard), ...Array<string>(11).fill(bonds)]
 				.map((text, index) => ({ text, startSec: index * 3 }));
-			const groups = groupSentencesIntoParagraphs(sentences);
+			const groups = groupSentencesIntoParagraphs(sentences, "en");
 			expect(groups.map((group) => group.length)).toEqual([7, 11]);
 			expect(groups.flat()).toEqual(sentences);
 			expect(groups[1][0]).toBe(sentences[7]);
@@ -147,7 +147,7 @@ describe("buildTranscriptParagraphs", () => {
 
 		it("balances continuous discussion into readable sizes without a short leftover tail", () => {
 			const sentences = Array.from({ length: 30 }, () => ({ text: orchard }));
-			const groups = groupSentencesIntoParagraphs(sentences);
+			const groups = groupSentencesIntoParagraphs(sentences, "en");
 			expect(groups.length).toBeGreaterThan(1);
 			expect(groups.every((group) => {
 				const words = group.reduce((sum, sentence) => sum + sentence.text.split(/\s+/).length, 0);
@@ -158,7 +158,7 @@ describe("buildTranscriptParagraphs", () => {
 
 		it("keeps an example with its preceding explanation when a nearby break is possible", () => {
 			const sentences = Array.from({ length: 18 }, (_, i) => ({ text: `${i === 9 ? "For example, " : ""}${orchard}` }));
-			const groups = groupSentencesIntoParagraphs(sentences);
+			const groups = groupSentencesIntoParagraphs(sentences, "en");
 			expect(groups.length).toBeGreaterThan(1);
 			expect(groups.every((group) => !group[0].text.startsWith("For example"))).toBe(true);
 			expect(groups.flat()).toEqual(sentences);
@@ -174,6 +174,26 @@ describe("buildTranscriptParagraphs", () => {
 			expect(groupSentencesIntoParagraphs(sentences.map((sentence, i) => ({ ...sentence, startSec: i * 1000 })))
 				.map((group) => group.map((sentence) => sentence.text))).toEqual(groups.map((group) => group.map((sentence) => sentence.text)));
 			expect(groupSentencesIntoParagraphs([])).toEqual([]);
+		});
+
+		it.each(["fr", undefined])("uses only balanced lengths, not English topic/cue heuristics, for %s", (language) => {
+			const sentences = [...Array<string>(7).fill(orchard), ...Array<string>(11).fill(bonds)].map((text) => ({ text }));
+			const groups = groupSentencesIntoParagraphs(sentences, language);
+			expect(groups.map((group) => group.length)).toEqual([9, 9]);
+			expect(groups.flat()).toEqual(sentences);
+			const relabeled = sentences.map((sentence) => ({ text: sentence.text.replace(/\S+/g, "word") }));
+			expect(groupSentencesIntoParagraphs(relabeled, language).map((group) => group.length)).toEqual([9, 9]);
+		});
+
+		it.each(["zh", "ja", undefined])("balances CJK character lengths without splitting sentences (%s)", (language) => {
+			const sentences = Array.from({ length: 60 }, () => ({ text: "中".repeat(49) + "。" }));
+			const groups = groupSentencesIntoParagraphs(sentences, language);
+			expect(groups.length).toBeGreaterThan(1);
+			expect(groups.every((group) => {
+				const characters = [...group.map((sentence) => sentence.text).join("")].length;
+				return characters >= 200 && characters <= 400;
+			})).toBe(true);
+			expect(groups.flat()).toEqual(sentences);
 		});
 	});
 });

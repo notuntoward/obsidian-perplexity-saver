@@ -17,6 +17,7 @@ import {
 	type TranscriptLine,
 } from "../../src/litNote/youtubeTranscript";
 import { transcriptRows } from "../../src/litNote/transcriptView";
+import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 
 /** Build the HeadingCache Obsidian's metadata cache would produce. */
 function headingsOf(content: string): HeadingCache[] {
@@ -157,6 +158,31 @@ describe("storedLinesToCues", () => {
 });
 
 describe("transcriptRows", () => {
+	it("reads language annotations without including them in caption text or timing fingerprints", () => {
+		const plain = '[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") Bonjour. Au revoir.\n';
+		const known = parseStoredTranscript("<!-- saver-transcript-language: fr-FR -->\n" + plain);
+		expect(known[0].language).toBe("fr-FR");
+		expect(known[0].text).toBe("Bonjour. Au revoir.");
+		expect(prepareTranscript(known).hash).toBe(prepareTranscript(parseStoredTranscript(plain)).hash);
+		const conflict = parseStoredTranscript(plain + "<!-- saver-transcript-language: en -->\n<!-- saver-transcript-language: fr -->");
+		expect(conflict[0].language).toBeUndefined();
+		expect(conflict[0].text).toBe(known[0].text);
+		const invalid = parseStoredTranscript(plain + "<!-- saver-transcript-language: not a locale -->");
+		expect(invalid[0].language).toBeUndefined();
+		expect(invalid[0].text).toBe(known[0].text);
+	});
+
+	it("groups intact caption cues when punctuation supplies no sentence boundaries", () => {
+		const cues = Array.from({ length: 30 }, (_, i) => ({
+			startSec: i * 2, url: `https://youtu.be/abcdefghijk?t=${i * 2}`, text: "bonjour tout le monde sans ponctuation",
+			language: "fr",
+		}));
+		const rows = transcriptRows(cues, "readable-paragraphs");
+		expect(rows).toHaveLength(cues.length);
+		expect(rows.filter((row) => row.paragraphStart).length).toBeGreaterThan(1);
+		expect(rows.map(({ text, startSec, url }) => ({ text, startSec, url }))).toEqual(cues.map(({ language: _language, ...cue }) => cue));
+	});
+
 	const lines = Array.from({ length: 10 }, (_, i) => ({
 		startSec: i * 12,
 		url: `${URL}&t=${i * 12}`,

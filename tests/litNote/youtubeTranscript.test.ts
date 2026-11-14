@@ -191,7 +191,7 @@ describe("youtubeTranscript", () => {
 
 			const result = await downloadYouTubeTranscript("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
 			expect(result).toBe(
-				'[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Hello\n' +
+				'<!-- saver-transcript-language: en -->\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0 "0–2") Hello\n' +
 					'[0:02](https://youtu.be/dQw4w9WgXcQ?t=2 "2–4") World'
 			);
 
@@ -201,6 +201,21 @@ describe("youtubeTranscript", () => {
 			});
 			expect(blocks).toContain("[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) Hello");
 			expect(blocks).toContain("[00:02](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=2) World");
+		});
+
+		it.each([
+			["fr", "", "fr"],
+			["fr", "&tlang=en-US", "en-US"],
+			[undefined, "", undefined],
+		])("stores the selected track/output language, not the requested English preference (%s, %s)", async (languageCode, translation, expected) => {
+			requestUrlMock.mockResolvedValueOnce({
+				status: 200, text: "", json: { captions: { playerCaptionsTracklistRenderer: {
+					captionTracks: [{ languageCode, baseUrl: "https://www.youtube.com/api/timedtext?v=test" + translation }],
+				} } },
+			}).mockResolvedValueOnce({ status: 200, text: '<transcript><text start="0" dur="2">Bonjour.</text></transcript>' });
+			const result = await downloadYouTubeTranscript("https://youtu.be/dQw4w9WgXcQ");
+			if (expected) expect(result).toContain(`<!-- saver-transcript-language: ${expected} -->`);
+			else expect(result).not.toContain("saver-transcript-language");
 		});
 
 		it("returns null when video has no captions", async () => {

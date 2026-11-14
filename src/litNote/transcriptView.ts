@@ -28,7 +28,8 @@ import {
 	storedLinesToCues,
 	type StoredTranscriptLine,
 } from "./transcriptSection";
-import { buildTranscriptParagraphs, groupSentencesIntoParagraphs, needsSpaceBetween } from "./transcriptParagraphs";
+import { buildTranscriptParagraphs, groupSentencesIntoParagraphs, needsSpaceBetween, SENTENCE_END } from "./transcriptParagraphs";
+import { isEnglishTranscript, resolveTranscriptLanguage } from "./transcriptLanguage";
 import { prepareTranscript, sentenceRows } from "./transcriptSentences";
 import { formatShortTimestamp } from "./youtubeTranscript";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
@@ -91,6 +92,7 @@ interface TranscriptRow {
 	endSec?: number;
 	timingUncertain?: boolean;
 	paragraphStart?: boolean;
+	captionFallback?: boolean;
 }
 
 /**
@@ -128,9 +130,14 @@ export function transcriptRows(
 	}
 	if (mode === "readable-paragraphs") {
 		const cueStarts = new Set(prepared.cueStarts);
-		const sentences = alignment ? alignedSentenceRows(prepared, alignment)
-			: sentenceRows(prepared).map((row) => ({ ...row, timingUncertain: !cueStarts.has(row.sourceStart) }));
-		return groupSentencesIntoParagraphs(sentences).flatMap((group) => group.map((row, i) => ({ ...row, paragraphStart: i === 0 })));
+		const sentences = sentenceRows(prepared);
+		const captionFallback = sentences.length === 1 && prepared.lines.length > 1 && !SENTENCE_END.test(prepared.text);
+		const units = captionFallback
+			? prepared.lines.map((line, i) => ({ startSec: line.startSec, url: line.url, text: line.text, sourceStart: prepared.cueStarts[i] }))
+			: alignment ? alignedSentenceRows(prepared, alignment)
+				: sentences.map((row) => ({ ...row, timingUncertain: !cueStarts.has(row.sourceStart) }));
+		return groupSentencesIntoParagraphs(units, captionFallback && isEnglishTranscript(prepared.language) ? undefined : prepared.language)
+			.flatMap((group) => group.map((row, i) => ({ ...row, paragraphStart: i === 0, captionFallback })));
 	}
 	const cues = storedLinesToCues(lines).map((cue, i) => ({ ...cue, sourceStart: prepared.cueStarts[i] }));
 	return buildTranscriptParagraphs(cues).map((p) => ({
@@ -283,6 +290,7 @@ export class TranscriptView extends ItemView {
 	private needsTimingMigration = false;
 	private alignmentStatus = "Sentence timing: not computed.";
 	private aligning = false;
+	private paragraphWarningKey: string | null = null;
 	private comparisonSourceStart: number | null = null;
 	private loadToken = 0;
 	private rendered: RenderedRow[] = [];
@@ -704,10 +712,22 @@ export class TranscriptView extends ItemView {
 		}
 
 		const rows = this.getRows(lines);
+		if (this.mode === "readable-paragraphs") {
+			const language = resolveTranscriptLanguage(lines.map((line) => line.language));
+			const captionFallback = rows[0]?.captionFallback;
+			const warningKey = `${file.path}:${language ?? "unknown"}:${captionFallback ? "captions" : "sentences"}`;
+			if ((!isEnglishTranscript(language) || captionFallback) && this.paragraphWarningKey !== warningKey) {
+				const message = isEnglishTranscript(language) ? "Using length-based paragraphs."
+					: language ? "Using length-based paragraphs for this language; topic-aware grouping is English-only."
+						: "Using length-based paragraphs because the caption language is unknown; topic-aware grouping is English-only.";
+				new Notice(message + (captionFallback ? " No sentence boundaries found; grouping whole captions instead." : ""));
+				this.paragraphWarningKey = warningKey;
+			}
+		}
 		const lineNoun = lines.some((l) => l.endSec !== undefined) ? "captions" : "lines";
 		controls.createSpan({
 			cls: "perplexity-saver-transcript-count",
-			text: this.mode === "readable-paragraphs" ? `${rows.filter((row) => row.paragraphStart).length} paragraphs · ${rows.length} sentences`
+			text: this.mode === "readable-paragraphs" ? `${rows.filter((row) => row.paragraphStart).length} paragraphs · ${rows.length} ${rows[0]?.captionFallback ? "captions" : "sentences"}`
 				: this.mode === "lines" ? `${rows.length} ${lineNoun}`
 				: !comparison && this.mode === "paragraphs" ? `${rows.length} paragraphs`
 				: `${rows.length} ${COMPARISON_MODES[this.mode]}`,

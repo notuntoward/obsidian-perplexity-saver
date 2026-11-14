@@ -18,6 +18,17 @@ export function cacheForTest(): AlignmentCache {
 }
 
 describe("acoustically aligned punctuation sentences", () => {
+	it("does not claim a precise start inside an unspaced timing token", () => {
+		const prepared = prepareTranscript([{
+			startSec: 12, url: "https://youtu.be/abcdefghijk?t=12", text: "你好。世界。", language: "zh",
+		}]);
+		const rows = alignedSentenceRows(prepared, {
+			sourceHash: prepared.hash, videoId: "abcdefghijk", words: [[12, null, null]], wordSources: ["caption"],
+		});
+		expect(rows.map((row) => row.text)).toEqual(["你好。", "世界。"]);
+		expect(rows.map((row) => row.timingUncertain)).toEqual([false, true]);
+	});
+
 	it("changes timing, not sentence text or source position, including timestamp links", () => {
 		const baseline = sentenceRows(transcript);
 		const rows = alignedSentenceRows(transcript, cacheForTest());

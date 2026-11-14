@@ -8,6 +8,7 @@ import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
 import { writeInlineTimings } from "../../src/litNote/transcriptTimingStorage";
 import type { WordTimings } from "../../src/litNote/transcriptAlignment";
+import { createdNotices } from "../__mocks__/obsidian";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());
 const menuChoices = vi.hoisted(() => [] as { title: string; checked: boolean; run?: () => void }[]);
@@ -64,6 +65,7 @@ beforeEach(() => {
 	play = vi.fn();
 	scopeHandlers.clear();
 	menuChoices.length = 0;
+	createdNotices.length = 0;
 	HTMLElement.prototype.createDiv = function (opts) { return this.createEl("div", opts); };
 	HTMLElement.prototype.appendText = function (text) { this.append(text); };
 	HTMLElement.prototype.toggleClass = function (cls, value) { this.classList.toggle(cls, value); };
@@ -113,6 +115,37 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("local acoustic alignment comparison", () => {
+	it.each(["en", "en-US"])("keeps English topic grouping without a fallback warning (%s)", async (language) => {
+		const view = await panel(document, {}, undefined, "abcdefghijk",
+			`# Transcript\n<!-- saver-transcript-language: ${language} -->\n` +
+			'[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") We left. We stayed.\n');
+		const format = view.contentEl.querySelector("select")!;
+		format.value = "readable-paragraphs";
+		format.dispatchEvent(new Event("change"));
+		expect(rows(view)).toHaveLength(2);
+		expect(createdNotices).toHaveLength(0);
+	});
+
+	it.each([[false, "zh"], [true, "zh"], [false, undefined], [true, undefined]])(
+		"warns once and retains safe sentence navigation for fallback paragraphs (popout=%s, language=%s)", async (popout, language) => {
+			const doc = popout ? document.implementation.createHTMLDocument() : document;
+			if (popout) stubPopout(doc);
+			const marker = language ? `<!-- saver-transcript-language: ${language} -->\n` : "";
+			const view = await panel(doc, {}, undefined, "abcdefghijk",
+				'# Transcript\n' + marker + '[0:00](https://youtu.be/abcdefghijk?t=0 "0-5") 你好。世界。\n');
+			const format = view.contentEl.querySelector("select")!;
+			format.value = "readable-paragraphs";
+			format.dispatchEvent(new Event("change"));
+			expect(rows(view).map((row) => row.querySelector(".perplexity-saver-transcript-text")?.textContent)).toEqual(["你好。", "世界。"]);
+			expect(createdNotices.map((notice) => notice.message).filter((message) => message.includes("length-based paragraphs"))).toHaveLength(1);
+			if (popout) Object.defineProperty(doc, "activeElement", { configurable: true, value: rows(view)[1] });
+			else rows(view)[1].focus();
+			key(rows(view)[1], "Enter");
+			expect(play).toHaveBeenLastCalledWith("note.md", expect.any(String), 0, true);
+			await view.reload();
+			expect(createdNotices.map((notice) => notice.message).filter((message) => message.includes("length-based paragraphs"))).toHaveLength(1);
+		});
+
 	it.each([[false, false], [false, true], [true, false], [true, true]])(
 		"groups offline sentences into readable prose with sentence search/playback (popout=%s, timed=%s)", async (popout, timed) => {
 			const doc = popout ? document.implementation.createHTMLDocument() : document;

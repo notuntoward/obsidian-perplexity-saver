@@ -2,6 +2,7 @@
 import { createHash } from "crypto";
 import { joinCueTexts, needsSpaceBetween } from "./transcriptParagraphs";
 import type { StoredTranscriptLine } from "./transcriptSection";
+import { resolveTranscriptLanguage } from "./transcriptLanguage";
 
 interface TranscriptWord {
 	text: string;
@@ -16,6 +17,7 @@ export interface PreparedTranscript {
 	lines: StoredTranscriptLine[];
 	cueStarts: number[];
 	hash: string;
+	language?: string;
 }
 
 export interface BoundaryRow {
@@ -42,25 +44,28 @@ export function prepareTranscript(lines: StoredTranscriptLine[]): PreparedTransc
 		return { text: match[0], start, end: start + match[0].length, cue };
 	});
 	const source = sorted.map(({ startSec, endSec, url, text }) => ({ startSec, endSec, url, text }));
-	return { text, words, lines: sorted, cueStarts: starts, hash: createHash("sha256").update(JSON.stringify(source)).digest("hex") };
+	return {
+		text, words, lines: sorted, cueStarts: starts,
+		hash: createHash("sha256").update(JSON.stringify(source)).digest("hex"),
+		language: resolveTranscriptLanguage(sorted.map((line) => line.language)),
+	};
 }
 
 export function sentenceRows(transcript: PreparedTranscript): BoundaryRow[] {
 	if (!transcript.words.length) return [];
-	const segmenter = new Intl.Segmenter("en", { granularity: "sentence" });
+	const segmenter = new Intl.Segmenter(transcript.language, { granularity: "sentence" });
 	const rows: BoundaryRow[] = [];
-	let first = 0;
+	let cue = 0;
 	for (const part of segmenter.segment(transcript.text)) {
-		const end = part.index + part.segment.trimEnd().length;
-		let last = first;
-		while (last + 1 < transcript.words.length && transcript.words[last + 1].start < end) last++;
-		const word = transcript.words[first];
-		const line = transcript.lines[word.cue];
+		const text = part.segment.trim();
+		if (!text) continue;
+		const sourceStart = part.index + part.segment.indexOf(text);
+		while (cue + 1 < transcript.cueStarts.length && transcript.cueStarts[cue + 1] <= sourceStart) cue++;
+		const line = transcript.lines[cue];
 		rows.push({
 			startSec: line.startSec, url: line.url,
-			text: transcript.text.slice(word.start, transcript.words[last].end), sourceStart: word.start,
+			text, sourceStart,
 		});
-		first = last + 1;
 	}
 	return rows;
 }
