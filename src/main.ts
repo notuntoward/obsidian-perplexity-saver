@@ -206,6 +206,7 @@ export interface PerplexitySaverSettings {
 
 /** How long a timestamp click waits for the YouTube embed to answer before revealing the transcript instead. */
 const TRANSCRIPT_FALLBACK_DELAY_MS = 3000;
+const FRAME_PENDING_CLASS = "perplexity-saver-frame-pending";
 
 const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	searchesFolder: "ai-searches",
@@ -281,7 +282,21 @@ export default class PerplexitySaverPlugin extends Plugin {
 	/** Next/previous unit for notes whose transcript panel is closed, keyed by note path; filled asynchronously. */
 	private readonly hiddenTranscriptUnits = new Map<string, "sentence" | "caption" | "pending">();
 
+	private framePendingBody: HTMLElement | null = null;
+
+	// Obsidian assigns the top-corner tab group classes only once the layout is ready, after views have rendered.
+	private markFramePending(): void {
+		const body = this.app.workspace.containerEl.ownerDocument.body;
+		body.addClass(FRAME_PENDING_CLASS);
+		this.framePendingBody = body;
+		this.app.workspace.onLayoutReady(() => {
+			body.removeClass(FRAME_PENDING_CLASS);
+			this.framePendingBody = null;
+		});
+	}
+
 	async onload(): Promise<void> {
+		this.markFramePending();
 		await this.loadSettings();
 		this.refreshVideoNoteFocusIndicator = registerVideoNoteFocusIndicator(this, () => this.settings.videoNoteFocusIndicator);
 		this.registerEditorExtension(noteInsertionAnchors);
@@ -1048,6 +1063,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		this.framePendingBody?.removeClass(FRAME_PENDING_CLASS);
 		this.captionTimingAbort.abort();
 		this.rememberOpenVideoWorkspaces();
 		for (const cancel of this.transcriptFallbacks.values()) cancel();

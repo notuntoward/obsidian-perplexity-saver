@@ -64,8 +64,20 @@ test("compact tabs do not let native window buttons cover the video corner", asy
 		return { pictureTop: stage.top, buttonBottom: close.bottom };
 	});
 	expect(geometry.pictureTop).toBeGreaterThanOrEqual(geometry.buttonBottom);
+	expect((await page.locator(".workspace-tab-header-container").boundingBox())!.height).toBe(30);
 	await page.locator(".workspace-tabs").evaluate((el) => el.classList.remove("mod-top-right-space"));
 	expect((await page.locator(".workspace-tab-header-container").boundingBox())!.height).toBe(30);
+	// Before layout-ready Obsidian has not yet marked any corner group.
+	await page.locator("body").evaluate((el) => el.classList.add("perplexity-saver-frame-pending"));
+	const pending = await page.evaluate(() => ({
+		pictureTop: document.querySelector(".perplexity-saver-video-stage")!.getBoundingClientRect().top,
+		buttonBottom: document.querySelector(".titlebar-button")!.getBoundingClientRect().bottom,
+		headerHeight: document.querySelector(".workspace-tab-header-container")!.getBoundingClientRect().height,
+	}));
+	expect(pending.pictureTop).toBeGreaterThanOrEqual(pending.buttonBottom);
+	expect(pending.headerHeight).toBe(30);
+	await page.locator("body").evaluate((el) => el.classList.remove("perplexity-saver-frame-pending"));
+	expect((await page.locator(".perplexity-saver-video-stage").boundingBox())!.y).toBeLessThan(40);
 });
 
 test("video hides only its lower navigation row and retains a non-interactive focus accent", async ({ page }) => {

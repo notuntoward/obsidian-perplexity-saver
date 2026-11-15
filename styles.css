@@ -587,9 +587,18 @@
 	display: none;
 }
 
-/* Compact-tab snippets must leave room for the overlaid native window buttons. */
-.is-hidden-frameless:not(.is-fullscreen) .workspace-tabs.mod-top.mod-top-right-space:has(.perplexity-saver-video-view) > .workspace-tab-header-container {
-	min-height: var(--header-height);
+/* The native window buttons overlay the top-right corner at a fixed height. Reserve that height with a grid row
+   so the tab bar keeps whatever height the theme or snippets give it and the video starts below the buttons.
+   Until the layout is ready Obsidian has not yet marked the corner group, so reserve it for every video group. */
+.is-hidden-frameless:not(.is-fullscreen) .workspace-tabs.mod-top.mod-top-right-space:has(.perplexity-saver-video-view),
+.is-hidden-frameless.perplexity-saver-frame-pending:not(.is-fullscreen) .workspace-tabs:has(.perplexity-saver-video-view) {
+	display: grid;
+	grid-template-rows: minmax(max(env(titlebar-area-height, 0px), var(--header-height)), auto) minmax(0, 1fr);
+}
+
+.is-hidden-frameless:not(.is-fullscreen) .workspace-tabs.mod-top.mod-top-right-space:has(.perplexity-saver-video-view) > .workspace-tab-header-container,
+.is-hidden-frameless.perplexity-saver-frame-pending:not(.is-fullscreen) .workspace-tabs:has(.perplexity-saver-video-view) > .workspace-tab-header-container {
+	align-self: start;
 }
 
 .workspace-leaf.perplexity-saver-focused-pane:not(:has(.perplexity-saver-transcript-view, .perplexity-saver-video-view)) > .workspace-leaf-content > .view-header {

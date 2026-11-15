@@ -77,6 +77,7 @@ async function harness() {
 		vault: { getFileByPath: () => file, cachedRead: async () => "# Transcript\n[0:00](https://youtu.be/abc?t=0) start\n[0:25](https://youtu.be/abc?t=25) current" },
 		metadataCache: { on: vi.fn(), getFileCache: () => ({ headings: [{ heading: "Transcript", level: 1, position: { end: { offset: 12 } } }] }) },
 		workspace: {
+			containerEl: document.body,
 			getLeavesOfType: (type: string) => leaves.filter((leaf) => leaf.view.getViewType() === type),
 			iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => leaves.forEach(callback),
 			revealLeaf: vi.fn(async () => {}),
