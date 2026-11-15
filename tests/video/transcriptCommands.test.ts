@@ -1057,6 +1057,92 @@ describe("transcript activation commands", () => {
 		expect(h.app.workspace.getRightLeaf).not.toHaveBeenCalled();
 	});
 
+	it("offers the same show action in the existing command for an unsaved note", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		(note.view as MarkdownView).editor.getValue = () => "https://youtu.be/dQw4w9WgXcQ";
+		Object.assign(h.viewerLeaf.view, { videoId: "dQw4w9WgXcQ" });
+		Object.assign(h.app.workspace, { on: vi.fn() });
+		const openModal = vi.spyOn(VideoWorkspaceModal.prototype, "open");
+		const show = vi.fn().mockResolvedValue(undefined);
+		Object.assign(h.plugin, { openOrShowVideo: show });
+		await h.plugin["chooseVideoWorkspace"](h.file as TFile);
+		const modal = openModal.mock.contexts[0];
+		if (!(modal instanceof VideoWorkspaceModal)) throw new Error("Missing video workspace modal");
+		const first = modal.getSuggestions("")[0].item;
+		expect(first.title).toBe("Show open video");
+		modal.onChooseItem(first);
+		expect(show).toHaveBeenCalledWith(h.file, "dQw4w9WgXcQ");
+	});
+
+	it("shows a matching player from another note without changing its session or transcript", async () => {
+		const h = await harness();
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md" });
+		const activate = vi.fn().mockResolvedValue(undefined);
+		const open = vi.fn().mockResolvedValue(h.viewerLeaf);
+		Object.assign(h.plugin, { activatePartLeaf: activate, openViewerForNote: open });
+		await h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(activate).toHaveBeenCalledWith(h.viewerLeaf, null);
+		expect(open).not.toHaveBeenCalled();
+		expect(h.viewerLeaf.view.getState().file).toBe("other.md");
+		expect(h.transcript.showFile).not.toHaveBeenCalled();
+	});
+
+	it("reopens a player without replacing the note's existing transcript", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		const open = vi.fn().mockResolvedValue(h.viewerLeaf);
+		const activate = vi.fn().mockResolvedValue(undefined);
+		Object.assign(h.plugin, { openViewerForNote: open, activatePartLeaf: activate });
+		await h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(open).toHaveBeenCalledWith(h.file, false, true, "abc");
+		expect(activate).toHaveBeenCalledWith(h.viewerLeaf, null);
+		expect(h.transcriptLeaf.detach).not.toHaveBeenCalled();
+	});
+
+	it("opens a player even when the saved workspace is transcript-only", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.plugin.settings.videoWorkspaces[h.file.path] = { videoId: "abc", layout: "transcript" };
+		const apply = vi.fn().mockResolvedValue(true);
+		Object.assign(h.plugin, { applyVideoWorkspace: apply });
+		await h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(apply).toHaveBeenCalledWith(h.file, "both", true, false, "abc");
+	});
+
+	it("opens a video without requiring a transcript, and restores a matching video layout", async () => {
+		const h = await harness();
+		h.leaves.length = 0;
+		addNote(h);
+		h.app.metadataCache.getFileCache = () => null;
+		h.plugin.settings.videoWorkspaces[h.file.path] = { videoId: "abc", layout: "video" };
+		const apply = vi.fn().mockResolvedValue(true);
+		Object.assign(h.plugin, { applyVideoWorkspace: apply });
+		await h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(apply).toHaveBeenCalledWith(h.file, "video", true, true, "abc");
+		h.plugin.settings.videoWorkspaces[h.file.path] = { videoId: "abc", layout: "both" };
+		await h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(apply).toHaveBeenLastCalledWith(h.file, "video", true, false, "abc");
+		expect(createdNotices.at(-1)?.message).toBe("No transcript found; opened the video only.");
+	});
+
+	it("coalesces repeated requests to open the same video", async () => {
+		const h = await harness();
+		let finish!: () => void;
+		const once = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+		Object.assign(h.plugin, { openOrShowVideoOnce: once });
+		const one = h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		const two = h.plugin["openOrShowVideo"](h.file as TFile, "abc");
+		expect(once).toHaveBeenCalledOnce();
+		finish();
+		await Promise.all([one, two]);
+	});
+
 	it.each(["note", "video", "transcript"] as const)("closes associated media directly from the %s without closing the note or unrelated player", async (part) => {
 		const h = await harness();
 		const note = addNote(h);

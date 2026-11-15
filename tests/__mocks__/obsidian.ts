@@ -62,7 +62,7 @@ export class MarkdownView {
 	editor: any;
 
 	constructor() {
-		this.editor = { focus(): void {} };
+		this.editor = { focus(): void {}, getValue: (): string => "" };
 	}
 
 	getViewType(): string {
@@ -72,6 +72,21 @@ export class MarkdownView {
 	getMode(): "source" | "preview" {
 		return "source";
 	}
+
+	addAction(_icon: string, _title: string, callback: (event: MouseEvent) => void): HTMLElement {
+		const element = this.containerEl.ownerDocument.createElement("button");
+		element.addEventListener("click", callback);
+		this.containerEl.appendChild(element);
+		return element;
+	}
+}
+
+export function setIcon(element: HTMLElement, icon: string): void {
+	element.dataset.icon = icon;
+}
+
+export function setTooltip(element: HTMLElement, tooltip: string): void {
+	element.setAttribute("aria-label", tooltip);
 }
 
 export class Setting {

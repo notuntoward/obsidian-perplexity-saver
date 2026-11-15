@@ -37,6 +37,7 @@ export const VIDEO_WORKSPACE_LABELS: Record<VideoWorkspaceLayout, string> = {
 interface WorkspaceChoice {
 	layout: VideoWorkspaceLayout;
 	title: string;
+	action?: () => void;
 }
 
 export function workspaceChoices(current: VideoWorkspaceLayout, preferred: PreferredVideoWorkspace): WorkspaceChoice[] {
@@ -47,10 +48,15 @@ export function workspaceChoices(current: VideoWorkspaceLayout, preferred: Prefe
 }
 
 export class VideoWorkspaceModal extends ItemSuggestModal<WorkspaceChoice> {
-	constructor(app: App, current: VideoWorkspaceLayout, preferred: PreferredVideoWorkspace, choose: (layout: VideoWorkspaceLayout, restore: boolean) => void, remembered?: PreferredVideoWorkspace) {
+	constructor(app: App, current: VideoWorkspaceLayout, preferred: PreferredVideoWorkspace, choose: (layout: VideoWorkspaceLayout, restore: boolean) => void, remembered?: PreferredVideoWorkspace, videoAction?: { title: string; run: () => void }) {
 		const choices = workspaceChoices(current, remembered ?? preferred);
 		if (current === "note") choices[0].title = `${remembered ? "Reopen last workspace" : "Open initial workspace"}: ${choices[0].title}`;
-		super(app, choices, (choice) => choose(choice.layout, current === "note" && !!remembered && choice === choices[0]), {
+		const restoreChoice = choices[0];
+		if (videoAction) choices.unshift({ layout: current, title: videoAction.title, action: videoAction.run });
+		super(app, choices, (choice) => {
+			if (choice.action) choice.action();
+			else choose(choice.layout, current === "note" && !!remembered && choice === restoreChoice);
+		}, {
 			placeholder: "Reopen or change video workspace...",
 			getTitle: (choice) => choice.title,
 			sort: (a, b) => choices.indexOf(a.item) - choices.indexOf(b.item),

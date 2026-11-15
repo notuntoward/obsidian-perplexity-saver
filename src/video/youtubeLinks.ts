@@ -57,22 +57,24 @@ function trimUrl(url: string): string {
 	return url.replace(/[.,;:!?]+$/, "");
 }
 
-/** Every YouTube video URL in `text`, in order (markdown link targets and bare URLs). */
-export function findYouTubeLinks(text: string): YouTubeLink[] {
-	const links: YouTubeLink[] = [];
+function* youtubeLinks(text: string): Generator<YouTubeLink> {
 	for (const match of text.matchAll(URL_IN_TEXT)) {
 		const url = trimUrl(match[0]);
 		const parsed = parseYouTubeUrl(url);
 		if (!parsed) continue;
 		const start = match.index ?? 0;
-		links.push({ url, ...parsed, start, end: start + url.length });
+		yield { url, ...parsed, start, end: start + url.length };
 	}
-	return links;
+}
+
+/** Every YouTube video URL in `text`, in order (markdown link targets and bare URLs). */
+export function findYouTubeLinks(text: string): YouTubeLink[] {
+	return [...youtubeLinks(text)];
 }
 
 /** The video a note is about: the first YouTube video linked in it. */
 export function findNoteVideoId(text: string): string | null {
-	return findYouTubeLinks(text)[0]?.videoId ?? null;
+	return youtubeLinks(text).next().value?.videoId ?? null;
 }
 
 /**

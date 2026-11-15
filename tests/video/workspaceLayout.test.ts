@@ -25,4 +25,17 @@ describe("video workspace choices", () => {
 		modal.onChooseItem(results[0].item);
 		expect(selected).toBe("both");
 	});
+
+	it("offers the same open/show action without removing the saved layout choices", () => {
+		let selected = "";
+		const modal = new VideoWorkspaceModal({} as App, "note", "video",
+			(layout, restore) => { selected = `${layout}:${restore}`; }, "both",
+			{ title: "Show open video", run: () => { selected = "show"; } });
+		const results = modal.getSuggestions("");
+		expect(results[0].item.title).toBe("Show open video");
+		modal.onChooseItem(results[0].item);
+		expect(selected).toBe("show");
+		modal.onChooseItem(results[1].item);
+		expect(selected).toBe("both:true");
+	});
 });

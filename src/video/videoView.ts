@@ -85,6 +85,7 @@ export interface VideoViewHost {
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
 	onPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged?: boolean): void;
 	rememberPlayback?(videoId: string, filePath: string | null, seconds: number): void;
+	onVideoChanged?(): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
 }
 
@@ -259,6 +260,7 @@ export class VideoView extends ItemView {
 
 	/** Show `videoId` at `seconds`; seeks without reloading when the video is already loaded. */
 	showVideo(videoId: string, seconds: number, filePath: string | null, autoplay = false, resumeAt?: number): void {
+		const videoChanged = this.videoId !== videoId;
 		this.resumeAt = typeof resumeAt === "number" && Number.isFinite(resumeAt) && resumeAt > 0 ? resumeAt : null;
 		if (this.resumeAt !== null) {
 			seconds = 0;
@@ -281,6 +283,7 @@ export class VideoView extends ItemView {
 		}
 		this.updatePlayButton();
 		if (fileChanged || !this.marks.length) void this.refreshMarks();
+		if (videoChanged || fileChanged) this.host.onVideoChanged?.();
 	}
 
 	private build(): void {
