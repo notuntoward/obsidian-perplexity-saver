@@ -7,7 +7,9 @@ import {
 	createNoteInsertionAnchor,
 	getNoteInsertionPosition,
 	insertAtNoteInsertionAnchor,
+	insertionMessage,
 	noteInsertionAnchors,
+	timestampListItemBlock,
 	timestampListItemInsertion,
 	timestampedScreenshotItem,
 } from "../../src/video/noteInsertion";
@@ -43,60 +45,22 @@ describe("video note insertion", () => {
 		expect(getNoteInsertionPosition(anchor)).toBeNull();
 	});
 
-	it("preserves selected note text when inserting at the selection head", () => {
-		view = new EditorView({
-			state: EditorState.create({
-				doc: "selected prose",
-				selection: { anchor: 0, head: 8 },
-				extensions: [noteInsertionAnchors],
-			}),
-			parent: document.body,
-		});
-		const anchor = createNoteInsertionAnchor(view);
-		expect(anchor).not.toBeNull();
-		if (!anchor) throw new Error("Expected an insertion anchor.");
-		const insertion = timestampListItemInsertion(view.state.doc, 8, "VID", 65);
-
-		expect(insertAtNoteInsertionAnchor(anchor, insertion.text, insertion.cursorOffset, insertion.replace)).toBe(true);
-		expect(view.state.doc.toString()).toBe(`selected\n\n- ${timestampLink("VID", 65)}: \n\n prose`);
-	});
-
 	it("creates a timestamp list item at the cursor and reuses an empty list item", () => {
 		const link = timestampLink("VID", 65);
 		const blank = timestampListItemInsertion(Text.of([""]), 0, "VID", 65);
-		expect(blank).toEqual({ text: `- ${link}: `, cursorOffset: `- ${link}: `.length });
+		expect(blank).toMatchObject({ text: `- ${link}: `, cursorOffset: `- ${link}: `.length });
 
 		const emptyItem = timestampListItemInsertion(Text.of(["- "]), 2, "VID", 65);
-		expect(emptyItem).toEqual({ text: `${link}: `, cursorOffset: `${link}: `.length });
-	});
-
-	it("keeps surrounding text and indentation when inserting mid-list", () => {
-		const line = "  - before after";
-		const position = line.indexOf("after");
-		expect(timestampListItemInsertion(Text.of([line]), position, "VID", 65).text)
-			.toBe(`\n\n  - ${timestampLink("VID", 65)}: \n\n`);
-	});
-
-	it("puts a timestamp list item on its own line without dropping adjacent text", () => {
-		const link = timestampLink("VID", 65);
-		const insertion = timestampListItemInsertion(Text.of(["before after"]), 6, "VID", 65);
-		expect(insertion.text).toBe(`\n\n- ${link}: \n\n`);
-		expect(insertion.cursorOffset).toBe(`\n\n- ${link}: `.length);
-	});
-
-	it("formats screenshots as timestamped list items and keeps blocks separate from adjacent text", () => {
-		const block = timestampedScreenshotItem("![[capture.png]]", "VID", 65);
-		expect(blockInsertion(Text.of(["before after"]), 6, block)).toEqual({
-			text: `\n\n- ${timestampLink("VID", 65)}:\n  ![[capture.png]]\n\n`,
-			cursorOffset: `\n\n- ${timestampLink("VID", 65)}:\n  ![[capture.png]]`.length,
-		});
+		expect(emptyItem).toMatchObject({ text: `${link}: `, cursorOffset: `${link}: `.length, replace: { from: 2, to: 2 } });
 	});
 
 	it.each(["  - ", "\t* ", "    + "])("creates a timestamp sibling with the current indentation and marker (%s)", (marker) => {
 		const line = `${marker}existing text`;
-		const insertion = timestampListItemInsertion(Text.of([line, `${marker}next item`]), line.length, "VID", 65);
+		const doc = Text.of(["- parent", line, `${marker}next item`]);
+		const insertion = timestampListItemInsertion(doc, doc.line(2).to, "VID", 65);
 		expect(insertion.text).toBe(`\n${marker}${timestampLink("VID", 65)}: `);
 		expect(insertion.cursorOffset).toBe(insertion.text.length);
+		expect(insertion.moved).toBeUndefined();
 	});
 
 	it("keeps a screenshot inside a new nested sibling instead of creating a top-level bullet", () => {
@@ -138,13 +102,13 @@ describe("video note insertion", () => {
 	it("reuses an empty ordered item without advancing its number", () => {
 		const insertion = timestampListItemInsertion(Text.of(["  2. "]), 5, "VID", 65);
 		expect(insertion.text).toBe(`${timestampLink("VID", 65)}: `);
-		expect(insertion.replace).toBeUndefined();
+		expect(insertion.replace).toEqual({ from: 5, to: 5 });
 	});
 
 	it("reuses an empty checked task item without changing its state", () => {
 		const insertion = timestampListItemInsertion(Text.of(["- [x] "]), 6, "VID", 65);
 		expect(insertion.text).toBe(`${timestampLink("VID", 65)}: `);
-		expect(insertion.replace).toBeUndefined();
+		expect(insertion.replace).toEqual({ from: 6, to: 6 });
 	});
 
 	it("converts an empty list item to the selected form on the same line", () => {
@@ -183,5 +147,161 @@ describe("video note insertion", () => {
 			.toBe(`\n  8) ${timestampLink("VID", 65)}: `);
 		expect(timestampListItemInsertion(Text.of([line]), line.length, "VID", 65, "ordered").text)
 			.toBe(`\n  8) ${timestampLink("VID", 65)}: `);
+	});
+});
+
+describe("safe note insertion placement", () => {
+	const item = `- ${timestampLink("VID", 65)}: `;
+
+	/** Insert at the `‸` in `source` and return the document with `^` marking the new cursor. */
+	function place(source: string, options: { transcript?: string; literature?: boolean } = {}): { result: string; moved?: string } {
+		const position = source.indexOf("‸");
+		const doc = Text.of(source.replace("‸", "").split("\n"));
+		const notesEnd = options.transcript ? doc.toString().indexOf(options.transcript) : doc.length;
+		const insertion = blockInsertion(doc, position, timestampListItemBlock("VID", 65), "match",
+			notesEnd, options.transcript !== undefined && position >= notesEnd, options.literature);
+		const from = insertion.replace?.from ?? position;
+		const to = insertion.replace?.to ?? position;
+		const text = doc.toString();
+		const inserted = insertion.text.slice(0, insertion.cursorOffset) + "^" + insertion.text.slice(insertion.cursorOffset);
+		return { result: text.slice(0, from) + inserted + text.slice(to), moved: insertion.moved };
+	}
+
+	it("adds a sibling after the whole bullet, not inside its text, when the cursor is mid-bullet", () => {
+		expect(place("- first ‸half\n- next")).toEqual({
+			result: `- first half\n${item}^\n- next`,
+			moved: "below the list item",
+		});
+	});
+
+	it("puts the sibling after the bullet's children so it does not adopt them", () => {
+		expect(place("- parent‸\n  - child\n    more\n- next").result)
+			.toBe(`- parent\n  - child\n    more\n${item}^\n- next`);
+	});
+
+	it("adds a sibling after a screenshot item's indented embed", () => {
+		expect(place("- [[t]]:\n  ![[a.png]]‸\n\nText").result).toBe(`- [[t]]:\n  ![[a.png]]\n${item}^\n\nText`);
+	});
+
+	it("puts the item after the paragraph instead of splitting it", () => {
+		expect(place("Some ‸words\nwrapped line\n\nNext")).toEqual({
+			result: `Some words\nwrapped line\n\n${item}^\n\nNext`,
+			moved: "after the paragraph",
+		});
+	});
+
+	it("keeps a following paragraph from becoming part of the new item", () => {
+		expect(place("Para‸\n# Head\nText").result).toBe(`Para\n\n${item}^\n# Head\nText`);
+		expect(place("‸\nText").result).toBe(`\nText\n\n${item}^`);
+	});
+
+	it("inserts the first item under a heading, ahead of an existing list", () => {
+		expect(place("## Notes‸\n\n- old\n").result).toBe(`## Notes\n\n${item}^\n- old\n`);
+		expect(place("## Notes‸\nText").result).toBe(`## Notes\n${item}^\n\nText`);
+		expect(place("# Title‸").moved).toBe("under the heading");
+	});
+
+	it("moves an insert in the properties to the initial notes list, keeping the properties intact", () => {
+		expect(place("---\nta‸gs: [a]\n---\n- one\n- two\n")).toEqual({
+			result: `---\ntags: [a]\n---\n- one\n- two\n${item}^\n`,
+			moved: "in the initial notes area (the cursor was in the properties)",
+		});
+		expect(place("‸---\ntitle: x\n---\n").result).toBe(`---\ntitle: x\n---\n${item}^`);
+	});
+
+	it.each([
+		["callout or quote", "> [!note]\n> in‸side"],
+		["code block", "Before\n\n```\nco‸de\n```"],
+		["table", "| a | b |\n| - | - |\n| 1 | 2‸ |"],
+	])("moves an insert outside a %s", (reason, source) => {
+		const placed = place(source);
+		expect(placed.moved).toBe(`below the ${reason}`);
+		expect(placed.result.endsWith(`\n\n${item}^`)).toBe(true);
+	});
+
+	it("moves an insert in the transcript above it, continuing the notes' final list", () => {
+		expect(place("- one\n\n# Transcript\nwor‸ds\n", { transcript: "# Transcript" })).toEqual({
+			result: `- one\n${item}^\n\n# Transcript\nwords\n`,
+			moved: "in the initial notes area (the cursor was in the transcript)",
+		});
+		expect(place("---\na: 1\n---\n# Transcript\nwor‸ds", { transcript: "# Transcript" }).result)
+			.toBe(`---\na: 1\n---\n${item}^\n\n# Transcript\nwords`);
+	});
+
+	describe("local fallbacks", () => {
+		it.each(["‸\n", "> [!info]- Zotero\n\n‸\n", "> [!info]- Zotero\n\n> citation‸\n"])(
+			"continues the opening notes list without crossing the next heading (%s)", (prefix) => {
+				expect(place(`${prefix}\n- one\n- parent\n  - child\n\n# Later\n\n# Transcript\nwords`,
+					{ literature: true, transcript: "# Transcript" }).result)
+					.toBe(`${prefix.replace("‸", "")}\n- one\n- parent\n  - child\n${item}^\n\n# Later\n\n# Transcript\nwords`);
+			});
+
+		it("skips the complete generated literature preamble, including imported Zotero notes", () => {
+			const prefix = "> [!info]- Zotero\n\n> citation\n\n___\n> [!note]- Zotero Note (1)\n> imported";
+			expect(place(`‸${prefix}\n\n- notes\n\n## Other`, { literature: true }).result)
+				.toBe(`${prefix}\n\n- notes\n${item}^\n\n## Other`);
+			expect(place(`‸${prefix}\n\n## Other`, { literature: true }).result)
+				.toBe(`${prefix}\n\n${item}^\n\n## Other`);
+		});
+
+		it.each(["‸", "‸\n", "---\nkind: ordinary‸\n---\n"])("supports an ordinary note without a source preamble (%s)", (prefix) => {
+			expect(place(`${prefix}- one\n- two\n\n## Later`).result)
+				.toBe(`${prefix.replace("‸", "")}- one\n- two\n${item}^\n\n## Later`);
+		});
+
+		it("uses the first paragraph in an ordinary note, not a later topic's list", () => {
+			expect(place("‸\nOpening paragraph.\n\n## Later\n- unrelated").result)
+				.toBe(`\nOpening paragraph.\n\n${item}^\n\n## Later\n- unrelated`);
+		});
+
+		it("creates a list below a source-only note rather than above its callout", () => {
+			expect(place("‸\n> [!info]- Zotero\n\n> citation\n", { literature: true }).result)
+				.toBe(`\n> [!info]- Zotero\n\n> citation\n\n${item}^\n`);
+		});
+
+		it("does not jump across prose when the literature preamble has no adjacent list", () => {
+			expect(place("> [!info]- Zotero‸\n\n> citation\n\nMy paragraph.\n\n- later", { literature: true }).result)
+				.toBe(`> [!info]- Zotero\n\n> citation\n\n${item}^\n\nMy paragraph.\n\n- later`);
+		});
+
+		it("reuses an empty final list item and continues ordered numbering at the default location", () => {
+			expect(place("‸1. first\n2. \n\n## Later").result)
+				.toBe(`1. first\n2. ${timestampLink("VID", 65)}: ^\n\n## Later`);
+			expect(place("‸3. first\n4. last\n\n## Later").result)
+				.toBe(`3. first\n4. last\n5. ${timestampLink("VID", 65)}: ^\n\n## Later`);
+		});
+
+		it("rejects a malformed block spanning the transcript boundary instead of inserting into it", () => {
+			expect(() => place("```\nbro‸ken\n# Transcript\nwords", { transcript: "# Transcript" }))
+				.toThrow("a Markdown block crosses its boundary");
+		});
+
+		it("does not treat a generic divider and note callout as literature metadata", () => {
+			expect(place("‸> [!info] ordinary\n\n___\n> [!note] user writing\n\n- later").result)
+				.toBe(`> [!info] ordinary\n\n${item}^\n\n___\n> [!note] user writing\n\n- later`);
+		});
+
+		it("keeps a later quote's fallback local and does not cross prose or headings", () => {
+			expect(place("- initial\n\n## Topic\n> quote‸\n\n- local\n\n## Other\n- other").result)
+				.toBe(`- initial\n\n## Topic\n> quote\n\n- local\n${item}^\n\n## Other\n- other`);
+			expect(place("> quote‸\n\nProse\n\n- later").result)
+				.toBe(`> quote\n\n${item}^\n\nProse\n\n- later`);
+		});
+
+		it("puts a sibling outside a nested quote without stealing the parent item's children", () => {
+			expect(place("- parent\n  > quote‸\n  - child\n- next").result)
+				.toBe(`- parent\n  > quote\n  - child\n${item}^\n- next`);
+		});
+
+		it("uses the initial list for a transcript fallback even with a later heading", () => {
+			expect(place("- one\n\n## Later\n- other\n\n# Transcript\nwor‸ds", { transcript: "# Transcript" }).result)
+				.toBe(`- one\n${item}^\n\n## Later\n- other\n\n# Transcript\nwords`);
+		});
+	});
+
+	it("describes moved insertions in the notice", () => {
+		expect(insertionMessage("Timestamp", { text: "", cursorOffset: 0 })).toBe("Timestamp inserted.");
+		expect(insertionMessage("Timestamp", { text: "", cursorOffset: 0, moved: "after the paragraph" }))
+			.toBe("Timestamp inserted after the paragraph.");
 	});
 });

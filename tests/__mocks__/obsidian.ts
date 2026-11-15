@@ -68,6 +68,10 @@ export class MarkdownView {
 	getViewType(): string {
 		return "markdown";
 	}
+
+	getMode(): "source" | "preview" {
+		return "source";
+	}
 }
 
 export class Setting {
@@ -128,10 +132,11 @@ export class Notice {
 export const createdNotices: Notice[] = [];
 
 export function installEditorDomHelpers(doc: Document): void {
-	const createEl = function(this: HTMLElement | DocumentFragment, tag: string, options?: { cls?: string; text?: string }): HTMLElement {
+	const createEl = function(this: HTMLElement | DocumentFragment, tag: string, options?: { cls?: string; text?: string; attr?: Record<string, string> }): HTMLElement {
 		const el = this.ownerDocument!.createElement(tag);
 		if (options?.cls) el.className = options.cls;
 		if (options?.text) el.textContent = options.text;
+		for (const [name, value] of Object.entries(options?.attr ?? {})) el.setAttribute(name, value);
 		this.appendChild(el);
 		return el;
 	};
@@ -142,6 +147,12 @@ export function installEditorDomHelpers(doc: Document): void {
 		Object.defineProperty(prototype, "createSpan", {
 			value: function(this: HTMLElement | DocumentFragment, options?: { cls?: string; text?: string }) {
 				return createEl.call(this, "span", options);
+			},
+			configurable: true,
+		});
+		Object.defineProperty(prototype, "createDiv", {
+			value: function(this: HTMLElement | DocumentFragment, options?: { cls?: string; text?: string }) {
+				return createEl.call(this, "div", options);
 			},
 			configurable: true,
 		});

@@ -8,11 +8,16 @@ import { TranscriptView } from "../../src/litNote/transcriptView";
 import { VideoView } from "../../src/video/videoView";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "../../src/video/youtubePlayer";
 import { VideoWorkspaceModal } from "../../src/video/workspaceLayout";
-import { createdNotices } from "../__mocks__/obsidian";
-import { noteInsertionAnchors, type NoteInsertionTarget } from "../../src/video/noteInsertion";
+import { createdNotices, editorInfoField, installEditorDomHelpers } from "../__mocks__/obsidian";
+import { noteInsertionAnchors, releaseNoteInsertionAnchor, type NoteInsertionTarget } from "../../src/video/noteInsertion";
+import * as noteInsertion from "../../src/video/noteInsertion";
 import { MockMenu } from "commons/testing";
 import * as workspaceApi from "commons/workspace";
+import * as windowsApi from "commons/windows";
+import { registerInsertionTargetMarker } from "../../src/video/insertionMarker";
 import { runCaptionTiming } from "../../src/litNote/captionTiming";
+
+const markerWindowSetup = vi.hoisted(() => vi.fn<typeof import("commons/windows").forEachWindow>());
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
@@ -36,6 +41,7 @@ vi.mock("obsidian", async (original) => ({
 }));
 vi.mock("commons/windows", async (original) => ({
 	...await original<Record<string, unknown>>(),
+	forEachWindow: markerWindowSetup,
 	requestFrameIn: (_win: Window, callback: () => void) => { callback(); },
 }));
 vi.mock("../../src/video/focusIndicator", () => ({ registerVideoNoteFocusIndicator: () => () => {} }));
@@ -113,7 +119,7 @@ async function harness() {
 	viewer.contentEl = document.createElement("div");
 	viewer.containerEl = viewer.contentEl;
 	viewer.contentEl.tabIndex = 0;
-	Object.assign(viewer, { videoId: "abc", filePath: file.path, player: { info: { currentTime: 25.75 }, setCaptions: vi.fn() } });
+	Object.assign(viewer, { videoId: "abc", filePath: file.path, player: { info: { currentTime: 25.75 }, setCaptions: vi.fn(), pause: vi.fn() } });
 	const viewerLeaf = { view: viewer } as unknown as WorkspaceLeaf;
 	leaves.push(viewerLeaf);
 	return { plugin, app, file, leaves, transcript, transcriptLeaf, viewerLeaf };
@@ -621,12 +627,13 @@ describe("transcript activation commands", () => {
 		h.plugin.settings.showYoutubeCaptions = true;
 		expect(registered["host"].getShowYoutubeCaptions()).toBe(true);
 		const noticeCount = createdNotices.length;
+		vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+		const screenshot = vi.spyOn(h.viewerLeaf.view as VideoView, "insertScreenshotForNote").mockResolvedValue();
 		await registered["host"].insertTimestamp(h.viewerLeaf.view as VideoView);
 		await registered["host"].insertScreenshot(h.viewerLeaf.view as VideoView, true);
-		expect(createdNotices.slice(noticeCount).map((notice) => notice.message)).toEqual([
-			"Open the literature note in editing view before inserting a video capture.",
-			"Open the literature note in editing view before inserting a video capture.",
-		]);
+		expect(createdNotices.slice(noticeCount)).toHaveLength(1);
+		expect(createdNotices.at(-1)?.message).toContain("Timestamp copied to clipboard instead.");
+		expect(screenshot).toHaveBeenCalledWith(undefined, true, "The associated note is not open in an editor.");
 		const ids = commands.map((c) => c.id);
 		expect(new Set(ids).size).toBe(ids.length);
 		for (const id of duplicates) expect(ids.includes(id)).toBe(bound);
@@ -1737,10 +1744,11 @@ describe("transcript activation commands", () => {
 		note.containerEl = popoutDocument.createElement("div");
 		const leaf = { view: note } as unknown as WorkspaceLeaf;
 		const editorFocus = vi.fn();
+		const requestMeasure = vi.fn();
 		const target: NoteInsertionTarget = {
 			leaf,
 			filePath: h.file.path,
-			anchor: { view: { focus: editorFocus } as unknown as EditorView, id: 1 },
+			anchor: { view: { focus: editorFocus, requestMeasure } as unknown as EditorView, id: 1 },
 			isValid: () => true,
 		};
 
@@ -1748,6 +1756,11 @@ describe("transcript activation commands", () => {
 
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(leaf, { focus: true });
 		expect(editorFocus).toHaveBeenCalledOnce();
+		expect(requestMeasure).toHaveBeenCalledOnce();
+
+		h.plugin.settings.insertFlashMode = "off";
+		await h.plugin["focusNoteInsertionTarget"](target);
+		expect(requestMeasure).toHaveBeenCalledOnce();
 	});
 
 	it("inserts a selected sentence time without seeking the player or using its current time", async () => {
@@ -1771,6 +1784,265 @@ describe("transcript activation commands", () => {
 		} finally {
 			editor.destroy();
 		}
+	});
+
+	describe("timestamp and screenshot insertion consistency", () => {
+		it.each([false, true])("does not copy a duplicate if timestamp insertion changes the document before an editor error (transcript=%s)", async (transcript) => {
+			const h = await harness();
+			const note = addNote(h);
+			const editor = new EditorView({ state: EditorState.create({ doc: "", extensions: [noteInsertionAnchors] }), parent: note.view.containerEl });
+			const insert = noteInsertion.insertPlaybackTimestamp;
+			vi.spyOn(console, "error").mockImplementation(() => {});
+			const clipboard = vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+			vi.spyOn(noteInsertion, "insertPlaybackTimestamp").mockImplementation((...args) => {
+				insert(...args);
+				throw new Error("Renderer failed after applying the change");
+			});
+			try {
+				if (transcript) await h.plugin["insertTranscriptTimestamp"](h.file.path, "https://youtu.be/abcdefghijk?t=2", 2);
+				else await h.plugin["insertTimestampIntoNote"](h.viewerLeaf.view as VideoView);
+				expect(editor.state.doc.toString()).toContain("https://www.youtube.com/watch?v=");
+				expect(clipboard).not.toHaveBeenCalled();
+				expect(createdNotices.at(-1)?.message).toContain("nothing was copied");
+			} finally { editor.destroy(); }
+		});
+
+		it.each(["missing", "closed", "reading", "readonly", "ambiguous"])("copies timestamps without guessing or editing when the note is %s", async (mode) => {
+			const h = await harness();
+			const video = h.viewerLeaf.view as VideoView;
+			const pause = vi.fn();
+			Object.assign(video, { videoId: "VID", player: { info: { currentTime: 65 }, pause } });
+			const clipboard = vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+			const editors: EditorView[] = [];
+			if (mode === "missing") vi.spyOn(h.app.vault, "getFileByPath").mockReturnValue(null);
+			if (["reading", "readonly", "ambiguous"].includes(mode)) {
+				const note = addNote(h);
+				editors.push(new EditorView({
+					state: EditorState.create({ doc: "- unchanged", extensions: [noteInsertionAnchors, EditorState.readOnly.of(mode === "readonly")] }),
+					parent: note.view.containerEl,
+				}));
+				if (mode === "reading") vi.spyOn(note.view as MarkdownView, "getMode").mockReturnValue("preview");
+				if (mode === "ambiguous") {
+					const other = addNote(h);
+					editors.push(new EditorView({ state: EditorState.create({ doc: "- other", extensions: [noteInsertionAnchors] }), parent: other.view.containerEl }));
+					h.app.workspace.activeLeaf = h.viewerLeaf;
+				}
+			}
+			try {
+				h.plugin.settings.timestampListStyle = "task";
+				await h.plugin["insertTimestampIntoNote"](video);
+				expect(clipboard).toHaveBeenCalledWith(window, "- [ ] [1:05](https://www.youtube.com/watch?v=VID&t=65): ");
+				expect(pause).toHaveBeenCalledOnce();
+				expect(createdNotices.at(-1)?.message).toContain("copied to clipboard instead");
+				expect(editors.map((editor) => editor.state.doc.toString())).toEqual(mode === "ambiguous" ? ["- unchanged", "- other"] : ["readonly", "reading"].includes(mode) ? ["- unchanged"] : []);
+				expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
+			} finally { editors.forEach((editor) => editor.destroy()); }
+		});
+
+		it("copies the same selected timestamp from the video and transcript in the focused pop-out's clipboard", async () => {
+			const h = await harness();
+			const video = h.viewerLeaf.view as VideoView;
+			const doc = document.implementation.createHTMLDocument();
+			const popoutWindow = { document: doc } as unknown as Window;
+			Object.assign(video, { videoId: "abcdefghijk", player: { info: { currentTime: 705 }, pause: vi.fn() }, testWindow: popoutWindow });
+			h.app.workspace.activeLeaf = h.viewerLeaf;
+			h.leaves.push(h.transcriptLeaf);
+			vi.spyOn(h.transcript, "getSelectedTimestamp").mockReturnValue({ startSec: 763, url: "https://youtu.be/abcdefghijk?t=763" });
+			const clipboard = vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+			await h.plugin["insertTimestampIntoNote"](video);
+			await h.plugin["insertTranscriptTimestamp"](h.file.path, "https://youtu.be/abcdefghijk?t=763", 763);
+			expect(clipboard.mock.calls).toEqual([
+				[popoutWindow, "- [12:43](https://www.youtube.com/watch?v=abcdefghijk&t=763): "],
+				[popoutWindow, "- [12:43](https://www.youtube.com/watch?v=abcdefghijk&t=763): "],
+			]);
+		});
+
+		it("only marks the uniquely resolved associated editor and clears the marker when the session closes or note changes", async () => {
+			const h = await harness();
+			installEditorDomHelpers(document);
+			vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+			Object.assign(h.app.workspace, { on: vi.fn() });
+			const registration = vi.spyOn(h.plugin, "registerEditorExtension");
+			const refresh = registerInsertionTargetMarker(h.plugin, () => h.plugin.settings);
+			const setup = markerWindowSetup.mock.calls.at(-1)![1];
+			const cleanup = setup(window);
+			const note = addNote(h);
+			const makeEditor = (parent: HTMLElement) => new EditorView({
+				state: EditorState.create({ doc: "- notes", extensions: [noteInsertionAnchors, editorInfoField.init(() => ({ file: h.file })), registration.mock.calls[0][0]] }),
+				parent,
+			});
+			const editor = makeEditor(note.view.containerEl);
+			let otherEditor: EditorView | null = null;
+			try {
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).not.toBeNull();
+				editor.focus();
+				editor.dispatch({ selection: editor.state.selection });
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				const focusedDocument = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+				window.dispatchEvent(new Event("blur"));
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).not.toBeNull();
+				focusedDocument.mockRestore();
+				editor.contentDOM.blur();
+				const otherNote = addNote(h);
+				otherEditor = makeEditor(otherNote.view.containerEl);
+				h.app.workspace.activeLeaf = h.viewerLeaf;
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				expect(otherEditor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				h.app.workspace.activeLeaf = note;
+				const pending = h.plugin["createNoteInsertionTarget"](h.viewerLeaf.view as VideoView);
+				if ("unavailable" in pending) throw new Error(pending.unavailable);
+				h.app.workspace.activeLeaf = h.viewerLeaf;
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).not.toBeNull();
+				expect(otherEditor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				releaseNoteInsertionAnchor(pending.anchor);
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				h.leaves.splice(h.leaves.indexOf(otherNote), 1);
+				otherEditor.destroy();
+				otherEditor = null;
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).not.toBeNull();
+				h.plugin.settings.showInsertionTarget = false;
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				h.plugin.settings.showInsertionTarget = true;
+				Object.assign(h.viewerLeaf.view, { videoId: null });
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+				Object.assign(h.viewerLeaf.view, { videoId: "VID" });
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).not.toBeNull();
+				(note.view as MarkdownView).file = { path: "other.md" } as TFile;
+				refresh();
+				expect(editor.dom.querySelector(".perplexity-saver-insertion-marker")).toBeNull();
+			} finally {
+				editor.destroy();
+				otherEditor?.destroy();
+				cleanup?.();
+			}
+		});
+
+		it.each([false, true])("uses the same selected time from the command and both buttons after focus changes (popout=%s)", async (popout) => {
+			const h = await harness();
+			vi.spyOn(window, "requestAnimationFrame").mockReturnValue(0);
+			h.plugin.settings.insertFlashMode = "off";
+			const video = h.viewerLeaf.view as VideoView;
+			Object.assign(video, { videoId: "dQw4w9WgXcQ", player: { info: { currentTime: 705 }, pause: vi.fn() } });
+			video["host"].focusNote = async (target) => { h.app.workspace.setActiveLeaf(target.leaf, { focus: true }); };
+			h.app.vault.cachedRead = vi.fn(async () =>
+				"# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) First sentence.\n[12:43](https://youtu.be/dQw4w9WgXcQ?t=763) Second sentence.\n");
+			const note = addNote(h);
+			const editor = new EditorView({
+				state: EditorState.create({ doc: "- ", selection: { anchor: 2 }, extensions: [noteInsertionAnchors] }),
+				parent: note.view.containerEl,
+			});
+			try {
+				const { panel, commands, videoFactory } = await playbackPanel(h, popout ? document.implementation.createHTMLDocument() : document);
+				panel.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1].click();
+				h.app.workspace.activeLeaf = h.transcriptLeaf;
+				commands.find((command) => command.id === "video-viewer-insert-timestamp")!.checkCallback!(false);
+				await vi.waitFor(() => expect(editor.state.doc.toString().match(/&t=763/g)).toHaveLength(1));
+				await vi.waitFor(() => expect(h.app.workspace.activeLeaf).toBe(note));
+				panel.contentEl.querySelector<HTMLButtonElement>('[aria-label="Insert selected timestamp into note"]')!.click();
+				await vi.waitFor(() => expect(editor.state.doc.toString().match(/&t=763/g)).toHaveLength(2));
+				const registered = videoFactory(h.viewerLeaf) as VideoView;
+				await registered["host"].insertTimestamp(video);
+				expect(editor.state.doc.toString().match(/&t=763/g)).toHaveLength(3);
+				expect(editor.state.doc.toString()).not.toContain("&t=705");
+				expect(registered["host"].getTimestampInsertionTime?.(video)).toEqual({ seconds: 763, selected: true });
+				commands.find((command) => command.id === "video-viewer-insert-current-timestamp")!.checkCallback!(false);
+				await vi.waitFor(() => expect(editor.state.doc.toString()).toContain("&t=705"));
+			} finally {
+				editor.destroy();
+			}
+		});
+
+		it("rejects conflicting selections, ignores a different video's selection and uses playback with none", async () => {
+			const h = await harness();
+			h.leaves.push(h.transcriptLeaf);
+			vi.spyOn(h.transcript, "getSelectedTimestamp").mockReturnValue({ startSec: 2, url: "https://youtu.be/abcdefghijk?t=2" });
+			expect(h.plugin["timestampInsertionTime"](h.file.path, "dQw4w9WgXcQ", 99)).toEqual({ seconds: 99, selected: false });
+			const other = new TranscriptView({ app: h.app } as unknown as WorkspaceLeaf, h.transcript["host"]);
+			other.containerEl = document.createElement("div");
+			vi.spyOn(other, "getFilePath").mockReturnValue(h.file.path);
+			vi.spyOn(other, "getSelectedTimestamp").mockReturnValue({ startSec: 3, url: "https://youtu.be/abcdefghijk?t=3" });
+			h.leaves.push({ view: other } as unknown as WorkspaceLeaf);
+			const video = h.viewerLeaf.view as VideoView;
+			Object.assign(video, { videoId: "abcdefghijk" });
+			await h.plugin["insertTimestampIntoNote"](video);
+			expect(createdNotices.at(-1)?.message).toContain("Conflicting transcript selections");
+			vi.mocked(other.getSelectedTimestamp).mockReturnValue({ startSec: 2, url: "https://youtu.be/abcdefghijk?t=2" });
+			expect(h.plugin["timestampInsertionTime"](h.file.path, "abcdefghijk", 99)).toEqual({ seconds: 2, selected: true });
+			vi.spyOn(other, "getFilePath").mockReturnValue("other-note.md");
+			h.transcript.containerEl.isShown = () => false;
+			expect(h.plugin["timestampInsertionTime"](h.file.path, "abcdefghijk", 99)).toEqual({ seconds: 99, selected: false });
+		});
+
+		it.each([
+			["literaturenote", true],
+			[[" LiteratureNote ", "other"], true],
+			[["ordinary"], false],
+			[undefined, false],
+		] as const)("allows insertion in any Markdown note and identifies literature notes by category (%j)", async (category, literature) => {
+			const h = await harness();
+			h.app.metadataCache.getFileCache = vi.fn(() => ({ frontmatter: { category } }));
+			const note = addNote(h);
+			const editor = new EditorView({
+				state: EditorState.create({ doc: "- first\n- second\n\n## Later", extensions: [noteInsertionAnchors] }),
+				parent: note.view.containerEl,
+			});
+			try {
+				const target = h.plugin["createNoteInsertionTarget"](h.viewerLeaf.view as VideoView);
+				if ("unavailable" in target) throw new Error(target.unavailable);
+				expect(target.literatureNote).toBe(literature);
+				expect(target.filePath).toBe(h.file.path);
+				await h.plugin["insertTimestampIntoNote"](h.viewerLeaf.view as VideoView);
+				expect(editor.state.doc.toString()).toContain("- second\n- [0:25]");
+				expect(editor.state.doc.toString().endsWith("## Later")).toBe(true);
+			} finally {
+				editor.destroy();
+			}
+		});
+
+		it("routes screenshot commands and button destinations through the same ordinary-note insertion action", async () => {
+			const h = await harness();
+			vi.spyOn(workspaceApi, "revealAndFocusLeaf").mockImplementation(async (app, leaf, options) => {
+				app.workspace.setActiveLeaf(leaf, { focus: true });
+				options?.onFocus?.(leaf);
+				return true;
+			});
+			addNote(h);
+			const note = h.leaves.at(-1)!.view;
+			const editor = new EditorView({
+				state: EditorState.create({ doc: "- notes", extensions: [noteInsertionAnchors] }),
+				parent: note.containerEl,
+			});
+			const video = h.viewerLeaf.view as VideoView;
+			const capture = vi.spyOn(video, "insertScreenshotForNote").mockResolvedValue();
+			Object.assign(video.leaf, { view: video });
+			try {
+				const { commands, videoFactory } = await playbackPanel(h);
+				Object.assign(Platform, { isDesktopApp: true });
+				for (const id of ["video-viewer-insert-screenshot", "video-viewer-insert-screenshot-whole"]) {
+					commands.find((command) => command.id === id)!.checkCallback!(false);
+					await vi.waitFor(() => expect(capture).toHaveBeenCalledTimes(id.endsWith("whole") ? 2 : 1));
+				}
+				const registered = videoFactory(h.viewerLeaf) as VideoView;
+				await registered["host"].insertScreenshot(video, false);
+				await registered["host"].insertScreenshot(video, true);
+				expect(capture.mock.calls.map(([target, whole]) => ({ path: target?.filePath, literature: target?.literatureNote, whole }))).toEqual([
+					{ path: h.file.path, literature: false, whole: false },
+					{ path: h.file.path, literature: false, whole: true },
+					{ path: h.file.path, literature: false, whole: false },
+					{ path: h.file.path, literature: false, whole: true },
+				]);
+			} finally {
+				editor.destroy();
+			}
+		});
 	});
 
 	it("does not close an unrelated note's visible transcript", async () => {

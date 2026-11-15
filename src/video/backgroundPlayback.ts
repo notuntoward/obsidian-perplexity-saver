@@ -3,7 +3,7 @@ import { writeClipboardIn } from "commons/windows";
 import { PLAYBACK_RATES, type VideoView } from "./videoView";
 import { YouTubeEmbed } from "./youtubePlayer";
 import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "./youtubeLinks";
-import { insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
+import { insertionMessage, insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
 
 export type NotePlayback = Pick<VideoView,
 	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "getPlaybackToken" | "seekTo" |
@@ -85,11 +85,19 @@ export class BackgroundPlayback implements NotePlayback {
 		this.pausePlayback();
 		this.container.ownerDocument.defaultView?.open(watchUrl(this.videoId, Math.floor(this.getPlaybackSeconds())), "_blank");
 	}
-	async insertTimestampBullet(target: NoteInsertionTarget): Promise<void> {
-		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match")) {
-			await this.host.focusNote(target);
-			new Notice("Timestamp inserted.");
+	async insertTimestampBullet(target: NoteInsertionTarget, seconds = this.getPlaybackSeconds()): Promise<boolean> {
+		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match");
+		if (insertion) {
+			const message = insertionMessage("Timestamp", insertion);
+			try {
+				await this.host.focusNote(target);
+				new Notice(message);
+			} catch (error) {
+				console.error("Perplexity Saver: could not focus note after insertion", error);
+				new Notice(`${message} Could not return focus to the note.`);
+			}
 		}
+		return !!insertion;
 	}
 	transferTo(parent: HTMLElement): BackgroundPlayback {
 		const seconds = this.getPlaybackSeconds();

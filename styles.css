@@ -351,6 +351,22 @@
 	white-space: nowrap;
 }
 
+.cm-line.perplexity-saver-insertion-target {
+	box-shadow: 0 1px 0 var(--interactive-accent);
+}
+
+.cm-line.perplexity-saver-insertion-target.is-above {
+	box-shadow: 0 -1px 0 var(--interactive-accent);
+}
+
+.perplexity-saver-insertion-marker {
+	color: var(--text-accent);
+	font-size: var(--font-smallest);
+	margin-inline: var(--size-4-2);
+	pointer-events: none;
+	user-select: none;
+}
+
 .perplexity-saver-transcript-control-group,
 .perplexity-saver-transcript-playback,
 .perplexity-saver-video-control-group {

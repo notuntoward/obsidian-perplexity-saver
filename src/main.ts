@@ -37,9 +37,10 @@ import { deduplicateDialogCitations } from "./normalize/turns";
 import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
 import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
+import { hasLiteratureNoteCategory } from "./litNote/litNoteFinder";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
-import { isTranscriptCapturePosition, registerTranscriptProtection } from "./litNote/transcriptProtection";
+import { registerTranscriptProtection } from "./litNote/transcriptProtection";
 import { registerCaptionTimingRepair, runCaptionTiming } from "./litNote/captionTiming";
 import {
 	TRANSCRIPT_VIEW_TYPE,
@@ -64,21 +65,31 @@ import {
 	openVideoViewer,
 	type VideoViewerLocation,
 	type VideoToolbarCaptureAction,
+	type TimestampInsertionTime,
 } from "./video/videoView";
 import {
 	createNoteInsertionAnchor,
+	copyInsertionFallback,
+	flashInsertedLine,
+	insertionMessage,
 	insertPlaybackTimestamp,
 	noteInsertionAnchors,
 	releaseNoteInsertionAnchor,
+	resolveNoteInsertionEditor,
+	timestampInsertionClipboardText,
 	type NoteInsertionTarget,
+	type PlacedInsertion,
+	type UnavailableInsertionTarget,
 	type TimestampListStyle,
 } from "./video/noteInsertion";
+import { formatFlashDuration, formatFlashSize, LINE_FLASH_DURATION, LINE_FLASH_MODE_LABELS, LINE_FLASH_SIZE, type LineFlashMode } from "commons/flash";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
 import { parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
 import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, isSavedVideoWorkspace, type SavedVideoWorkspace, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
+import { registerInsertionTargetMarker } from "./video/insertionMarker";
 import { isVisiblePart, loadedPlayers, mediaWindowFor, playerForNote, primaryPlayer, transcriptsForNote, visiblePlayers, visibleTranscripts, type VisiblePart } from "./video/session";
 import { buildNavigationModel, capturePaneArrangement, restorePaneArrangement, closePopoutWindowIfEmpty, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, loadLeafIfDeferred, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn, type CancelTimer } from "commons/windows";
@@ -171,6 +182,11 @@ export interface PerplexitySaverSettings {
 	videoViewerLocation: VideoViewerLocation;
 	timestampCopyFormat: TimestampCopyFormat;
 	timestampListStyle: TimestampListStyle;
+	showInsertionTarget: boolean;
+	/** Highlight the line a timestamp or screenshot was inserted on. */
+	insertFlashMode: LineFlashMode | "off";
+	insertFlashDuration: number;
+	insertFlashSize: number;
 	videoToolbarCaptureAction: VideoToolbarCaptureAction;
 	showYoutubeCaptions: boolean;
 	videoNoteFocusIndicator: boolean;
@@ -214,6 +230,10 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	videoViewerLocation: "split",
 	timestampCopyFormat: "link",
 	timestampListStyle: "match",
+	showInsertionTarget: true,
+	insertFlashMode: "left",
+	insertFlashDuration: LINE_FLASH_DURATION.default,
+	insertFlashSize: LINE_FLASH_SIZE.default,
 	videoToolbarCaptureAction: "insert",
 	showYoutubeCaptions: false,
 	videoNoteFocusIndicator: true,
@@ -249,6 +269,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	litNoteServerSettings: LitNoteServerSettings | null = null;
 	private litNoteServer: http.Server | null = null;
 	private refreshVideoNoteFocusIndicator: (() => void) | null = null;
+	private refreshInsertionTargetMarker: (() => void) | null = null;
 	private transcriptLocations = new Map<string, TranscriptPanelLocation>();
 	private readonly paragraphWarnings = new Set<string>();
 	/** Pending "open the transcript if the video cannot start" checks, keyed by note path. */
@@ -261,6 +282,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.refreshVideoNoteFocusIndicator = registerVideoNoteFocusIndicator(this, () => this.settings.videoNoteFocusIndicator);
 		this.registerEditorExtension(noteInsertionAnchors);
 		registerTranscriptProtection(this, () => this.settings.transcriptHeading);
+		this.refreshInsertionTargetMarker = registerInsertionTargetMarker(this, () => this.settings);
 		registerFootnoteNavigation(this);
 		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		registerCaptionTimingRepair(this, () => this.settings.transcriptHeading, (file) => this.timeTranscriptFromCaptions(file));
@@ -331,6 +353,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 					getHeadingName: () => this.settings.transcriptHeading,
 					paragraphWarnings: this.paragraphWarnings,
 					insertTimestampAt: (filePath, url, seconds) => this.insertTranscriptTimestamp(filePath, url, seconds),
+					onSelectionChanged: (filePath) => {
+						for (const { view } of loadedPlayers(this.app)) {
+							if (view.getFilePath() === filePath) view.refreshTranscriptControls();
+						}
+					},
 					alignTranscript: async (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) throw new Error("Transcript note not found.");
@@ -415,6 +442,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
 					getTimestampListStyle: () => this.settings.timestampListStyle,
+					getTimestampInsertionTime: (view) => this.timestampInsertionTime(view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds()),
 					getToolbarCaptureAction: () => this.settings.videoToolbarCaptureAction,
 					getShowYoutubeCaptions: () => this.settings.showYoutubeCaptions,
 					getTranscriptUnit: (filePath) => {
@@ -505,6 +533,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-previous-note-timestamp", "Video: previous transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, -1)],
 			["video-viewer-copy-timestamp", "Video: copy current timestamp", (v) => v.copyTimestampLink()],
 			["video-viewer-insert-timestamp", "Video: insert timestamp list item", (v) => this.insertTimestampIntoNote(v)],
+			["video-viewer-insert-current-timestamp", "Video: insert current playback timestamp", (v) => this.insertTimestampIntoNote(v, true)],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
 		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
@@ -1396,67 +1425,119 @@ export default class PerplexitySaverPlugin extends Plugin {
 		}
 	}
 
-	private createNoteInsertionTarget(view: Pick<NotePlayback, "getFilePath">): NoteInsertionTarget | null {
+	private createNoteInsertionTarget(view: Pick<NotePlayback, "getFilePath">): NoteInsertionTarget | UnavailableInsertionTarget {
 		const filePath = view.getFilePath();
-		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
-		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true });
-		const activeNote = active?.view instanceof MarkdownView && active.view.file?.path === file?.path ? active : null;
-		const leaf = activeNote ?? (file ? findLeafForFile(this.app, file.path) : null);
-		if (!file || !leaf || !(leaf.view instanceof MarkdownView) || leaf.view.file?.path !== file.path) {
-			new Notice("Open the literature note in editing view before inserting a video capture.");
-			return null;
-		}
-		const editorEl = leaf.view.containerEl.querySelector(".cm-editor");
-		const editorView = editorEl ? EditorView.findFromDOM(editorEl as HTMLElement) : null;
-		if (!editorView) {
-			new Notice("Switch the literature note to editing view and place the Cursor where you want the insertion.");
-			return null;
-		}
-		if (isTranscriptCapturePosition(editorView.state, editorView.state.selection.main.head)) {
-			new Notice("Cannot insert into the transcript. Choose a location in your notes.");
-			return null;
-		}
+		const destination = resolveNoteInsertionEditor(this.app, filePath);
+		if ("unavailable" in destination) return destination;
+		const { leaf, view: editorView } = destination;
 		const anchor = createNoteInsertionAnchor(editorView);
-		if (!anchor) {
-			new Notice("Could not track the literature note insertion point.");
-			return null;
-		}
-		const targetPath = file.path;
+		if (!anchor) return { unavailable: "The note insertion point could not be tracked." };
+		const targetPath = destination.filePath;
+		const file = this.app.vault.getFileByPath(targetPath);
 		return {
 			leaf,
 			filePath: targetPath,
 			anchor,
+			literatureNote: !!file && hasLiteratureNoteCategory(this.app.metadataCache.getFileCache(file)?.frontmatter),
 			isValid: () =>
 				leaf.view instanceof MarkdownView &&
 				leaf.view.file?.path === targetPath &&
-				editorView.dom.isConnected,
+				leaf.view.getMode() === "source" &&
+				editorView.dom.isConnected && !editorView.state.readOnly,
 		};
 	}
 
-	private async insertTimestampIntoNote(view: NotePlayback): Promise<void> {
-		const target = this.createNoteInsertionTarget(view);
-		if (!target) return;
-		try {
-			await view.insertTimestampBullet(target);
-		} catch (error) {
-			releaseNoteInsertionAnchor(target.anchor);
-			console.error("Perplexity Saver: could not insert timestamp", error);
-			new Notice("Could not insert a timestamp into the literature note.");
+	private timestampInsertionTime(filePath: string | null, videoId: string | null, seconds: number): TimestampInsertionTime {
+		if (!videoId) return { error: "The video for timestamp insertion is no longer available." };
+		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+		const selections = new Set<number>();
+		for (const { view } of file ? transcriptsForNote(this.app, file) : []) {
+			const row = view.getSelectedTimestamp();
+			if (row && parseYouTubeUrl(row.url)?.videoId === videoId) selections.add(row.startSec);
 		}
+		if (selections.size > 1) return { error: "Conflicting transcript selections. Clear one selection before inserting a timestamp." };
+		const selected = selections.size === 1;
+		const resolved = selected ? [...selections][0] : seconds;
+		if (!Number.isFinite(resolved) || resolved < 0) return { error: "The timestamp insertion time is not available." };
+		return { seconds: resolved, selected };
+	}
 
+	private insertionClipboardWindow(): Window | null {
+		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true });
+		return (active ? getWindowForLeaf(active) : getMainWindow(this.app)) ?? null;
+	}
+
+	private async insertTimestampIntoNote(view: NotePlayback, currentPlaybackOnly = false): Promise<void> {
+		const time = currentPlaybackOnly
+			? { seconds: view.getPlaybackSeconds(), selected: false }
+			: this.timestampInsertionTime(view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds());
+		if ("error" in time) {
+			new Notice(time.error);
+			return;
+		}
+		const videoId = view.getVideoId();
+		if (!videoId || !Number.isFinite(time.seconds) || time.seconds < 0) {
+			new Notice("The timestamp insertion time is not available.");
+			return;
+		}
+		const fallback = async (reason: string): Promise<void> => {
+			view.pausePlayback();
+			await copyInsertionFallback(this.insertionClipboardWindow(),
+				timestampInsertionClipboardText(videoId, time.seconds, this.settings.timestampListStyle), "Timestamp", reason);
+		};
+		const target = this.createNoteInsertionTarget(view);
+		if ("unavailable" in target) {
+			await fallback(target.unavailable);
+			return;
+		}
+		const before = target.anchor.view.state.doc;
+		try {
+			if (!await view.insertTimestampBullet(target, time.seconds)) await fallback("The note insertion point is no longer available.");
+		} catch (error) {
+			console.error("Perplexity Saver: could not insert timestamp", error);
+			if (target.anchor.view.state.doc !== before) new Notice("The note changed while completing timestamp insertion. Check it before retrying; nothing was copied.");
+			else await fallback("A safe insertion into the note could not be completed.");
+		} finally {
+			releaseNoteInsertionAnchor(target.anchor);
+		}
 	}
 
 	private async insertTranscriptTimestamp(filePath: string, url: string, seconds: number): Promise<void> {
 		const videoId = parseYouTubeUrl(url)?.videoId;
 		const file = this.app.vault.getFileByPath(filePath);
-		if (!file || !videoId || !Number.isFinite(seconds) || seconds < 0) throw new Error("The selected transcript timestamp is no longer available.");
+		if (!videoId || !Number.isFinite(seconds) || seconds < 0) throw new Error("The selected transcript timestamp is no longer available.");
+		const time = this.timestampInsertionTime(filePath, videoId, seconds);
+		if ("error" in time) {
+			new Notice(time.error);
+			return;
+		}
 		const target = this.createNoteInsertionTarget({ getFilePath: () => filePath });
-		if (!target) return;
+		const playback = (file ? playerForNote(this.app, file)?.view : null) ?? this.existingBackgroundPlayback(filePath);
+		const fallback = async (reason: string): Promise<void> => {
+			playback?.pausePlayback();
+			await copyInsertionFallback(this.insertionClipboardWindow(),
+				timestampInsertionClipboardText(videoId, time.seconds, this.settings.timestampListStyle), "Timestamp", reason);
+		};
+		if ("unavailable" in target) {
+			await fallback(target.unavailable);
+			return;
+		}
+		const before = target.anchor.view.state.doc;
 		try {
-			const playback = playerForNote(this.app, file)?.view ?? this.existingBackgroundPlayback(filePath);
-			if (insertPlaybackTimestamp(target, videoId, seconds, () => playback?.pausePlayback(), this.settings.timestampListStyle)) {
-				await this.focusNoteInsertionTarget(target);
+			let insertion: PlacedInsertion | null;
+			try {
+				insertion = insertPlaybackTimestamp(target, videoId, time.seconds, () => playback?.pausePlayback(), this.settings.timestampListStyle);
+			} catch (error) {
+				console.error("Perplexity Saver: could not insert transcript timestamp", error);
+				if (target.anchor.view.state.doc !== before) new Notice("The note changed while completing timestamp insertion. Check it before retrying; nothing was copied.");
+				else await fallback("A safe insertion into the note could not be completed.");
+				return;
 			}
+			if (insertion) {
+				await this.focusNoteInsertionTarget(target);
+				// A transcript-row insert stays quiet unless it landed somewhere other than the cursor.
+				if (insertion.moved) new Notice(insertionMessage("Timestamp", insertion));
+			} else await fallback("The note insertion point is no longer available.");
 		} finally {
 			releaseNoteInsertionAnchor(target.anchor);
 		}
@@ -1464,24 +1545,29 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	private async insertScreenshotIntoNote(view: VideoView, whole: boolean): Promise<void> {
 		const target = this.createNoteInsertionTarget(view);
-		if (!target) return;
 		try {
 			await this.activatePartLeaf(view.leaf, null);
-			await view.insertScreenshotForNote(target, whole);
+			if ("unavailable" in target) await view.insertScreenshotForNote(undefined, whole, target.unavailable);
+			else await view.insertScreenshotForNote(target, whole);
 		} catch (error) {
-			releaseNoteInsertionAnchor(target.anchor);
+			if (!("unavailable" in target)) releaseNoteInsertionAnchor(target.anchor);
 			console.error("Perplexity Saver: could not start screenshot insertion", error);
 			new Notice("Could not start screenshot insertion.");
 		}
 	}
 
 	private async focusNoteInsertionTarget(target: NoteInsertionTarget): Promise<void> {
-		if (!target.isValid()) throw new Error("The literature note insertion target is no longer available.");
+		if (!target.isValid()) throw new Error("The note insertion target is no longer available.");
 		await revealAndFocusLeaf(this.app, target.leaf, {
 			raiseWindow: Platform.isDesktopApp ? raiseWindow : undefined,
 			onFocus: () => {
-				if (!target.isValid()) throw new Error("The literature note insertion target changed before focus.");
+				if (!target.isValid()) throw new Error("The note insertion target changed before focus.");
 				target.anchor.view.focus();
+				flashInsertedLine(target.anchor.view, {
+					mode: this.settings.insertFlashMode,
+					durationMs: this.settings.insertFlashDuration,
+					sizeChars: this.settings.insertFlashSize,
+				});
 			},
 		});
 	}
@@ -1708,6 +1794,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 		this.refreshVideoNoteFocusIndicator?.();
+		this.refreshInsertionTargetMarker?.();
 		for (const leaf of this.app.workspace?.getLeavesOfType?.(VIDEO_VIEW_TYPE) ?? []) {
 			if (leaf.view instanceof VideoView) {
 				leaf.view.updateToolbarCaptureLabels();
@@ -2361,7 +2448,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Timestamp list item style",
-						desc: "List form used by Video: insert timestamp list item and the toolbar's insert action. Match current list reuses the marker at the cursor and follows ordered numbering. Unordered, ordered, and task start that form; on a blank line an ordered item starts at 1. Indentation and list placement follow the cursor in every case.",
+						desc: "List form used by timestamp insertion commands and buttons. Match current list keeps the marker and follows ordered numbering; unordered, ordered, and task start that form. Inserts never split text or steal sub-items. Unsafe blocks continue an adjacent list or get a new list immediately below, without crossing a heading. Properties, the transcript and the opening source area use the initial notes area. Ordinary Markdown notes do not require a callout or quote.",
 						control: {
 							type: "dropdown",
 							key: "timestampListStyle",
@@ -2371,6 +2458,44 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 								ordered: "Ordered list (1.)",
 								task: "Task list (- [ ])",
 							},
+						},
+					},
+					{
+						name: "Highlight inserted line",
+						desc: "Briefly flash the note line where a timestamp or screenshot was inserted, so you can see where it went.",
+						control: {
+							type: "dropdown",
+							key: "insertFlashMode",
+							options: { off: "Off", ...LINE_FLASH_MODE_LABELS },
+						},
+					},
+					{
+						name: "Show insertion target",
+						desc: "Mark the safe insertion location while the associated note editor is unfocused. The marker does not change note text or move the cursor.",
+						control: { type: "toggle", key: "showInsertionTarget" },
+					},
+					{
+						name: "Inserted line highlight duration",
+						control: {
+							type: "slider",
+							key: "insertFlashDuration",
+							min: LINE_FLASH_DURATION.min,
+							max: LINE_FLASH_DURATION.max,
+							step: LINE_FLASH_DURATION.step,
+							displayFormat: formatFlashDuration,
+							disabled: () => this.plugin.settings.insertFlashMode === "off",
+						},
+					},
+					{
+						name: "Inserted line highlight width",
+						control: {
+							type: "slider",
+							key: "insertFlashSize",
+							min: LINE_FLASH_SIZE.min,
+							max: LINE_FLASH_SIZE.max,
+							step: LINE_FLASH_SIZE.step,
+							displayFormat: formatFlashSize,
+							disabled: () => this.plugin.settings.insertFlashMode === "off",
 						},
 					},
 					{

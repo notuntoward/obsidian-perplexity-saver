@@ -184,6 +184,7 @@ export interface TranscriptViewHost {
 	getSearchSettings(): TranscriptSearchSettings;
 	paragraphWarnings?: Set<string>;
 	insertTimestampAt?(filePath: string, url: string, seconds: number): Promise<void>;
+	onSelectionChanged?(filePath: string): void;
 	alignTranscript?(filePath: string): Promise<void>;
 	cancelAlignment?(): void;
 	/**
@@ -535,7 +536,8 @@ export class TranscriptView extends ItemView {
 		const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
 		const lines = file ? await loadTranscriptLines(this.app, file, this.host.getHeadingName()) : null;
 		if (token !== this.loadToken) return;
-		if (this.lines?.length !== lines?.length || this.lines?.some((line, i) => line.text !== lines?.[i]?.text)) {
+		if (this.lines?.length !== lines?.length || this.lines?.some((line, i) =>
+			line.text !== lines?.[i]?.text || line.startSec !== lines?.[i]?.startSec || line.url !== lines?.[i]?.url)) {
 			this.selectedSourceStart = null;
 		}
 		this.lines = lines;
@@ -578,6 +580,13 @@ export class TranscriptView extends ItemView {
 
 	getNavigationUnit(): "sentence" | "caption" {
 		return this.mode === "lines" || this.rendered[0]?.row.captionFallback ? "caption" : "sentence";
+	}
+
+	getSelectedTimestamp(): Pick<TranscriptRow, "startSec" | "url"> | null {
+		if (this.renderedPath !== this.filePath) return null;
+		const row = this.rendered[this.selectedRowIndex()]?.row;
+		if (!row || !Number.isFinite(row.startSec) || row.startSec < 0 || !parseYouTubeUrl(row.url)) return null;
+		return { startSec: row.startSec, url: row.url };
 	}
 
 	/** Put the cursor in the search box. */
@@ -934,7 +943,7 @@ export class TranscriptView extends ItemView {
 				if (action === "play") button.addClass("perplexity-saver-transcript-play-toggle");
 			}
 			const capture = playback.createDiv({ cls: "perplexity-saver-transcript-control-group" });
-			this.iconButton(capture, "list-plus", "Insert current timestamp", () => {
+			this.iconButton(capture, "list-plus", "Insert timestamp into note", () => {
 				if (this.filePath && !playback.hidden) this.host.runPlaybackControl?.(this.filePath, "insert");
 			});
 			this.refreshPlaybackControls();
@@ -1428,6 +1437,7 @@ export class TranscriptView extends ItemView {
 		});
 		if (bar.hidden !== index < 0) this.keepListInPlace(() => this.fillSelectionBar(bar, index));
 		else this.fillSelectionBar(bar, index);
+		if (this.filePath) this.host.onSelectionChanged?.(this.filePath);
 	}
 
 	private fillSelectionBar(bar: HTMLElement, index: number): void {
@@ -1440,7 +1450,12 @@ export class TranscriptView extends ItemView {
 		if (this.host.insertTimestampAt) {
 			this.iconButton(bar, "file-plus-2", "Insert selected timestamp into note", () => {
 				if (!this.filePath) return;
-				void this.host.insertTimestampAt?.(this.filePath, row.url, row.startSec).catch((error: unknown) => {
+				const selected = this.getSelectedTimestamp();
+				if (!selected) {
+					new Notice("The selected transcript timestamp is no longer available.");
+					return;
+				}
+				void this.host.insertTimestampAt?.(this.filePath, selected.url, selected.startSec).catch((error: unknown) => {
 					console.error("Perplexity Saver: could not insert selected timestamp", error);
 					new Notice("Could not insert selected timestamp into the note.");
 				});

@@ -1,8 +1,12 @@
 import { StateEffect, StateField, type Text } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
-import { Notice, type WorkspaceLeaf } from "obsidian";
+import { EditorView } from "@codemirror/view";
+import { GFM, parser } from "@lezer/markdown";
+import { flashEditorLine, type LineFlashMode } from "commons/flash";
+import { getActiveLeafInFocusedWindow, getEditorLeafLocations } from "commons/workspace";
+import { writeClipboardIn } from "commons/windows";
+import { getFrontMatterInfo, MarkdownView, Notice, type App, type WorkspaceLeaf } from "obsidian";
 import { timestampLink } from "./youtubeLinks";
-import { isTranscriptCapturePosition } from "../litNote/transcriptProtection";
+import { isTranscriptCapturePosition, transcriptStart } from "../litNote/transcriptProtection";
 
 interface InsertionAnchors {
 	[id: number]: number;
@@ -15,6 +19,7 @@ let nextAnchorId = 1;
 export const noteInsertionAnchors = StateField.define<InsertionAnchors>({
 	create: () => ({}),
 	update: (anchors, transaction) => {
+		if (!transaction.docChanged && !transaction.effects.some((effect) => effect.is(setInsertionAnchor) || effect.is(clearInsertionAnchor))) return anchors;
 		const mapped: InsertionAnchors = {};
 		for (const [id, position] of Object.entries(anchors)) {
 			mapped[Number(id)] = transaction.changes.mapPos(position, 1);
@@ -36,7 +41,45 @@ export interface NoteInsertionTarget {
 	leaf: WorkspaceLeaf;
 	filePath: string;
 	anchor: NoteInsertionAnchor;
+	literatureNote?: boolean;
 	isValid(): boolean;
+}
+
+export interface UnavailableInsertionTarget {
+	unavailable: string;
+}
+
+/** Resolve one editor without guessing between different cursors for the same note. */
+export function resolveNoteInsertionEditor(app: App, filePath: string | null):
+	{ leaf: WorkspaceLeaf; view: EditorView; filePath: string } | UnavailableInsertionTarget {
+	if (!filePath || !app.vault.getFileByPath(filePath)) return { unavailable: "The associated note is unavailable." };
+	const active = getActiveLeafInFocusedWindow(app, { includeSidebars: true });
+	const candidates = getEditorLeafLocations(app).map(({ leaf }) => leaf).filter((leaf) =>
+		leaf.view instanceof MarkdownView && leaf.view.file?.path === filePath);
+	if (active?.view instanceof MarkdownView && active.view.file?.path === filePath && !candidates.includes(active)) candidates.push(active);
+	const leaf = active && candidates.includes(active) ? active : candidates.length === 1 ? candidates[0] : null;
+	if (!leaf) return { unavailable: candidates.length > 1
+		? "Several editors show this note. Focus the intended editor before inserting."
+		: "The associated note is not open in an editor." };
+	if (!(leaf.view instanceof MarkdownView) || leaf.view.getMode() !== "source") return { unavailable: "The associated note is not editable." };
+	const editorEl = leaf.view.containerEl.querySelector<HTMLElement>(".cm-editor");
+	const view = editorEl ? EditorView.findFromDOM(editorEl) : null;
+	if (!view || !view.dom.isConnected || view.state.readOnly) return { unavailable: "The associated note is not editable." };
+	return { leaf, view, filePath };
+}
+
+export async function copyInsertionFallback(win: Window | null, text: string, subject: string, reason: string): Promise<boolean> {
+	try {
+		if (win && await writeClipboardIn(win, text)) {
+			new Notice(`${subject} copied to clipboard instead. ${reason} Paste it into your note.`);
+			return true;
+		}
+		console.error("Perplexity Saver: insertion clipboard unavailable", subject, reason);
+	} catch (error) {
+		console.error("Perplexity Saver: could not copy insertion fallback", error);
+	}
+	new Notice(`${subject} was not inserted and could not be copied to the clipboard. ${reason}`);
+	return false;
 }
 
 /** Which list form the timestamp insertion creates. */
@@ -151,47 +194,299 @@ function renderContent(mark: ListMark, block: ListItemBlock): string {
 	return block.content + (block.tail ?? []).map((line) => `\n${continuation}${line}`).join("");
 }
 
+/** Why an insertion was moved outside its current block. */
+type UnsafeReason = "properties" | "transcript" | "callout or quote" | "code block" | "table" | "HTML block";
+
+const UNSAFE_BLOCKS: Record<string, UnsafeReason> = {
+	Blockquote: "callout or quote",
+	FencedCode: "code block",
+	CodeBlock: "code block",
+	Table: "table",
+	HTMLBlock: "HTML block",
+	CommentBlock: "HTML block",
+	ProcessingInstructionBlock: "HTML block",
+	LinkReference: "HTML block",
+};
+
+const markdownParser = parser.configure(GFM);
+type Tree = ReturnType<typeof markdownParser.parse>;
+type SyntaxNode = Tree["topNode"];
+
+export interface PlacedInsertion extends NoteInsertion {
+	/** Describes where the insertion went when that is not where the cursor was, for example "after the paragraph". */
+	moved?: string;
+}
+
+/** Parsed note body with positions mapped back to the whole document. */
+class NoteStructure {
+	private readonly tree: Tree;
+	readonly bodyStart: number;
+
+	constructor(readonly doc: Text) {
+		const content = doc.toString();
+		this.bodyStart = getFrontMatterInfo(content).contentStart;
+		this.tree = markdownParser.parse(content.slice(this.bodyStart));
+	}
+
+	/** Innermost node at the line's first non-space character. */
+	nodeAtLine(lineNumber: number): SyntaxNode | null {
+		const line = this.doc.line(lineNumber);
+		if (line.to < this.bodyStart) return null;
+		const indent = line.text.length - line.text.trimStart().length;
+		return this.tree.resolveInner(Math.max(line.from + indent, this.bodyStart) - this.bodyStart, 1);
+	}
+
+	from(node: SyntaxNode): number { return node.from + this.bodyStart; }
+
+	to(node: SyntaxNode): number { return node.to + this.bodyStart; }
+
+	topBlocks(): SyntaxNode[] {
+		const blocks: SyntaxNode[] = [];
+		for (let node = this.tree.topNode.firstChild; node; node = node.nextSibling) blocks.push(node);
+		return blocks;
+	}
+
+	/** The paragraph-like kind of a line, used to keep lazy continuation from joining blocks. */
+	lineKind(lineNumber: number): "none" | "blank" | "list" | "paragraph" | "other" {
+		if (lineNumber < 1 || lineNumber > this.doc.lines) return "none";
+		if (!this.doc.line(lineNumber).text.trim()) return "blank";
+		const node = this.nodeAtLine(lineNumber);
+		if (!node) return "other";
+		if (ancestor(node, (n) => n.name === "ListItem")) return "list";
+		return ancestor(node, (n) => n.name === "Paragraph")?.parent?.name === "Document" ? "paragraph" : "other";
+	}
+}
+
+const noteStructures = new WeakMap<Text, NoteStructure>();
+
+function ancestor(node: SyntaxNode | null, test: (node: SyntaxNode) => boolean): SyntaxNode | null {
+	for (let current = node; current; current = current.parent) if (test(current)) return current;
+	return null;
+}
+
+function isHeading(node: SyntaxNode): boolean {
+	return /^(?:ATX|Setext)Heading[1-6]$/.test(node.name);
+}
+
+function isList(node: SyntaxNode): boolean {
+	return node.name === "BulletList" || node.name === "OrderedList";
+}
+
+/** Last non-blank line at or before `position`, so trailing blank lines stay between blocks. */
+function lastContentLine(doc: Text, position: number) {
+	let line = doc.lineAt(position);
+	while (line.number > 1 && !line.text.trim()) line = doc.line(line.number - 1);
+	return line;
+}
+
+function at(position: number, text: string, cursorOffset: number, moved?: string): PlacedInsertion {
+	return { text, cursorOffset, replace: { from: position, to: position }, moved };
+}
+
+/** A sibling after the whole item, including its children, so it never steals them. */
+function siblingAfter(structure: NoteStructure, item: SyntaxNode, block: ListItemBlock, style: TimestampListStyle, moved?: string): PlacedInsertion {
+	const doc = structure.doc;
+	const mark = parseListPrefix(doc.lineAt(structure.from(item)).text)?.mark ?? null;
+	const end = lastContentLine(doc, structure.to(item));
+	const text = `\n${renderBlock(chooseMark(mark, style), block)}`;
+	return at(end.to, text, text.length, moved);
+}
+
+/** A new block after `node`, separated from the text on both sides. */
+function blockAfter(structure: NoteStructure, node: SyntaxNode, block: ListItemBlock, style: TimestampListStyle, moved?: string): PlacedInsertion {
+	const end = lastContentLine(structure.doc, structure.to(node));
+	const rendered = renderBlock(chooseMark(null, style), block);
+	const text = `\n\n${rendered}${structure.lineKind(end.number + 1) === "paragraph" ? "\n" : ""}`;
+	return at(end.to, text, 2 + rendered.length, moved);
+}
+
+/** The first item under a heading: at the top of a list that follows it, or a new list. */
+function underHeading(structure: NoteStructure, heading: SyntaxNode, block: ListItemBlock, style: TimestampListStyle, moved?: string): PlacedInsertion {
+	const doc = structure.doc;
+	const next = heading.nextSibling;
+	if (next && isList(next)) {
+		const first = doc.lineAt(structure.from(next));
+		const mark = parseListPrefix(first.text)?.mark;
+		const rendered = renderBlock(mark ? chooseReuseMark(mark, style) : chooseMark(null, style), block);
+		return at(first.from, `${rendered}\n`, rendered.length, moved);
+	}
+	const end = lastContentLine(doc, structure.to(heading));
+	const rendered = renderBlock(chooseMark(null, style), block);
+	const text = `\n${rendered}${structure.lineKind(end.number + 1) === "paragraph" ? "\n" : ""}`;
+	return at(end.to, text, 1 + rendered.length, moved);
+}
+
+function appendToList(structure: NoteStructure, list: SyntaxNode, block: ListItemBlock, style: TimestampListStyle, moved?: string): PlacedInsertion {
+	const item = list.lastChild;
+	if (!item || item.name !== "ListItem") throw new Error("Could not resolve the notes list insertion point.");
+	const line = structure.doc.lineAt(structure.from(item));
+	if (structure.to(item) <= line.to) {
+		const empty = reuseEmptyItem(line, block, style);
+		if (empty) return { ...empty, moved };
+	}
+	return siblingAfter(structure, item, block, style, moved);
+}
+
+/** Exit the whole block and continue only an adjacent list, never a later topic. */
+function outsideBlock(structure: NoteStructure, node: SyntaxNode, notesEnd: number, block: ListItemBlock, style: TimestampListStyle, moved: string): PlacedInsertion {
+	if (structure.to(node) > notesEnd) throw new Error("Cannot safely insert before the transcript: a Markdown block crosses its boundary.");
+	const next = node.nextSibling;
+	if (next && isList(next) && structure.to(next) <= notesEnd) return appendToList(structure, next, block, style, moved);
+	return blockAfter(structure, node, block, style, moved);
+}
+
+function calloutKind(structure: NoteStructure, node: SyntaxNode): string | undefined {
+	if (node.name !== "Blockquote") return;
+	return /^>\s*\[!(info|note)\]/i.exec(structure.doc.lineAt(structure.from(node)).text)?.[1].toLowerCase();
+}
+
+/** Leading source blocks are optional; ordinary notes start with their first content block. */
+function initialNotesArea(structure: NoteStructure, notesEnd: number, literatureNote: boolean): { before: SyntaxNode | null; first: SyntaxNode | null; openingEnd: number } {
+	const blocks = structure.topBlocks().filter((node) => structure.from(node) < notesEnd);
+	let index = 0;
+	if (blocks[0] && isHeading(blocks[0])) index++;
+	const generatedPreamble = literatureNote && !!blocks[index] && calloutKind(structure, blocks[index]) === "info";
+	if (generatedPreamble) while (blocks[index]?.name === "Blockquote") index++;
+	if (generatedPreamble && blocks[index]?.name === "HorizontalRule" && blocks[index + 1] &&
+		calloutKind(structure, blocks[index + 1]) === "note") index += 2;
+	const first = blocks[index] ?? null;
+	return {
+		before: blocks[index - 1] ?? null,
+		first,
+		openingEnd: generatedPreamble ? (first ? structure.from(first) : notesEnd) : (blocks[0] ? structure.from(blocks[0]) : notesEnd),
+	};
+}
+
+function inInitialNotesArea(structure: NoteStructure, area: ReturnType<typeof initialNotesArea>, notesEnd: number,
+	block: ListItemBlock, style: TimestampListStyle, reason: string): PlacedInsertion {
+	const moved = `in the initial notes area (the cursor was in the ${reason})`;
+	const { before, first } = area;
+	if (first && isList(first) && structure.to(first) <= notesEnd) return appendToList(structure, first, block, style, moved);
+	if (before && !isHeading(before)) return outsideBlock(structure, before, notesEnd, block, style, moved);
+	if (first && !isHeading(first)) return outsideBlock(structure, first, notesEnd, block, style, moved);
+	if (before) return underHeading(structure, before, block, style, moved);
+	const rendered = renderBlock(chooseMark(null, style), block);
+	const following = structure.doc.sliceString(structure.bodyStart).trim() ? "\n\n" : "";
+	return at(structure.bodyStart, rendered + following, rendered.length, moved);
+}
+
+function reuseEmptyItem(line: ReturnType<Text["line"]>, block: ListItemBlock, style: TimestampListStyle): PlacedInsertion | null {
+	const parsed = parseListPrefix(line.text);
+	if (!parsed || line.text.slice(parsed.length).trim()) return null;
+	const mark = chooseReuseMark(parsed.mark, style);
+	if (style === "match" || line.text.slice(0, parsed.length) === listPrefix(mark)) {
+		const text = renderContent(mark, block);
+		return at(line.to, text, text.length);
+	}
+	const text = renderBlock(mark, block);
+	return { text, cursorOffset: text.length, replace: { from: line.from, to: line.to } };
+}
+
 /**
- * Insert a list item at the cursor without joining it to text on either side.
- * At the end of a list item it creates a sibling with the same indentation and
- * the next marker; an empty item is reused. Inside other text the item becomes
- * its own block.
+ * Place a list item at the nearest block boundary to the cursor, never splitting
+ * text. An empty list item or blank line is used as is; in a list item it becomes
+ * a sibling after the item and its children; in a paragraph it follows the
+ * paragraph; on a heading it becomes the first item below. Properties, the
+ * transcript and opening source material use the initial notes area; other
+ * unsafe blocks continue an adjacent list or get a new list immediately below.
  */
 export function blockInsertion(
 	doc: Text,
 	position: number,
 	block: ListItemBlock,
-	style: TimestampListStyle = "match"
-): NoteInsertion {
-	const line = doc.lineAt(position);
-	const before = doc.sliceString(line.from, position);
-	const after = doc.sliceString(position, line.to);
-	const parsed = parseListPrefix(before);
-	if (parsed && !after.trim()) {
-		const rest = before.slice(parsed.length);
-		if (!rest.trim()) {
-			if (style === "match") {
-				const text = renderContent(parsed.mark, block);
-				return { text, cursorOffset: text.length };
-			}
-			const mark = chooseReuseMark(parsed.mark, style);
-			const existingPrefix = before.slice(0, parsed.length);
-			if (existingPrefix === listPrefix(mark)) {
-				const text = renderContent(mark, block);
-				return { text, cursorOffset: text.length };
-			}
-			const text = renderBlock(mark, block);
-			return { text, cursorOffset: text.length, replace: { from: position - parsed.length, to: position } };
-		}
-		const text = `\n${renderBlock(chooseMark(parsed.mark, style), block)}`;
-		return { text, cursorOffset: text.length };
+	style: TimestampListStyle = "match",
+	notesEnd: number = doc.length,
+	inTranscript = false,
+	literatureNote = false
+): PlacedInsertion {
+	let structure = noteStructures.get(doc);
+	if (!structure) {
+		structure = new NoteStructure(doc);
+		noteStructures.set(doc, structure);
 	}
-	const mark = chooseMark(parsed?.mark ?? null, style);
-	const rendered = renderBlock(mark, block);
-	const prefix = before.trim() ? "\n\n" : "";
-	const suffix = after.trim() ? "\n\n" : "";
-	const text = `${prefix}${rendered}${suffix}`;
-	return { text, cursorOffset: prefix.length + rendered.length };
+	const area = initialNotesArea(structure, notesEnd, literatureNote);
+	if (position < structure.bodyStart) return inInitialNotesArea(structure, area, notesEnd, block, style, "properties");
+	if (inTranscript) return inInitialNotesArea(structure, area, notesEnd, block, style, "transcript");
+	if ((area.first || area.before) && (position < area.openingEnd ||
+		position === structure.bodyStart)) return inInitialNotesArea(structure, area, notesEnd, block, style, "opening area");
+	const line = doc.lineAt(position);
+	const node = structure.nodeAtLine(line.number);
+	const unsafe = ancestor(node, (n) => n.name in UNSAFE_BLOCKS);
+	if (unsafe) {
+		const outerItem = ancestor(unsafe.parent, (n) => n.name === "ListItem");
+		if (outerItem) return siblingAfter(structure, outerItem, block, style, `below the list item containing the ${UNSAFE_BLOCKS[unsafe.name]}`);
+		let outer = unsafe;
+		while (outer.parent?.parent) outer = outer.parent;
+		return outsideBlock(structure, outer, notesEnd, block, style, `below the ${UNSAFE_BLOCKS[unsafe.name]}`);
+	}
+
+	const empty = reuseEmptyItem(line, block, style);
+	if (empty) return empty;
+
+	if (!line.text.trim()) {
+		const rendered = renderBlock(chooseMark(null, style), block);
+		const suffix = structure.lineKind(line.number + 1) === "paragraph" ? "\n" : "";
+		return at(position, rendered + suffix, rendered.length);
+	}
+
+	const item = ancestor(node, (n) => n.name === "ListItem");
+	if (item) {
+		const placed = siblingAfter(structure, item, block, style);
+		return placed.replace?.from === position ? placed : { ...placed, moved: "below the list item" };
+	}
+	const heading = ancestor(node, isHeading);
+	if (heading) return underHeading(structure, heading, block, style, "under the heading");
+	let top = node;
+	while (top?.parent?.parent) top = top.parent;
+	if (!top || top.name === "Document") {
+		const rendered = renderBlock(chooseMark(null, style), block);
+		return at(line.to, `\n\n${rendered}`, 2 + rendered.length, "on a new line");
+	}
+	return blockAfter(structure, top, block, style, top.name === "Paragraph" ? "after the paragraph" : "below the divider");
+}
+
+/** "Timestamp inserted." or, when the cursor was not a safe place, where it went instead. */
+export function insertionMessage(subject: string, insertion: PlacedInsertion): string {
+	return `${subject} inserted${insertion.moved ? ` ${insertion.moved}` : ""}.`;
+}
+
+export interface InsertionFlashSettings {
+	mode: LineFlashMode | "off";
+	durationMs: number;
+	sizeChars: number;
+}
+
+/** Briefly highlight the line at the editor's cursor, after CodeMirror has scrolled it into view. */
+export function flashInsertedLine(view: EditorView, flash: InsertionFlashSettings): void {
+	const mode = flash.mode;
+	if (mode === "off") return;
+	view.requestMeasure({
+		read: () => view.dom.isConnected ? view.coordsAtPos(view.state.selection.main.head, -1) : null,
+		write: (coords) => {
+			if (coords) flashEditorLine(view, coords, {
+				mode,
+				color: "var(--interactive-accent)",
+				opacity: 0.8,
+				sizeChars: flash.sizeChars,
+				durationMs: flash.durationMs,
+			});
+		},
+	});
+}
+
+/** Place a list item near the tracked cursor and insert it as one undoable change. */
+export function insertBlockAtNoteInsertionAnchor(
+	anchor: NoteInsertionAnchor,
+	block: ListItemBlock,
+	style: TimestampListStyle = "match",
+	literatureNote = false
+): PlacedInsertion | null {
+	const position = getNoteInsertionPosition(anchor);
+	if (position === null) return null;
+	const state = anchor.view.state;
+	const insertion = blockInsertion(state.doc, position, block, style,
+		transcriptStart(state) ?? state.doc.length, isTranscriptCapturePosition(state, position), literatureNote);
+	return insertAtNoteInsertionAnchor(anchor, insertion.text, insertion.cursorOffset, insertion.replace) ? insertion : null;
 }
 
 export function insertPlaybackTimestamp(
@@ -200,24 +495,25 @@ export function insertPlaybackTimestamp(
 	seconds: number,
 	pause: () => void,
 	style: TimestampListStyle = "match"
-): boolean {
+): PlacedInsertion | null {
+	if (!Number.isFinite(seconds) || seconds < 0) {
+		releaseNoteInsertionAnchor(target.anchor);
+		new Notice("The timestamp insertion time is not available.");
+		return null;
+	}
 	if (!videoId || !target.isValid()) {
 		releaseNoteInsertionAnchor(target.anchor);
-		new Notice("The literature note or insertion point is no longer available.");
-		return false;
+		new Notice("The note or insertion point is no longer available.");
+		return null;
 	}
 	pause();
-	const position = getNoteInsertionPosition(target.anchor);
-	if (position === null) {
-		new Notice("The literature note insertion point is no longer available.");
-		return false;
+	if (getNoteInsertionPosition(target.anchor) === null) {
+		new Notice("The note insertion point is no longer available.");
+		return null;
 	}
-	const insertion = timestampListItemInsertion(target.anchor.view.state.doc, position, videoId, seconds, style);
-	if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset, insertion.replace)) {
-		new Notice("Could not insert a timestamp into the literature note.");
-		return false;
-	}
-	return true;
+	const insertion = insertBlockAtNoteInsertionAnchor(target.anchor, timestampListItemBlock(videoId, seconds), style, target.literatureNote);
+	if (!insertion) new Notice("Could not insert a timestamp into the note.");
+	return insertion;
 }
 
 /** Track the editor cursor through edits while an asynchronous capture is running. */
@@ -269,6 +565,10 @@ export function timestampListItemBlock(videoId: string, seconds: number): ListIt
 	return { content: `${timestampLink(videoId, seconds)}: ` };
 }
 
+export function timestampInsertionClipboardText(videoId: string, seconds: number, style: TimestampListStyle): string {
+	return renderBlock(chooseMark(null, style), timestampListItemBlock(videoId, seconds));
+}
+
 /** First-line content and indented embed for a timestamped screenshot list item. */
 export function timestampedScreenshotItem(embed: string, videoId: string, seconds: number): ListItemBlock {
 	return { content: `${timestampLink(videoId, seconds)}:`, tail: [embed] };
@@ -281,6 +581,6 @@ export function timestampListItemInsertion(
 	videoId: string,
 	seconds: number,
 	style: TimestampListStyle = "match"
-): NoteInsertion {
+): PlacedInsertion {
 	return blockInsertion(doc, position, timestampListItemBlock(videoId, seconds), style);
 }

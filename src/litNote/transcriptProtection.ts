@@ -158,6 +158,13 @@ export function isTranscriptCapturePosition(state: EditorState, from: number, to
 		.some((range) => from <= range.to && to >= range.from);
 }
 
+/** Start of the first protected transcript section, or null when the note has none. */
+export function transcriptStart(state: EditorState): number | null {
+	if (!state.field(transcriptProtectionState, false)) return null;
+	const ranges = protectedTranscriptRanges(state.doc, state.facet(config).heading());
+	return ranges.length ? Math.min(...ranges.map((range) => range.from)) : null;
+}
+
 export function transcriptProtectionExtension(options: ProtectionConfig): Extension {
 	let lastWarning = -Infinity;
 	return [

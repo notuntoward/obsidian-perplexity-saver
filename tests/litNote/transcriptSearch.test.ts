@@ -146,7 +146,22 @@ describe("transcript reading formats and saved timing", () => {
 		expect(rows(view)[1].classList.contains("is-selected")).toBe(false);
 		view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Insert selected timestamp into note"]')!.click();
 		expect(insertTimestampAt).toHaveBeenCalledWith("note.md", expect.stringContaining("abcdefghijk"), 0);
+		expect(view.getSelectedTimestamp()).toEqual({ startSec: 0, url: expect.stringContaining("abcdefghijk") });
 		expect(play).not.toHaveBeenCalled();
+	});
+
+	it("invalidates a selection when the video or timing changes without changing the transcript words", async () => {
+		const changed = vi.fn();
+		const view = await panel(document, { onSelectionChanged: changed }, undefined, "abcdefghijk",
+			"# Transcript\n[0:00](https://youtu.be/abcdefghijk?t=0) First sentence.\n");
+		rows(view)[0].click();
+		expect(view.getSelectedTimestamp()?.startSec).toBe(0);
+		view.app.vault.cachedRead = vi.fn(async () =>
+			"# Transcript\n[0:12](https://youtu.be/dQw4w9WgXcQ?t=12) First sentence.\n");
+		await view.reload();
+		expect(view.getSelectedTimestamp()).toBeNull();
+		expect(view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-selection")!.hidden).toBe(true);
+		expect(changed).toHaveBeenCalledWith("note.md");
 	});
 
 	it("does not repeat the language warning when a replacement view is created", async () => {
@@ -497,7 +512,7 @@ describe("transcript-only playback controls", () => {
 		const bar = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback")!;
 		expect(bar.parentElement).toBe(view.contentEl.querySelector(".perplexity-saver-transcript-controls"));
 		expect(bar.hidden).toBe(visible);
-		for (const [label, action] of [["Play", "play"], ["Previous caption", "previous"], ["Next caption", "next"], ["Insert current timestamp", "insert"]]) {
+		for (const [label, action] of [["Play", "play"], ["Previous caption", "previous"], ["Next caption", "next"], ["Insert timestamp into note", "insert"]]) {
 			bar.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!.click();
 			if (visible) expect(runPlaybackControl).not.toHaveBeenCalled();
 			else expect(runPlaybackControl).toHaveBeenLastCalledWith("note.md", action);

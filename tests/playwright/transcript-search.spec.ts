@@ -4,13 +4,13 @@ import { build } from "esbuild";
 
 test("rendered reading and video toolbars keep usable task groups at narrow widths", async ({ page }) => {
 	const bundled = await build({
-		stdin: { contents: 'export { TranscriptView } from "./src/litNote/transcriptView"; export { VideoView } from "./src/video/videoView";', resolveDir: process.cwd(), loader: "ts" },
+		stdin: { contents: 'export { TranscriptView } from "./src/litNote/transcriptView"; export { VideoView } from "./src/video/videoView"; export { insertionTargetMarker } from "./src/video/insertionMarker"; export { EditorView } from "@codemirror/view"; export { EditorState } from "@codemirror/state";', resolveDir: process.cwd(), loader: "ts" },
 		bundle: true, write: false, format: "iife", globalName: "ReadingUI",
 		external: ["obsidian", "crypto", "commons/windows", "commons/workspace", "commons/os"],
 	});
 	await page.setContent(`<style>
 		* { box-sizing: border-box; } body { margin: 0; font: 14px/20px sans-serif; }
-		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --background-modifier-border-focus: #999; --text-selection: rgba(100,80,220,.2); --text-faint: #888; --interactive-accent-hsl: 254, 80%, 68%; --radius-s: 4px; }
+		:root { --size-4-1: 4px; --size-4-2: 8px; --size-4-3: 12px; --size-2-1: 2px; --font-ui-smaller: 12px; --font-smallest: 11px; --line-height-normal: 1.5; --background-modifier-border: #ddd; --background-modifier-border-focus: #999; --text-selection: rgba(100,80,220,.2); --text-faint: #888; --interactive-accent: #7b68ee; --text-accent: #7b68ee; --interactive-accent-hsl: 254, 80%, 68%; --radius-s: 4px; }
 		.view-content { width: 700px; height: 300px; padding: 8px; overflow: auto; }
 		.clickable-icon { display: inline-flex; align-items: center; justify-content: center; padding: 4px; border: 0; }
 		.clickable-icon svg { width: 16px; height: 16px; } select { height: 28px; }
@@ -28,6 +28,8 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 		};
 		p.createDiv = function(o) { return this.createEl("div", o); };
 		p.createSpan = function(o) { return this.createEl("span", o); };
+		DocumentFragment.prototype.createEl = p.createEl;
+		DocumentFragment.prototype.createSpan = p.createSpan;
 		p.addClass = function(...c) { this.classList.add(...c); };
 		p.removeClass = function(...c) { this.classList.remove(...c); };
 		p.hasClass = function(c) { return this.classList.contains(c); };
@@ -56,6 +58,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 			getValue() { return this.inputEl.value; } onChange(fn) { this.inputEl.addEventListener("input",()=>fn(this.inputEl.value)); return this; }
 		}
 		const obsidian = { ItemView, DropdownComponent, SearchComponent, Platform:{isDesktopApp:true}, Notice:class {}, Scope:class {register(){}},
+			getFrontMatterInfo:()=>({contentStart:0}),
 			setIcon(el,name) { el.dataset.icon=name; el.querySelectorAll("svg").forEach(svg=>svg.remove()); const svg=el.ownerDocument.createElementNS("http://www.w3.org/2000/svg","svg"); el.appendChild(svg); } };
 		globalThis.require = name => name === "obsidian" ? new Proxy(obsidian,{get:(o,k)=>o[k] || class {}})
 			: name === "crypto" ? { createHash:()=>({update(){return this;},digest:()=>"a".repeat(64)}) }
@@ -80,6 +83,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 			await transcript.setState({file:"note.md"},{history:false}); await transcript.onOpen();
 			globalThis.transcriptView=transcript;
 			const video = new ReadingUI.VideoView({app},{getTranscriptHeading:()=>"Transcript",getToolbarCaptureAction:()=>"insert",
+				getTimestampInsertionTime:()=>({seconds:7954,selected:true}),
 				getShowYoutubeCaptions:()=>false,isTranscriptShown:()=>true,onPlayback(){}});
 			video.contentEl=document.querySelector("#video"); await video.onOpen(); video.videoId="abcdefghijk"; video.updateEmpty();
 			video.update({currentTime:7954,duration:9956,playbackRate:1.75,playerState:2});
@@ -88,6 +92,32 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 		})().catch(error=>{ globalThis.uiError=error.message; });
 	` });
 	await expect.poll(() => page.evaluate(() => (globalThis as unknown as { uiReady?: boolean; uiError?: string }).uiError ?? (globalThis as unknown as { uiReady?: boolean }).uiReady)).toBe(true);
+	await expect(page.locator("#video .perplexity-saver-video-insert-timestamp")).toHaveText("Insert 2:12:34");
+	await page.evaluate(() => {
+		const ui = (globalThis as unknown as { ReadingUI: { EditorView: typeof import("@codemirror/view").EditorView; EditorState: typeof import("@codemirror/state").EditorState; insertionTargetMarker: typeof import("../../src/video/insertionMarker").insertionTargetMarker } }).ReadingUI;
+		const parent = document.body.appendChild(document.createElement("div"));
+		parent.id = "insertion-note";
+		const editor = new ui.EditorView({
+			state: ui.EditorState.create({ doc: "> source\n\n- first\n- last\n\n## Later", selection: { anchor: 3 }, extensions: [ui.insertionTargetMarker(() => ({ enabled: true }))] }),
+			parent,
+		});
+		(globalThis as unknown as { noteEditor: typeof editor }).noteEditor = editor;
+	});
+	await expect(page.locator("#insertion-note .perplexity-saver-insertion-target")).toHaveText("- lastNext insert below");
+	const targetPaint = await page.locator("#insertion-note .perplexity-saver-insertion-target").evaluate((el) => ({
+		shadow: getComputedStyle(el).boxShadow, height: el.getBoundingClientRect().height,
+	}));
+	expect(targetPaint.shadow).not.toBe("none");
+	expect(targetPaint.height).toBeGreaterThan(0);
+	await page.evaluate(() => (globalThis as unknown as { noteEditor: import("@codemirror/view").EditorView }).noteEditor.focus());
+	await expect(page.locator("#insertion-note .perplexity-saver-insertion-marker")).toHaveCount(0);
+	await page.locator("#video button").first().focus();
+	await expect(page.locator("#insertion-note .perplexity-saver-insertion-target")).toHaveText("- lastNext insert below");
+	expect(await page.evaluate(() => (globalThis as unknown as { noteEditor: import("@codemirror/view").EditorView }).noteEditor.state.selection.main.head)).toBe(3);
+	await page.evaluate(() => {
+		(globalThis as unknown as { noteEditor: import("@codemirror/view").EditorView }).noteEditor.destroy();
+		document.querySelector("#insertion-note")?.remove();
+	});
 	await expect(page.locator("#transcript select option")).toHaveText(["Paragraphs", "Sentences", "Captions"]);
 	await expect(page.locator("#transcript select")).toHaveValue("readable-paragraphs");
 	await expect(page.getByRole("button", { name: "Compare segmentations" })).toHaveCount(0);

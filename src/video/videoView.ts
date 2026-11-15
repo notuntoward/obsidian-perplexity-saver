@@ -6,13 +6,15 @@ import { requestFrameIn, setTimeoutIn, writeClipboardIn } from "commons/windows"
 import { getCommandHotkeyLabel, renderKeyHints } from "commons/modal";
 import { findTranscriptRange } from "../litNote/transcriptSection";
 import {
-	blockInsertion,
+	copyInsertionFallback,
 	getNoteInsertionPosition,
-	insertAtNoteInsertionAnchor,
+	insertBlockAtNoteInsertionAnchor,
+	insertionMessage,
 	releaseNoteInsertionAnchor,
 	insertPlaybackTimestamp,
 	timestampedScreenshotItem,
 	type NoteInsertionTarget,
+	type PlacedInsertion,
 	type TimestampListStyle,
 } from "./noteInsertion";
 import {
@@ -36,6 +38,7 @@ export const VIDEO_VIEW_TYPE = "perplexity-saver-video";
 
 export type VideoViewerLocation = "split" | "window";
 export type VideoToolbarCaptureAction = "copy" | "insert";
+export type TimestampInsertionTime = { seconds: number; selected: boolean } | { error: string };
 
 export const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
@@ -64,6 +67,7 @@ export interface VideoViewHost {
 	getTranscriptHeading(): string;
 	getTimestampCopyFormat(): TimestampCopyFormat;
 	getTimestampListStyle?(): TimestampListStyle;
+	getTimestampInsertionTime?(view: VideoView): TimestampInsertionTime;
 	getToolbarCaptureAction(): VideoToolbarCaptureAction;
 	getShowYoutubeCaptions(): boolean;
 	getTranscriptUnit?(filePath: string | null): "sentence" | "caption";
@@ -108,6 +112,8 @@ export class VideoView extends ItemView {
 	private transcriptBtn!: HTMLElement;
 	private previousTranscriptBtn!: HTMLElement;
 	private nextTranscriptBtn!: HTMLElement;
+	private insertTimeBtn!: HTMLElement;
+	private insertTimeLabel!: HTMLElement;
 	private transcriptUnitLabel!: HTMLElement;
 	private screenshotBtn?: HTMLElement;
 	private helpEl!: HTMLElement;
@@ -335,8 +341,9 @@ export class VideoView extends ItemView {
 		this.transcriptUnitLabel = navigation.createSpan({ cls: "perplexity-saver-video-unit" });
 		this.nextTranscriptBtn = this.button(navigation, "chevron-down", "", () => this.host.jumpToTranscriptTimestamp(this, 1), "]");
 		const capture = group("capture", "Capture into note");
-		const timestamp = this.button(capture, "file-plus-2", "Insert current timestamp into note", () => void this.host.insertTimestamp(this));
-		timestamp.createSpan({ text: "Insert time" });
+		this.insertTimeBtn = this.button(capture, "file-plus-2", "Insert timestamp into note", () => void this.host.insertTimestamp(this));
+		this.insertTimeBtn.addClass("perplexity-saver-video-insert-timestamp");
+		this.insertTimeLabel = this.insertTimeBtn.createSpan({ text: "Insert time" });
 		this.button(capture, "copy", "Copy current timestamp link", () => void this.copyTimestampLink());
 		if (Platform.isDesktopApp) {
 			this.screenshotBtn = this.button(capture, "camera", "", (evt) => {
@@ -474,30 +481,30 @@ export class VideoView extends ItemView {
 	}
 
 	/** Insert a paused timestamp list item into the note's tracked editor position. */
-	async insertTimestampBullet(target: NoteInsertionTarget): Promise<void> {
-		if (insertPlaybackTimestamp(target, this.videoId, this.getPlaybackSeconds(), () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match")) {
-			await this.focusNoteAfterInsertion(target, "Timestamp inserted.");
-		}
+	async insertTimestampBullet(target: NoteInsertionTarget, seconds = this.getPlaybackSeconds()): Promise<boolean> {
+		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match");
+		if (insertion) await this.focusNoteAfterInsertion(target, insertionMessage("Timestamp", insertion));
+		return !!insertion;
 	}
 
 	/** Capture a paused frame and insert it into the note; `whole` skips region selection. */
-	async insertScreenshotForNote(target: NoteInsertionTarget, whole = false): Promise<void> {
-		if (!this.player || !this.videoId || !target.isValid()) {
-			releaseNoteInsertionAnchor(target.anchor);
-			new Notice("The video or literature note insertion point is no longer available.");
+	async insertScreenshotForNote(target?: NoteInsertionTarget, whole = false, fallbackReason?: string): Promise<void> {
+		if (!this.player || !this.videoId) {
+			if (target) releaseNoteInsertionAnchor(target.anchor);
+			new Notice("The video is no longer available for capture.");
 			return;
 		}
 		if (this.snip) {
 			this.endSnip(null, true);
-			releaseNoteInsertionAnchor(target.anchor);
+			if (target) releaseNoteInsertionAnchor(target.anchor);
 			return;
 		}
 		this.player.pause();
 		if (whole) {
-			await this.captureAndSave(undefined, target);
+			await this.captureAndSave(undefined, target, fallbackReason);
 			return;
 		}
-		this.beginSnip(false, target);
+		this.beginSnip(false, target, fallbackReason);
 	}
 
 	/** Pause here and open the video at the current time in the system browser. */
@@ -522,10 +529,23 @@ export class VideoView extends ItemView {
 		this.transcriptUnitLabel?.setText(unit === "sentence" ? "Sentence" : "Caption");
 		this.previousTranscriptBtn?.setAttribute("aria-label", `Previous ${unit} ([)`);
 		this.nextTranscriptBtn?.setAttribute("aria-label", `Next ${unit} (])`);
+		this.updateInsertionTime();
 	}
 
 	refreshTranscriptControls(): void {
 		this.updateTranscriptButton();
+	}
+
+	private updateInsertionTime(): void {
+		if (!this.insertTimeBtn) return;
+		const time = this.host.getTimestampInsertionTime?.(this) ?? { seconds: this.getPlaybackSeconds(), selected: false };
+		if ("error" in time) {
+			this.insertTimeLabel.setText("Insert time");
+			this.insertTimeBtn.setAttribute("aria-label", time.error);
+		} else {
+			this.insertTimeLabel.setText(`Insert ${formatClock(time.seconds)}`);
+			this.insertTimeBtn.setAttribute("aria-label", `Insert ${time.selected ? "selected transcript" : "current playback"} timestamp ${formatClock(time.seconds)} into note`);
+		}
 	}
 
 	private button(
@@ -645,6 +665,7 @@ export class VideoView extends ItemView {
 			this.lastReportedPlayerState = info.playerState;
 			this.host.onPlayback(this.videoId, this.filePath, info.currentTime, stateChanged);
 		}
+		this.updateInsertionTime();
 	}
 
 	/** Jump `delta` seconds forward (negative: back). */
@@ -862,14 +883,14 @@ export class VideoView extends ItemView {
 		this.beginSnip(resume);
 	}
 
-	private beginSnip(resume: boolean, target?: NoteInsertionTarget): void {
+	private beginSnip(resume: boolean, target?: NoteInsertionTarget, fallbackReason?: string): void {
 		const layer = this.stageEl.createDiv({ cls: "perplexity-saver-video-snip" });
 		const box = layer.createDiv({ cls: "perplexity-saver-video-snip-box" });
 		layer.createDiv({
 			cls: "perplexity-saver-video-snip-hint",
 			text: "Drag to select an area. Click or press Enter for the whole picture. Esc cancels.",
 		});
-		this.snip = { layer, resume, target };
+		this.snip = { layer, resume, target, fallbackReason };
 		this.contentEl.focus();
 
 		let start: { x: number; y: number } | null = null;
@@ -924,58 +945,75 @@ export class VideoView extends ItemView {
 			done();
 			return;
 		}
-		void this.captureAndSave(region, snip.target).finally(done);
+		void this.captureAndSave(region, snip.target, snip.fallbackReason).finally(done);
 	}
 
 	/** Capture the visible picture, save it beside the linked note, then insert or copy its Markdown. */
-	private async captureAndSave(region: SnipRect | undefined, target?: NoteInsertionTarget): Promise<void> {
+	private async captureAndSave(region: SnipRect | undefined, target?: NoteInsertionTarget, fallbackReason?: string): Promise<void> {
 		try {
 			if (!this.player || !this.videoId) {
 				new Notice("The video is no longer available for capture.");
 				return;
 			}
 			const win = this.ownerWin;
+			const player = this.player;
+			const videoId = this.videoId;
+			const filePath = target?.filePath ?? this.filePath;
 			// Let the removed selection layer leave the screen before capturing composited pixels.
 			if (win) await nextPaint(win);
-			const seconds = this.player.info.currentTime;
+			if (this.player !== player || this.videoId !== videoId) throw new Error("The video changed before capture.");
+			const seconds = player.info.currentTime;
+			if (!Number.isFinite(seconds) || seconds < 0) throw new Error("The captured frame time is not available.");
 			const png = await captureElementImage(this.stageEl, region);
 			if (!png) {
 				new Notice("Could not capture the video picture.");
 				return;
 			}
-			if (target && !target.isValid()) {
-				new Notice("The literature note changed before the screenshot could be saved.");
-				return;
-			}
-			const file = this.filePath ? this.app.vault.getFileByPath(this.filePath) : null;
-			const sourcePath = target?.filePath ?? file?.path ?? "";
-			const name = screenshotFileName(file?.basename ?? this.videoId, seconds, new Date());
+			if (this.player !== player || this.videoId !== videoId) throw new Error("The video changed while capturing the frame.");
+			const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+			const sourcePath = file?.path ?? "";
+			const name = screenshotFileName(file?.basename ?? videoId, seconds, new Date());
 			const path = await this.app.fileManager.getAvailablePathForAttachment(name, sourcePath);
 			const data = png.buffer.slice(png.byteOffset, png.byteOffset + png.byteLength) as ArrayBuffer;
 			const image = await this.app.vault.createBinary(path, data);
 			const embed = "!" + this.app.fileManager.generateMarkdownLink(image, sourcePath);
 			if (target) {
 				if (!target.isValid()) {
-					new Notice(`Screenshot saved to ${image.path}, but the literature note changed before insertion.`);
-					return;
+					fallbackReason = "The note changed before insertion.";
+				} else if (getNoteInsertionPosition(target.anchor) === null) {
+					fallbackReason = "The note insertion point is no longer available.";
+				} else {
+					let insertion: PlacedInsertion | null = null;
+					const before = target.anchor.view.state.doc;
+					try {
+						insertion = insertBlockAtNoteInsertionAnchor(target.anchor, timestampedScreenshotItem(embed, videoId, seconds), "match", target.literatureNote);
+					} catch (error) {
+						console.error("Perplexity Saver: screenshot insertion unavailable", error);
+						if (target.anchor.view.state.doc !== before) {
+							new Notice(`Screenshot saved to ${image.path}, but insertion could not be completed. Check the note before retrying; nothing was copied.`);
+							return;
+						}
+						fallbackReason = "A safe insertion into the note could not be completed.";
+					}
+					if (insertion) {
+						await this.focusNoteAfterInsertion(target, insertionMessage("Timestamped screenshot", insertion));
+						return;
+					}
+					fallbackReason ??= "The note insertion point is no longer available.";
 				}
-				const position = getNoteInsertionPosition(target.anchor);
-				if (position === null) {
-					new Notice(`Screenshot saved to ${image.path}, but its insertion point is no longer available.`);
-					return;
-				}
-				const block = timestampedScreenshotItem(embed, this.videoId, seconds);
-				const insertion = blockInsertion(target.anchor.view.state.doc, position, block);
-				if (!insertAtNoteInsertionAnchor(target.anchor, insertion.text, insertion.cursorOffset, insertion.replace)) {
-					new Notice(`Screenshot saved to ${image.path}, but it could not be inserted into the note.`);
-					return;
-				}
-				await this.focusNoteAfterInsertion(target, "Timestamped screenshot inserted.");
-				return;
 			}
-			const text = screenshotClipboardText(embed, this.videoId, seconds);
-			const copied = win ? await writeClipboardIn(win, text).catch(() => false) : false;
-			new Notice(copied ? `Screenshot saved to ${image.path}; paste it into your note.` : `Screenshot saved to ${image.path}.`);
+			const text = screenshotClipboardText(embed, videoId, seconds);
+			if (fallbackReason) {
+				await copyInsertionFallback(win, text, "Screenshot", `Saved to ${image.path}. ${fallbackReason}`);
+			} else {
+				try {
+					if (!win || !await writeClipboardIn(win, text)) throw new Error("The clipboard is unavailable.");
+					new Notice(`Screenshot saved to ${image.path}; paste it into your note.`);
+				} catch (error) {
+					console.error("Perplexity Saver: could not copy saved screenshot", error);
+					new Notice(`Screenshot saved to ${image.path}, but could not be copied to the clipboard.`);
+				}
+			}
 		} catch (error) {
 			console.error("Perplexity Saver: could not capture or insert screenshot", error);
 			new Notice(target ? "Could not capture or insert the screenshot." : "Could not capture or save the screenshot.");
@@ -1000,6 +1038,7 @@ interface SnipSession {
 	/** Resume playback when the snip ends (the video was playing when it started). */
 	resume: boolean;
 	target?: NoteInsertionTarget;
+	fallbackReason?: string;
 }
 
 /** Resolve after the window has painted twice (or 150 ms, if frames are throttled). */

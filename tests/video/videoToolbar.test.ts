@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 import { MockMenu, setIcon } from "commons/testing";
-import { VideoView } from "../../src/video/videoView";
+import { VideoView, type TimestampInsertionTime } from "../../src/video/videoView";
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
@@ -14,6 +14,7 @@ vi.mock("obsidian", async (original) => ({
 async function toolbar(doc = document) {
 	let action: "copy" | "insert" = "insert";
 	let unit: "sentence" | "caption" = "caption";
+	let insertionTime: TimestampInsertionTime = { seconds: 0, selected: false };
 	const insertTimestamp = vi.fn().mockResolvedValue(undefined);
 	const insertScreenshot = vi.fn().mockResolvedValue(undefined);
 	const jump = vi.fn();
@@ -31,6 +32,7 @@ async function toolbar(doc = document) {
 		getToolbarCaptureAction: () => action,
 		getShowYoutubeCaptions: () => false,
 		getTranscriptUnit: () => unit,
+		getTimestampInsertionTime: () => insertionTime,
 		insertTimestamp,
 		insertScreenshot,
 		isTranscriptShown: () => false,
@@ -45,10 +47,11 @@ async function toolbar(doc = document) {
 	const screenshot = vi.spyOn(view, "screenshot").mockResolvedValue();
 	await view.onOpen();
 	doc.adoptNode(view.contentEl);
-	const timestamp = view.contentEl.querySelector<HTMLElement>('[aria-label="Insert current timestamp into note"]')!;
+	const timestamp = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-video-insert-timestamp")!;
 	const camera = view.contentEl.querySelector<HTMLElement>('[data-icon="camera"]')!;
 	return { view, timestamp, camera, copy, screenshot, insertTimestamp, insertScreenshot, jump, onPlayback, vaultEvents,
-		setAction: (value: typeof action) => { action = value; }, setUnit: (value: typeof unit) => { unit = value; } };
+		setAction: (value: typeof action) => { action = value; }, setUnit: (value: typeof unit) => { unit = value; },
+		setInsertionTime: (value: TimestampInsertionTime) => { insertionTime = value; } };
 }
 
 describe("video toolbar capture destinations", () => {
@@ -67,7 +70,7 @@ describe("video toolbar capture destinations", () => {
 		const h = await toolbar(popout ? document.implementation.createHTMLDocument() : document);
 		const el = h.view.contentEl;
 		expect(el.querySelector('[aria-label="Timestamp alternatives"]')).toBeNull();
-		el.querySelector<HTMLButtonElement>('[aria-label="Insert current timestamp into note"]')!.click();
+		h.timestamp.click();
 		el.querySelector<HTMLButtonElement>('[aria-label="Copy current timestamp link"]')!.click();
 		expect(h.insertTimestamp).toHaveBeenCalledWith(h.view);
 		expect(h.copy).toHaveBeenCalledOnce();
@@ -220,11 +223,11 @@ describe("video toolbar capture destinations", () => {
 
 	it("updates existing toolbar labels without rebuilding the player", async () => {
 		const h = await toolbar();
-		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current timestamp into note");
+		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current playback timestamp 0:00 into note");
 		expect(h.camera.getAttribute("aria-label")).toContain("Insert screenshot into note");
 		h.setAction("copy");
 		h.view.updateToolbarCaptureLabels();
-		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current timestamp into note");
+		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current playback timestamp 0:00 into note");
 		expect(h.camera.getAttribute("aria-label")).toContain("Copy screenshot");
 		expect(h.camera.getAttribute("aria-label")).toContain("alternatives button");
 		expect(h.camera.getAttribute("aria-label")).toContain("Shift-click");
@@ -234,6 +237,21 @@ describe("video toolbar capture destinations", () => {
 		expect(h.copy).not.toHaveBeenCalled();
 		expect(h.screenshot).toHaveBeenCalledWith(false);
 		expect(h.insertTimestamp).toHaveBeenCalledWith(h.view);
+	});
+
+	it.each([false, true])("shows the resolved selected or playback time without depending on focus (popout=%s)", async (popout) => {
+		const h = await toolbar(popout ? document.implementation.createHTMLDocument() : document);
+		h.setInsertionTime({ seconds: 763.25, selected: true });
+		h.view.refreshTranscriptControls();
+		expect(h.timestamp.textContent).toBe("Insert 12:43");
+		expect(h.timestamp.getAttribute("aria-label")).toContain("selected transcript timestamp 12:43");
+		h.setInsertionTime({ seconds: 705.5, selected: false });
+		h.view.refreshTranscriptControls();
+		expect(h.timestamp.textContent).toBe("Insert 11:45");
+		h.setInsertionTime({ error: "Conflicting transcript selections." });
+		h.view.refreshTranscriptControls();
+		expect(h.timestamp.getAttribute("aria-label")).toBe("Conflicting transcript selections.");
+		expect(h.timestamp.textContent).toBe("Insert time");
 	});
 
 	it("shows menus in the button's owning document, including a stand-in pop-out", async () => {
