@@ -968,5 +968,20 @@ describe("Lit Note Server", () => {
 			expect(positionCursorTwoLinesPastEnd(mockEditor, true, "Captions")).toBe(2);
 			expect(mockEditor.replaceRange).not.toHaveBeenCalled();
 		});
+
+		it("finds a transcript whose heading is no longer the configured name", () => {
+			const cues = Array.from({ length: 5 }, (_, i) => `[0:0${i}](https://youtu.be/dQw4w9WgXcQ?t=${i} "${i}–${i + 1}") caption`);
+			const lines = ["> [!info]- links", "", "", "## Old captions", ...cues];
+			const mockEditor = {
+				getValue: () => lines.join("\n"),
+				lineCount: () => lines.length,
+				getLine: (i: number) => lines[i] ?? "",
+				setCursor: vi.fn(),
+				scrollIntoView: vi.fn(),
+				replaceRange: vi.fn(),
+			};
+
+			expect(positionCursorTwoLinesPastEnd(mockEditor, true, "Subtitles")).toBe(2);
+		});
 	});
 });

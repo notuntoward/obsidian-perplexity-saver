@@ -29,6 +29,7 @@ import {
 	storedLinesToCues,
 	type StoredTranscriptLine,
 } from "./transcriptSection";
+import { notifyNoTranscript } from "./transcriptHeadingRecovery";
 import { buildTranscriptParagraphs, groupSentencesIntoParagraphs, needsSpaceBetween, SENTENCE_END } from "./transcriptParagraphs";
 import { isEnglishTranscript, resolveTranscriptLanguage } from "./transcriptLanguage";
 import { prepareTranscript, sentenceRows } from "./transcriptSentences";
@@ -1734,8 +1735,7 @@ export async function showTranscriptPanel(
 ): Promise<WorkspaceLeaf | null> {
 	const lines = await loadTranscriptLines(app, file, headingName);
 	if (!lines?.length) {
-		const heading = normalizeTranscriptHeading(headingName);
-		new Notice(`No timestamped transcript under a "${heading}" heading in ${file.basename}.`);
+		void notifyNoTranscript(app, file, headingName);
 		return null;
 	}
 	let leaf: WorkspaceLeaf;

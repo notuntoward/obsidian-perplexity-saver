@@ -45,11 +45,41 @@ function sameHeading(a: string, b: string): boolean {
 	return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
+export { sameHeading as sameTranscriptHeading };
+
+/** Heading geometry shared by Obsidian's metadata cache and the editor's syntax tree. */
+export interface HeadingSpan {
+	level: number;
+	/** Offset of the heading's first character. */
+	start: number;
+	/** Offset just past the heading line. */
+	end: number;
+}
+
+export interface DetectedTranscript {
+	/** Index into the heading list it was detected from. */
+	index: number;
+	/** The section body, ending like a named transcript section: at the next heading of the same or higher level. */
+	range: { start: number; end: number };
+	cueLines: number;
+}
+
+function headingSpans(headings: HeadingCache[]): HeadingSpan[] {
+	return headings.map((h) => ({ level: h.level, start: h.position.start.offset, end: h.position.end.offset }));
+}
+
+function sectionRange(spans: HeadingSpan[], index: number, contentLength: number): { start: number; end: number } {
+	const heading = spans[index];
+	const next = spans.slice(index + 1).find((h) => h.level <= heading.level);
+	return { start: heading.end, end: next ? next.start : contentLength };
+}
+
 /**
  * Return the text under the transcript heading (up to the next heading of the
  * same or higher level), or null when the note has no such heading. Notes
  * created before the heading name was changed still use the default name, so
- * that name is used as a fallback.
+ * that name is used as a fallback. Failing that, a single section that is
+ * recognizably a stored transcript is used, whatever its heading says.
  */
 export function findTranscriptSection(
 	content: string,
@@ -82,7 +112,19 @@ export function findTranscriptRange(
 			end: next ? next.position.start.offset : content.length,
 		};
 	}
-	return null;
+	// More than one candidate is ambiguous, so none is chosen silently.
+	const detected = detectTranscriptSections(content, headingSpans(headings));
+	return detected.length === 1 ? detected[0].range : null;
+}
+
+/** Headings whose section looks like a stored transcript, for notes whose heading name is no longer configured. */
+export function findTranscriptCandidates(
+	content: string,
+	headings: HeadingCache[] | undefined
+): { heading: HeadingCache; cueLines: number }[] {
+	if (!headings?.length) return [];
+	return detectTranscriptSections(content, headingSpans(headings))
+		.map((found) => ({ heading: headings[found.index], cueLines: found.cueLines }));
 }
 
 const TIME = String.raw`\d{1,2}(?::\d{1,2}){1,2}(?:\.\d{1,3})?`;
@@ -94,6 +136,84 @@ const CUE_LINE = new RegExp(
 	String.raw`^\s*\[(${TIME})\s*(?:→|->|-->)\s*(${TIME})\]\(([^)\s]*)\)\s?(.*)$`
 );
 const TIMESTAMP_LINE = new RegExp(String.raw`^\s*\[(${TIME})\]\(([^)\s]*)\)\s*(.*)$`);
+
+/** A stored cue line that links into YouTube, so a hand-made timestamp list is not mistaken for a transcript. */
+function youtubeCueLine(raw: string): boolean {
+	const url = raw.match(COMPACT_CUE_LINE)?.[2] ?? raw.match(CUE_LINE)?.[3] ?? raw.match(TIMESTAMP_LINE)?.[2];
+	return !!url && /youtu\.?be/i.test(url);
+}
+
+const MIN_UNMARKED_CUES = 5;
+const MIN_CUE_SHARE = 0.5;
+
+/**
+ * Find sections that are recognizably a stored transcript by their content: Saver's own timing or language
+ * comments with at least one YouTube cue line, or mostly YouTube cue lines (at least five). Only a section's own
+ * lines count, up to the next heading of any level, so a parent heading does not duplicate its child.
+ */
+export function detectTranscriptSections(content: string, spans: HeadingSpan[]): DetectedTranscript[] {
+	const found: DetectedTranscript[] = [];
+	// Cheap exit for the vast majority of notes, which this runs on for every edit.
+	if (!/youtu\.?be/i.test(content)) return found;
+	spans.forEach((span, index) => {
+		const body = content.slice(span.end, spans[index + 1]?.start ?? content.length);
+		let cues = 0;
+		let lines = 0;
+		let marked = false;
+		for (const raw of body.split(/\r?\n/)) {
+			const line = raw.trim();
+			if (!line) continue;
+			if (line.startsWith(TRANSCRIPT_LANGUAGE_PREFIX) || line.startsWith("<!-- saver-word-timing:")) {
+				marked = true;
+				continue;
+			}
+			lines++;
+			if (youtubeCueLine(raw)) cues++;
+		}
+		const qualifies = marked ? cues >= 1 : cues >= MIN_UNMARKED_CUES && cues / lines >= MIN_CUE_SHARE;
+		if (qualifies) found.push({ index, range: sectionRange(spans, index, content.length), cueLines: cues });
+	});
+	return found;
+}
+
+/**
+ * Headings of a note as Obsidian's metadata cache would list them, for text that is not in the cache (an editor
+ * buffer). Only ATX headings are recognized, and fenced code and front matter are skipped.
+ */
+export function headingsFromText(content: string): HeadingCache[] {
+	const headings: HeadingCache[] = [];
+	const lines = content.split("\n");
+	let offset = 0;
+	let fence: string | null = null;
+	let frontmatter = lines[0]?.trim() === "---";
+	lines.forEach((line, lineNo) => {
+		const trimmed = line.replace(/\r$/, "");
+		const start = offset;
+		offset += line.length + 1;
+		if (frontmatter) {
+			if (lineNo > 0 && /^(---|\.\.\.)\s*$/.test(trimmed)) frontmatter = false;
+			return;
+		}
+		const marker = /^ {0,3}(`{3,}|~{3,})/.exec(trimmed)?.[1];
+		if (marker) {
+			if (fence === null) fence = marker[0];
+			else if (marker[0] === fence) fence = null;
+			return;
+		}
+		if (fence !== null) return;
+		const match = /^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(trimmed);
+		if (!match) return;
+		headings.push({
+			heading: match[2].trim(),
+			level: match[1].length,
+			position: {
+				start: { line: lineNo, col: 0, offset: start },
+				end: { line: lineNo, col: trimmed.length, offset: start + trimmed.length },
+			},
+		});
+	});
+	return headings;
+}
 
 /** Parse `[h:]mm:ss[.mmm]` into seconds; returns NaN for malformed input. */
 export function parseTimestamp(stamp: string): number {

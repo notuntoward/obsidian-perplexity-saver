@@ -138,6 +138,16 @@ describe("transcript editor protection", () => {
 		expect(createdNotices).toHaveLength(0);
 	});
 
+	it("protects the one section that is recognizably a transcript under a heading no longer configured", () => {
+		const cues = Array.from({ length: 5 }, (_, i) => `[0:0${i}](https://youtu.be/dQw4w9WgXcQ?t=${i} "${i}–${i + 1}") caption`).join("\n");
+		const doc = `# Notes\nmine\n# Old captions\n${cues}\n`;
+		const ranges = protectedTranscriptRanges(Text.of(doc.split("\n")), "Subtitles");
+		expect(ranges).toHaveLength(1);
+		expect(doc.slice(ranges[0].from, ranges[0].to)).toBe(`# Old captions\n${cues}\n`);
+		const other = `# One\n${cues}\n# Two\n${cues}\n`;
+		expect(protectedTranscriptRanges(Text.of(other.split("\n")), "Subtitles")).toHaveLength(0);
+	});
+
 	it("relocks immediately without undoing edits, and relocks on document reload/new editor", () => {
 		const view = editor();
 		unlockTranscript(view);

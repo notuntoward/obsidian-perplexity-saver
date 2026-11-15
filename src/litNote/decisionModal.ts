@@ -12,6 +12,7 @@ export type NoteDecision =
 	| "create"
 	| "skip"
 	| "unlock"
+	| "rename"
 	| "cancel";
 
 export interface DecisionButton {

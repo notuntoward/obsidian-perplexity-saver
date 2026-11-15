@@ -116,6 +116,8 @@ export class DropdownComponent {
 export class Notice {
 	message: string;
 	timeout?: number;
+	messageEl: HTMLElement = typeof document === "undefined" ? (undefined as unknown as HTMLElement) : document.createElement("div");
+	hidden = false;
 
 	constructor(message: string, timeout?: number) {
 		this.message = message;
@@ -126,7 +128,7 @@ export class Notice {
 		this.message = message;
 		return this;
 	}
-	hide(): void {}
+	hide(): void { this.hidden = true; }
 }
 
 export const createdNotices: Notice[] = [];

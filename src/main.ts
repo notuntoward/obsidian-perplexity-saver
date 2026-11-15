@@ -39,6 +39,7 @@ import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
 import { hasLiteratureNoteCategory } from "./litNote/litNoteFinder";
 import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
+import { notifyNoTranscript, renameStrandedTranscriptHeadings } from "./litNote/transcriptHeadingRecovery";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { registerTranscriptProtection } from "./litNote/transcriptProtection";
 import { registerCaptionTimingRepair, runCaptionTiming } from "./litNote/captionTiming";
@@ -698,7 +699,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				return false;
 			}
 			if (wantsTranscript && !leaves.transcript && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
-				new Notice(`No timestamped transcript under a "${this.settings.transcriptHeading}" heading in ${file.basename}.`);
+				void notifyNoTranscript(this.app, file, this.settings.transcriptHeading);
 				return false;
 			}
 			const needsNote = openNote || wantsVideo || wantsTranscript;
@@ -887,6 +888,16 @@ export default class PerplexitySaverPlugin extends Plugin {
 			id: "whisperx-cancel-alignment",
 			name: "Transcript: cancel caption timing",
 			callback: () => this.stopCaptionTiming(),
+		});
+		this.addCommand({
+			id: "transcript-rename-headings",
+			name: "Transcript: rename other transcript headings to the current name",
+			callback: () => {
+				void renameStrandedTranscriptHeadings(this.app, this.settings.transcriptHeading).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not rename transcript headings", error);
+					new Notice("Could not rename transcript headings.");
+				});
+			},
 		});
 		this.addCommand({
 			id: "show-youtube-transcript",
@@ -1637,7 +1648,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			placement = { nextTo: viewer, direction: "vertical" };
 		} else if (selected !== "sidebar") {
 			if (!viewer && !workspaceOnly && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
-				new Notice(`No timestamped transcript under a "${this.settings.transcriptHeading}" heading in ${file.basename}.`);
+				void notifyNoTranscript(this.app, file, this.settings.transcriptHeading);
 				return;
 			}
 			const nextTo = viewer ?? (workspaceOnly ? this.partLeaves(file).note : await this.openViewerForNote(file, false));
@@ -2342,7 +2353,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 					},
 					{
 						name: "Transcript heading",
-						desc: "Text of the heading that YouTube transcripts are stored under in literature notes, and that the transcript side panel reads. Leading '#' characters are ignored. Notes that still use the default 'Transcript' heading are also found.",
+						desc: "Text of the heading that YouTube transcripts are stored under in literature notes, and that the transcript side panel reads. Leading '#' characters are ignored. Notes that still use the default 'Transcript' heading are also found, and so is a single section that is recognizably a Saver transcript under any other name. To rename older headings, run the command 'Transcript: rename other transcript headings to the current name'.",
 						control: {
 							type: "text",
 							key: "transcriptHeading",

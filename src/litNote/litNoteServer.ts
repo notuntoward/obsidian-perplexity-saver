@@ -29,7 +29,7 @@ import {
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { askNoteDecision, type NoteDecision } from "./decisionModal";
-import { normalizeTranscriptHeading } from "./transcriptSection";
+import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "./transcriptSection";
 import type {
 	LitNoteItemResult,
 	LitNoteItemStatus,
@@ -393,6 +393,15 @@ export function positionCursorTwoLinesPastEnd(
 			transcriptLineIdx = i;
 			break;
 		}
+	}
+
+	// The heading may carry a name that is no longer configured; look for the transcript the way the panel does.
+	if (transcriptLineIdx < 0) {
+		const content = editor.getValue();
+		const headings = headingsFromText(content);
+		const range = findTranscriptRange(content, headings, transcriptHeading ?? "");
+		const found = range && headings.find((h) => h.position.end.offset === range.start);
+		if (found) transcriptLineIdx = found.position.start.line;
 	}
 
 	if (transcriptLineIdx > 0) {

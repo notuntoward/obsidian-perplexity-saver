@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { HeadingCache } from "obsidian";
 import {
 	DEFAULT_TRANSCRIPT_HEADING,
+	findTranscriptCandidates,
 	findTranscriptRange,
 	findTranscriptSection,
+	headingsFromText,
 	normalizeTranscriptHeading,
 	parseStoredTranscript,
 	parseTimestamp,
@@ -284,5 +286,52 @@ describe("findTranscriptRange", () => {
 	it("returns null without a transcript heading", () => {
 		const content = "# Note\nmine\n";
 		expect(findTranscriptRange(content, headingsOf(content), "Transcript")).toBeNull();
+	});
+});
+
+describe("a transcript under a heading that is no longer configured", () => {
+	const cue = (i: number): string => `[0:0${i}](https://youtu.be/dQw4w9WgXcQ?t=${i} "${i}–${i + 1}") caption ${i}`;
+	const cues = (n: number): string => Array.from({ length: n }, (_, i) => cue(i)).join("\n");
+	const section = (content: string, name = "Subtitles"): string | null => findTranscriptSection(content, headingsOf(content), name);
+
+	it("is found by its content when it is the only candidate", () => {
+		expect(section(`Intro\n\n# Old captions\n\n${cues(5)}\n\n# Notes\nmine\n`)).toBe(cues(5));
+	});
+
+	it("is found with just one cue line when it carries Saver's own comments", () => {
+		const body = `<!-- saver-transcript-language: en -->\n${cue(1)}`;
+		expect(section(`# Whatever\n${body}\n`)).toBe(body);
+	});
+
+	it("is not guessed when several sections look like transcripts", () => {
+		expect(section(`# One\n${cues(6)}\n# Two\n${cues(6)}\n`)).toBeNull();
+		expect(findTranscriptCandidates(`# One\n${cues(6)}\n# Two\n${cues(6)}\n`, headingsOf(`# One\n${cues(6)}\n# Two\n${cues(6)}\n`)).map((c) => c.heading.heading)).toEqual(["One", "Two"]);
+	});
+
+	it("is not mistaken for hand-made timestamp notes", () => {
+		const list = Array.from({ length: 8 }, (_, i) => `- [0:0${i}](https://youtu.be/dQw4w9WgXcQ?t=${i}): point ${i}`).join("\n");
+		expect(section(`# Notes\n${list}\n`)).toBeNull();
+		expect(section(`# Notes\n${cues(4)}\n`)).toBeNull();
+		expect(section(`# Notes\n${cues(6).replace(/youtu\.be/g, "example.com")}\n`)).toBeNull();
+		expect(section(`# Notes\n${cues(5)}\n${Array.from({ length: 6 }, () => "prose").join("\n")}\n`)).toBeNull();
+	});
+
+	it("is attributed to the child heading, not to a parent that contains it", () => {
+		const content = `# Video\nabout it\n## Old captions\n${cues(5)}\n`;
+		expect(findTranscriptCandidates(content, headingsOf(content)).map((c) => c.heading.heading)).toEqual(["Old captions"]);
+		expect(section(content)).toBe(cues(5));
+	});
+
+	it("never overrides a heading that matches by name", () => {
+		expect(section(`# Subtitles\n${cue(1)}\n# Old\n${cues(6)}\n`)).toBe(cue(1));
+	});
+});
+
+describe("headingsFromText", () => {
+	it("lists ATX headings with editor positions and skips front matter and fenced code", () => {
+		const content = "---\ntitle: x\n# not a heading\n---\n# Real\n```\n# in code\n```\ntext\n## Child ##\n";
+		const headings = headingsFromText(content);
+		expect(headings.map((h) => [h.heading, h.level, h.position.start.line])).toEqual([["Real", 1, 4], ["Child", 2, 9]]);
+		expect(content.slice(headings[0].position.start.offset, headings[0].position.end.offset)).toBe("# Real");
 	});
 });

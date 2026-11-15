@@ -4,7 +4,7 @@ import { parser } from "@lezer/markdown";
 import { editorInfoField, getFrontMatterInfo, MarkdownView, Notice, setIcon, setTooltip, type Plugin, type TFile } from "obsidian";
 import { getActiveLeafInFocusedWindow } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
-import { DEFAULT_TRANSCRIPT_HEADING, normalizeTranscriptHeading } from "./transcriptSection";
+import { DEFAULT_TRANSCRIPT_HEADING, detectTranscriptSections, normalizeTranscriptHeading } from "./transcriptSection";
 
 interface TranscriptRange {
 	from: number;
@@ -59,11 +59,19 @@ export function protectedTranscriptRanges(doc: Text, heading: string): Transcrip
 		});
 	}
 	const wanted = normalizeTranscriptHeading(heading).toLowerCase();
-	const ranges = headings.flatMap((item, index) => {
+	let ranges = headings.flatMap((item, index) => {
 		if (item.title !== wanted && item.title !== DEFAULT_TRANSCRIPT_HEADING.toLowerCase()) return [];
 		const next = headings.slice(index + 1).find((candidate) => candidate.level <= item.level);
 		return [{ from: item.from, to: next?.from ?? doc.length, headingEnd: item.to }];
 	});
+	if (!ranges.length) {
+		// Same fallback as the transcript panel: one section that is recognizably a transcript, under any heading.
+		const detected = detectTranscriptSections(content, headings.map((item) => ({ level: item.level, start: item.from, end: item.to })));
+		if (detected.length === 1) {
+			const item = headings[detected[0].index];
+			ranges = [{ from: item.from, to: detected[0].range.end, headingEnd: item.to }];
+		}
+	}
 	parsedRanges.set(doc, { heading, ranges });
 	return ranges;
 }
