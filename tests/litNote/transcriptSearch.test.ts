@@ -277,19 +277,36 @@ describe("transcript reading formats and saved timing", () => {
 		view.contentEl.dispatchEvent(new Event("wheel", { bubbles: true }));
 		view.showPlayback(2);
 		expect(scroll).not.toHaveBeenCalled();
-		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		// Browsing holds auto-scroll but never turns the Follow preference off.
+		expect(follow.getAttribute("aria-pressed")).toBe("true");
+		expect(follow.classList.contains("is-held")).toBe(true);
 		const resume = view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Show playing passage"]')!;
 		expect(resume.hidden).toBe(false);
+		// With Follow on, Show playing passage ends the hold.
 		resume.click();
 		expect(scroll).toHaveBeenCalled();
-		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		expect(follow.classList.contains("is-held")).toBe(false);
+		expect(resume.hidden).toBe(true);
 		scroll.mockClear();
 		view.showPlayback(3);
-		expect(scroll).not.toHaveBeenCalled();
+		expect(scroll).toHaveBeenCalled();
+		// The Follow button also ends a hold.
+		view.contentEl.dispatchEvent(new Event("wheel", { bubbles: true }));
+		expect(follow.classList.contains("is-held")).toBe(true);
 		follow.click();
 		expect(follow.getAttribute("aria-pressed")).toBe("true");
+		expect(follow.classList.contains("is-held")).toBe(false);
 		expect(resume.hidden).toBe(true);
 		key(rows(view)[0], "PageDown");
+		expect(follow.getAttribute("aria-pressed")).toBe("true");
+		expect(follow.classList.contains("is-held")).toBe(true);
+		// Turning the preference off makes Show playing passage a one-time reveal.
+		follow.click();
+		follow.click();
+		expect(follow.getAttribute("aria-pressed")).toBe("false");
+		scroll.mockClear();
+		resume.click();
+		expect(scroll).toHaveBeenCalled();
 		expect(follow.getAttribute("aria-pressed")).toBe("false");
 		expect(play).not.toHaveBeenCalled();
 	});
@@ -1395,6 +1412,10 @@ describe("transcript playing marker (regression guard)", () => {
 		return view.contentEl.querySelector('[aria-label="Follow video"]')!.getAttribute("aria-pressed");
 	}
 
+	function followHeld(view: TranscriptView): boolean {
+		return view.contentEl.querySelector('[aria-label="Follow video"]')!.classList.contains("is-held");
+	}
+
 	/** The element of the last scrollIntoView call (jsdom has no scroll box, so scrollToRow uses scrollIntoView). */
 	function lastScrolled(): unknown {
 		const contexts = vi.mocked(HTMLElement.prototype.scrollIntoView).mock.contexts;
@@ -1499,7 +1520,8 @@ describe("transcript playing marker (regression guard)", () => {
 		setFormat(view, "sentences");
 		view.showPlayback(1, true, true);
 		rows(view)[3].click();
-		expect(followPressed(view)).toBe("false");
+		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(true);
 		start(rows(view)[3]);
 		expect(play).toHaveBeenCalledWith("note.md", expect.any(String), 6, expect.any(Boolean));
 		// The seek lands, then playback moves on. There is no paused->playing transition here.
@@ -1509,6 +1531,7 @@ describe("transcript playing marker (regression guard)", () => {
 		expect(selectionBarHidden(view)).toBe(true);
 		// Following resumes from the row the user chose.
 		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(false);
 		expect(lastScrolled()).toBe(rows(view)[4]);
 	});
 
@@ -1520,9 +1543,10 @@ describe("transcript playing marker (regression guard)", () => {
 		const input = search(view, "number 3");
 		expect(markedRows(view)).toEqual([rows(view)[0], rows(view)[2]]);
 		key(input, "Tab");
-		// Searching never changes Follow, so accepting puts the cursor on the match without selecting it.
+		// Accepting selects the match (for insert, copy or play) and holds auto-scroll; Follow stays on.
 		expect(followPressed(view)).toBe("true");
-		expect(rows(view)[2].classList.contains("is-selected")).toBe(false);
+		expect(followHeld(view)).toBe(true);
+		expect(rows(view)[2].classList.contains("is-selected")).toBe(true);
 		expect(document.activeElement).toBe(rows(view)[2]);
 		key(rows(view)[2], "Enter");
 		view.showPlayback(4, true, false);
@@ -1554,9 +1578,11 @@ describe("transcript playing marker (regression guard)", () => {
 		setFormat(view, "sentences");
 		view.showPlayback(1, true, true);
 		rows(view)[4].click();
-		expect(followPressed(view)).toBe("false");
+		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(true);
 		view.contentEl.querySelector<HTMLElement>('[aria-label="Follow video"]')!.click();
 		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(false);
 		view.showPlayback(3, true, false);
 		expect(markedRows(view)).toEqual([rows(view)[1]]);
 		expect(selectionBarHidden(view)).toBe(true);
@@ -1578,15 +1604,16 @@ describe("transcript playing marker (regression guard)", () => {
 		expect(view.contentEl.querySelectorAll(".perplexity-saver-transcript-paragraph.is-playing")).toHaveLength(0);
 	});
 
-	// Every way a search can end. Searching is reading help, not a decision to stop following.
-	const endSearch: [string, (view: TranscriptView, input: HTMLInputElement) => void][] = [
-		["Tab (accept)", (_view, input) => key(input, "Tab")],
-		["the accept button", (view) => view.contentEl.querySelector<HTMLElement>('[aria-label^="Accept match"]')!.click()],
-		["Escape (cancel)", (_view, input) => key(input, "Escape")],
-		["the cancel button", (view) => view.contentEl.querySelector<HTMLElement>('[aria-label="Cancel transcript search"]')!.click()],
+	// Every way a search can end. Cancelling leaves Follow running; accepting selects the match and holds auto-scroll.
+	// Escape accepts in the default Obsidian-style mode.
+	const endSearch: [string, boolean, (view: TranscriptView, input: HTMLInputElement) => void][] = [
+		["Tab (accept)", true, (_view, input) => key(input, "Tab")],
+		["the accept button", true, (view) => view.contentEl.querySelector<HTMLElement>('[aria-label^="Accept match"]')!.click()],
+		["Escape (accept)", true, (_view, input) => key(input, "Escape")],
+		["the cancel button", false, (view) => view.contentEl.querySelector<HTMLElement>('[aria-label="Cancel transcript search"]')!.click()],
 	];
 
-	it.each(endSearch)("leaves Follow on when a search during playback ends by %s", async (_name, finish) => {
+	it.each(endSearch)("keeps the Follow preference on when a search during playback ends by %s", async (_name, accepted, finish) => {
 		const playing = { value: true };
 		const view = await playingPanel(playing);
 		setFormat(view, "sentences");
@@ -1596,7 +1623,14 @@ describe("transcript playing marker (regression guard)", () => {
 		view.showPlayback(3, true, false);
 		finish(view, input);
 		expect(followPressed(view)).toBe("true");
-		expect(selectionBarHidden(view)).toBe(true);
+		expect(followHeld(view)).toBe(accepted);
+		expect(selectionBarHidden(view)).toBe(!accepted);
+		if (accepted) {
+			// Esc on the selected row clears it and Follow carries on.
+			key(document.activeElement as HTMLElement, "Escape");
+			expect(followHeld(view)).toBe(false);
+			expect(selectionBarHidden(view)).toBe(true);
+		}
 		// Following still drives the panel: the next playing row is the only mark, and it is scrolled into view.
 		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
 		view.showPlayback(10, true, false);
@@ -1604,15 +1638,59 @@ describe("transcript playing marker (regression guard)", () => {
 		expect(lastScrolled()).toBe(rows(view)[5]);
 	});
 
-	it("keeps Follow paused when a search ends after the user paused it", async () => {
+	it("holds a selection while the video plays, and Esc clears it and resumes Follow", async () => {
 		const playing = { value: true };
 		const view = await playingPanel(playing);
 		setFormat(view, "sentences");
 		view.showPlayback(1, true, true);
 		rows(view)[4].click();
-		expect(followPressed(view)).toBe("false");
+		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+		view.showPlayback(3, true, false);
+		expect(followPressed(view)).toBe("true");
+		expect(lastScrolled()).toBeUndefined();
+		expect(selectionBarHidden(view)).toBe(false);
+		rows(view)[4].focus();
+		key(rows(view)[4], "Escape");
+		expect(followHeld(view)).toBe(false);
+		expect(selectionBarHidden(view)).toBe(true);
+		expect(document.activeElement).toBe(rows(view)[1]);
+		expect(lastScrolled()).toBe(rows(view)[1]);
+	});
+
+	it("holds Follow as soon as a search starts and restores the previous state when it is cancelled", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		expect(followHeld(view)).toBe(false);
+		search(view, "");
+		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(true);
+		vi.mocked(HTMLElement.prototype.scrollIntoView).mockClear();
+		view.showPlayback(3, true, false);
+		expect(lastScrolled()).toBeUndefined();
+		const cancel = (): void => view.contentEl.querySelector<HTMLElement>('[aria-label="Cancel transcript search"]')!.click();
+		cancel();
+		expect(followHeld(view)).toBe(false);
+		// A hold that existed before the search is still there afterwards.
+		rows(view)[4].click();
+		expect(followHeld(view)).toBe(true);
+		search(view, "number 3");
+		cancel();
+		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(true);
+	});
+
+	it("keeps Follow held when a search is accepted while already holding", async () => {
+		const playing = { value: true };
+		const view = await playingPanel(playing);
+		setFormat(view, "sentences");
+		view.showPlayback(1, true, true);
+		rows(view)[4].click();
+		expect(followHeld(view)).toBe(true);
 		key(search(view, "number 3"), "Tab");
-		expect(followPressed(view)).toBe("false");
+		expect(followPressed(view)).toBe("true");
+		expect(followHeld(view)).toBe(true);
 		expect(rows(view)[2].classList.contains("is-selected")).toBe(true);
 	});
 

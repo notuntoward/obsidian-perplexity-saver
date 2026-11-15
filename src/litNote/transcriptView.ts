@@ -280,7 +280,8 @@ const ROW_HINTS: KeyHint[][] = [
 	],
 	[
 		{ key: "Ctrl+C", action: "copy timestamp link" },
-		{ key: "Esc", action: "search" },
+		{ key: "Esc", action: "clear selection & follow" },
+		{ key: "Ctrl+F", action: "search" },
 	],
 ];
 
@@ -616,7 +617,7 @@ export class TranscriptView extends ItemView {
 			resumed = playing && !this.lastPlaying;
 			this.lastPlaying = playing;
 			this.refreshPlaybackControls(playing);
-			if (resumed) this.dropSelection();
+			if (resumed && this.selectedSourceStart !== null) this.releaseHold();
 		}
 		const idx = seconds === null ? -1 : currentRowIndex(this.rowStarts, seconds);
 		const changed = idx !== this.currentRow;
@@ -641,14 +642,19 @@ export class TranscriptView extends ItemView {
 		if (reveal || (resumed && follow && !this.followingPaused)) {
 			this.revealSeconds = seconds;
 			this.retryReveal();
-		} else if (changed && follow && !this.followingPaused && !this.query.trim() && !this.holdFollowScroll) {
+		} else if (changed && follow && !this.followingPaused && !this.searchActive() && !this.holdFollowScroll) {
 			this.scrollToRow(current.el, true);
 		}
 		this.retryReveal();
 	}
 
 	private isFollowing(): boolean {
-		return this.follow && !this.followingPaused && !this.query.trim();
+		return this.follow && !this.followingPaused && !this.searchActive();
+	}
+
+	/** A search that is open or has a query holds auto-scroll, like browsing does. */
+	private searchActive(): boolean {
+		return this.searchOpen || !!this.query.trim();
 	}
 
 	/**
@@ -663,16 +669,28 @@ export class TranscriptView extends ItemView {
 		this.updateSelection();
 	}
 
+	/** Hold auto-scroll while the user browses. The Follow preference is untouched and returns when the hold ends. */
 	private pauseFollowing(): void {
 		this.followingPaused = true;
 		this.revealSeconds = null;
 		this.updateFollowButton();
 	}
 
+	/** End a browsing hold: drop the selection and let Follow scroll again (a no-op for the view while Follow is off). */
+	private releaseHold(): void {
+		this.followingPaused = false;
+		this.dropSelection();
+		this.updateFollowButton();
+	}
+
 	private updateFollowButton(): void {
-		const enabled = this.follow && !this.followingPaused;
-		this.followBtn?.setAttribute("aria-pressed", String(enabled));
-		this.followBtn?.toggleClass("is-active", enabled);
+		const held = this.follow && (this.followingPaused || this.searchActive());
+		const enabled = this.follow && !held;
+		this.followBtn?.setAttribute("aria-pressed", String(this.follow));
+		this.followBtn?.toggleClass("is-active", this.follow);
+		this.followBtn?.toggleClass("is-held", held);
+		this.followBtn?.setAttribute("title", held ? "Follow is holding while you browse or search. Click, press Esc or play to resume."
+			: "Automatically scroll the transcript with playback");
 		// While following, focus rides on the playing row; its tint is the only mark there, so CSS drops the focus ring.
 		this.listEl?.toggleClass("is-following", enabled);
 		if (this.playingPassageBtn) {
@@ -702,6 +720,17 @@ export class TranscriptView extends ItemView {
 	private revealPlayingPassage(): void {
 		this.finishSearch(true, false);
 		this.showPlayback(this.playbackSec, this.follow, false, true);
+	}
+
+	/** Esc on a row: clear the selection, end the browsing hold and, with Follow on, return to the playing row. */
+	private resumeFollowing(): void {
+		this.releaseHold();
+		if (!this.follow) return;
+		this.revealPlayingPassage();
+		const playing = this.rendered[this.currentRow];
+		if (!playing) return;
+		this.setFocusRow(this.currentRow);
+		playing.el.focus({ preventScroll: true });
 	}
 
 	/** Center the pending timestamp row once the panel has a scrollable layout. */
@@ -899,17 +928,20 @@ export class TranscriptView extends ItemView {
 		format.selectEl.addClass("perplexity-saver-transcript-segmentation");
 		this.iconButton(presentation, "search", "Search transcript (Ctrl/Cmd+F)", () => this.focusSearch());
 		this.followBtn = this.iconButton(controls, "arrow-down", "Follow video", () => {
-			this.followOverride = !this.follow || this.followingPaused;
+			// While held (browsing or searching), the click resumes; otherwise it toggles the preference.
+			this.followOverride = !this.follow || this.followingPaused || this.searchActive();
 			this.follow = this.followOverride;
-			this.followingPaused = !this.follow;
-			if (this.follow) this.dropSelection();
 			this.revealSeconds = null;
-			this.updateFollowButton();
-			if (this.follow) this.revealPlayingPassage();
+			if (this.follow) {
+				this.releaseHold();
+				this.revealPlayingPassage();
+			} else {
+				this.followingPaused = false;
+				this.updateFollowButton();
+			}
 		});
 		this.followBtn.appendText("Follow video");
 		this.followBtn.addClass("perplexity-saver-transcript-follow");
-		this.followBtn.setAttribute("title", "Automatically scroll the transcript with playback");
 		const layout = controls.createDiv({ cls: "perplexity-saver-transcript-control-group" });
 		const chrome = this.iconButton(layout, "panel-top", "Show pane tabs and navigation", () => {
 			el.toggleClass("show-pane-chrome", !el.hasClass("show-pane-chrome"));
@@ -975,7 +1007,11 @@ export class TranscriptView extends ItemView {
 			});
 			else this.leaf.detach();
 		}).addClass("perplexity-saver-transcript-close");
-		this.playingPassageBtn = this.iconButton(header, "locate", "Show playing passage", () => this.revealPlayingPassage());
+		this.playingPassageBtn = this.iconButton(header, "locate", "Show playing passage", () => {
+			// With Follow on this ends the hold; with Follow off it stays a one-time reveal.
+			if (this.follow) this.releaseHold();
+			this.revealPlayingPassage();
+		});
 		this.playingPassageBtn.appendText("Show playing passage");
 		this.playingPassageBtn.addClass("perplexity-saver-transcript-reveal");
 		this.updateFollowButton();
@@ -1313,6 +1349,7 @@ export class TranscriptView extends ItemView {
 	private setSearchOpen(open: boolean): void {
 		this.searchOpen = open;
 		if (this.searchBar) this.searchBar.hidden = !open;
+		this.updateFollowButton();
 	}
 
 	/** Preserve display preferences and search recall when native placement requires a new leaf. */
@@ -1336,8 +1373,8 @@ export class TranscriptView extends ItemView {
 
 	private finishSearch(accept: boolean, refocus = true): void {
 		const origin = this.searchOrigin;
-		// A search leaves Follow as it found it. While following, accepting only puts the cursor on
-		// the match (no selection, which would pause following), and cancelling returns to playback.
+		// A search leaves the Follow preference as it found it. Cancelling while following returns to playback.
+		// Accepting selects the match (so it can be inserted, copied or played) and holds auto-scroll until it ends.
 		const following = this.follow && !this.followingPaused;
 		const toPlayback = !accept && following && !!this.rendered[this.currentRow];
 		const target = accept ? this.matches[this.matchIndex] ?? this.focusRow
@@ -1349,7 +1386,7 @@ export class TranscriptView extends ItemView {
 		this.demandHighlights = false;
 		this.applySearch(false);
 		this.searchOrigin = null;
-		if (refocus) this.moveFocus(target, !following);
+		if (refocus) this.moveFocus(target, accept || !following);
 		if (!accept && !toPlayback && origin && this.listEl) {
 			const box = scrollParent(this.listEl);
 			if (box) box.scrollTop = origin.scrollTop;
@@ -1371,9 +1408,7 @@ export class TranscriptView extends ItemView {
 		const r = this.rendered[index];
 		if (!r || !this.filePath) return;
 		// Playback takes over from the chosen row: its playing marker replaces the selection, and following resumes there.
-		this.dropSelection();
-		this.followingPaused = false;
-		this.updateFollowButton();
+		this.releaseHold();
 		this.host.playAt(this.filePath, r.row.url, r.row.startSec, play);
 	}
 
@@ -1575,7 +1610,7 @@ export class TranscriptView extends ItemView {
 		else if (evt.key === "Home" && !mod && !evt.shiftKey && !evt.altKey) handled = edge(false);
 		else if (evt.key === "End" && !mod && !evt.shiftKey && !evt.altKey) handled = edge(true);
 		else if (evt.key === "Enter") this.playRow(index, mod || !evt.shiftKey);
-		else if (evt.key === "Escape") this.focusSearch();
+		else if (evt.key === "Escape") this.resumeFollowing();
 		else if (mod && evt.key.toLowerCase() === "c" && !this.hasTextSelection()) void this.copyRowLink(index);
 		else handled = false;
 		if (!handled) return;

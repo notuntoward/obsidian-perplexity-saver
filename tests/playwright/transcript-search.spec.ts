@@ -176,7 +176,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	expect({ focused: riding.focused, playing: riding.playing, outline: riding.outline }).toEqual({ focused: true, playing: true, outline: "none" });
 	expect(riding.bg).not.toBe(unmarked);
 	await page.keyboard.press("ArrowDown");
-	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveAttribute("aria-pressed", "false");
+	await expect(page.getByRole("button", { name: "Follow video", exact: true })).toHaveClass(/is-held/);
 	expect((await cursorPaint(ridden + 1)).outline).toBe("solid");
 	await page.keyboard.press("ArrowUp");
 	expect(await cursorPaint(ridden)).toMatchObject({ focused: true, playing: true, outline: "solid" });
@@ -281,8 +281,9 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 	// clicks, at the top of the list (no room to scroll up) and mid-list.
 	const followButton = page.getByRole("button", { name: "Follow video", exact: true });
 	for (const [atTop, rowIndex] of [[true, 3], [false, 18]] as const) {
-		if (await followButton.getAttribute("aria-pressed") !== "true") await followButton.click();
+		if (await followButton.evaluate((el) => el.classList.contains("is-held"))) await followButton.click();
 		await expect(followButton).toHaveAttribute("aria-pressed", "true");
+		await expect(followButton).not.toHaveClass(/is-held/);
 		await page.locator("#transcript").evaluate(async (box, [atTop, rowIndex]) => {
 			const target = box.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[rowIndex];
 			box.scrollTop = atTop ? 0 : box.scrollTop + target.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 2;
@@ -294,7 +295,8 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 		expect(before.y, `row ${rowIndex} is on screen before the click`).toBeGreaterThan(0);
 		await page.mouse.click(before.x, before.y);
 		await expect(page.locator("#transcript .is-selected"), `row ${rowIndex} selected`).toHaveText(new RegExp(`^Sentence ${rowIndex} `));
-		await expect(followButton).toHaveAttribute("aria-pressed", "false");
+		await expect(followButton).toHaveAttribute("aria-pressed", "true");
+		await expect(followButton).toHaveClass(/is-held/);
 		expect(Math.abs(await row.evaluate((el) => el.getClientRects()[0].top + el.getClientRects()[0].height / 2) - before.y), `row ${rowIndex} stayed put`).toBeLessThanOrEqual(1);
 	}
 	// REGRESSION GUARD: with Follow paused (a sentence selected far from the playing one) the user owns the scroll
@@ -321,7 +323,7 @@ test("rendered reading and video toolbars keep usable task groups at narrow widt
 			follow: box.querySelector('[aria-label="Follow video"]')?.getAttribute("aria-pressed"),
 		};
 	});
-	expect(returnToPane).toEqual({ before: returnToPane.before, positions: [returnToPane.before], focusedSelected: true, follow: "false" });
+	expect(returnToPane).toEqual({ before: returnToPane.before, positions: [returnToPane.before], focusedSelected: true, follow: "true" });
 	const close = page.locator(".perplexity-saver-transcript-close");
 	await expect(close).toBeVisible();
 	await page.locator("#transcript").evaluate(el => el.classList.add("show-pane-chrome"));
