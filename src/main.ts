@@ -381,6 +381,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 						return !!player && !!leaf.view && isVisiblePart(this.app, player.leaf) &&
 							getWindowForLeaf(player.leaf) === getWindowForLeaf(leaf);
 					},
+					isPlayerShown: (filePath) => {
+						const file = this.app.vault.getFileByPath(filePath);
+						return !!file && this.hasVisiblePlayer(file);
+					},
 					isPlaybackPlaying: (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) return false;
@@ -457,6 +461,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
+					closePlayer: (filePath) => this.closePlayer(filePath),
 					jumpToTranscriptTimestamp: (view, direction) => {
 						void this.jumpToTranscriptTimestamp(view, direction).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not navigate transcript timestamps", error);
@@ -590,7 +595,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		};
 		this.addCommand({
 			id: "video-workspace",
-			name: "Video: reopen or change workspace...",
+			name: "Video: open or change workspace...",
 			checkCallback: (checking) => {
 				const file = this.activePart().file;
 				if (!file || file.extension !== "md") return false;
@@ -676,6 +681,19 @@ export default class PerplexitySaverPlugin extends Plugin {
 		void this.applyVideoWorkspace(file, "note", false).catch((error: unknown) => {
 			console.error("Perplexity Saver: could not close player and transcript", error);
 			new Notice("Could not close player and transcript.");
+		});
+	}
+
+	/** Close the player but keep a visible transcript; with no transcript on screen this closes everything. */
+	private closePlayer(filePath: string): void {
+		const file = this.app.vault.getFileByPath(filePath);
+		if (!file || !visibleTranscriptLeaves(this.app, null, file.path).length) {
+			this.closeVideoWorkspace(filePath);
+			return;
+		}
+		void this.applyVideoWorkspace(file, "transcript", false).catch((error: unknown) => {
+			console.error("Perplexity Saver: could not close player", error);
+			new Notice("Could not close player.");
 		});
 	}
 
@@ -2316,7 +2334,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				items: [
 					{
 						name: "Initial video workspace",
-						desc: "Pane combination for a note with no saved viewing session. Timestamp links and Reopen or change workspace restore that note's last pane combination and geometry first. Picker choices do not change this initial default.",
+						desc: "Pane combination for a note with no saved viewing session. Timestamp links and Open or change workspace restore that note's last pane combination and geometry first. Picker choices do not change this initial default.",
 						control: {
 							type: "dropdown",
 							key: "preferredVideoWorkspace",

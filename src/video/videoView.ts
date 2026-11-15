@@ -33,6 +33,7 @@ import {
 	type TimestampCopyFormat,
 } from "./youtubeLinks";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "./youtubePlayer";
+import { createCloseControls, type CloseControls } from "../closeControls";
 
 export const VIDEO_VIEW_TYPE = "perplexity-saver-video";
 
@@ -78,6 +79,8 @@ export interface VideoViewHost {
 	/** Close that transcript panel if it is on screen, otherwise show the note's transcript (beside a pop-out viewer, else per the plugin setting). */
 	toggleTranscript(file: TFile | null, viewer: WorkspaceLeaf): Promise<void>;
 	closeMedia?(filePath: string): void;
+	/** Close the player and keep any visible transcript. */
+	closePlayer?(filePath: string): void;
 	jumpToTranscriptTimestamp(view: VideoView, direction: 1 | -1): void;
 	/** Called on every player update with the current position, so transcript panels can follow playback. */
 	onPlayback(videoId: string, filePath: string | null, seconds: number, stateChanged?: boolean): void;
@@ -110,6 +113,7 @@ export class VideoView extends ItemView {
 	private marksEl!: HTMLElement;
 	private emptyEl!: HTMLElement;
 	private transcriptBtn!: HTMLElement;
+	private closeControls: CloseControls | null = null;
 	private previousTranscriptBtn!: HTMLElement;
 	private nextTranscriptBtn!: HTMLElement;
 	private insertTimeBtn!: HTMLElement;
@@ -377,6 +381,21 @@ export class VideoView extends ItemView {
 			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
 		});
 		more.setAttribute("aria-haspopup", "menu");
+		const closeGroup = group("close", "Close");
+		closeGroup.addClass("perplexity-saver-video-close-group");
+		this.closeControls = createCloseControls(closeGroup, {
+			part: "player",
+			thisLabel: "Close player",
+			closeThis: () => {
+				const filePath = this.filePath;
+				if (filePath && this.host.closePlayer) this.host.closePlayer(filePath);
+				else this.leaf.detach();
+			},
+			closeBoth: this.host.closeMedia ? () => {
+				const filePath = this.filePath;
+				if (filePath) this.host.closeMedia?.(filePath);
+			} : undefined,
+		});
 		this.helpEl = el.createDiv({ cls: "perplexity-saver-video-help", attr: { role: "region", "aria-label": "Video keyboard shortcuts" } });
 		this.helpEl.hidden = true;
 		this.helpEl.addEventListener("keydown", (evt) => {
@@ -525,6 +544,7 @@ export class VideoView extends ItemView {
 		this.transcriptBtn.toggleClass("is-active", shown);
 		this.transcriptBtn.setAttribute("aria-label", shown ? "Hide transcript (C)" : "Show transcript (C)");
 		this.transcriptBtn.setAttribute("aria-pressed", String(shown));
+		this.closeControls?.update(shown && !!this.filePath);
 		const unit = this.host.getTranscriptUnit?.(this.filePath) ?? "caption";
 		this.transcriptUnitLabel?.setText(unit === "sentence" ? "Sentence" : "Caption");
 		this.previousTranscriptBtn?.setAttribute("aria-label", `Previous ${unit} ([)`);

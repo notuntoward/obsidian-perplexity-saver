@@ -115,6 +115,27 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("transcript reading formats and saved timing", () => {
+	it("shows close-both on the right only while a player is also open", async () => {
+		let playerShown = false;
+		const closeMedia = vi.fn();
+		const closePanel = vi.fn(async () => {});
+		const view = await panel(document, { isPlayerShown: () => playerShown, closeMedia, closePanel });
+		const only = view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Close transcript pane"]')!;
+		const both = view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Close player and transcript"]')!;
+		expect(both.hidden).toBe(true);
+		expect(only.nextElementSibling).toBe(both);
+		playerShown = true;
+		view.refreshPlaybackControls();
+		expect(both.hidden).toBe(false);
+		both.click();
+		expect(closeMedia).toHaveBeenCalledWith("note.md");
+		only.click();
+		expect(closePanel).toHaveBeenCalledWith(view.leaf);
+		playerShown = false;
+		view.refreshPlaybackControls();
+		expect(both.hidden).toBe(true);
+	});
+
 	it.each([false, true])("keeps the existing More repair action available without a settings opt-in or added button (popout=%s)", async (popout) => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		if (popout) stubPopout(doc);

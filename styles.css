@@ -428,6 +428,35 @@
 	display: none;
 }
 
+/* Each close button shows the glyphs of what it closes, then an X. */
+.perplexity-saver-transcript-header .perplexity-saver-close-chip,
+.perplexity-saver-video-controls .perplexity-saver-close-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	width: auto;
+	padding-inline: var(--size-4-2);
+}
+
+.perplexity-saver-close-chip-glyph,
+.perplexity-saver-close-chip-x {
+	display: inline-flex;
+}
+
+.perplexity-saver-transcript-header .perplexity-saver-close-chip[hidden],
+.perplexity-saver-video-controls .perplexity-saver-close-chip[hidden] {
+	display: none;
+}
+
+.perplexity-saver-close-chip-x {
+	--icon-size: var(--icon-xs);
+	--icon-stroke: var(--icon-xs-stroke-width);
+}
+
+.perplexity-saver-video-close-group {
+	margin-inline-start: auto;
+}
+
 .workspace-tabs .perplexity-saver-transcript-close,
 .show-pane-chrome .perplexity-saver-transcript-close {
 	display: none;
