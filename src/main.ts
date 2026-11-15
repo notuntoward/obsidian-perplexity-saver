@@ -384,10 +384,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 						return !!player && !!leaf.view && isVisiblePart(this.app, player.leaf) &&
 							getWindowForLeaf(player.leaf) === getWindowForLeaf(leaf);
 					},
-					isPlayerShown: (filePath) => {
-						const file = this.app.vault.getFileByPath(filePath);
-						return !!file && this.hasVisiblePlayer(file);
-					},
 					isPlaybackPlaying: (filePath) => {
 						const file = this.app.vault.getFileByPath(filePath);
 						if (!file) return false;
@@ -425,7 +421,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 						const view = file ? this.partLeaves(file).video?.view : null;
 						if (view instanceof VideoView) view.refreshTranscriptControls();
 					},
-					closePanel: (leaf) => this.closeTranscript(leaf),
 					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
 				})
 		);
@@ -464,7 +459,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
 					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
-					closePlayer: (filePath) => this.closePlayer(filePath),
 					jumpToTranscriptTimestamp: (view, direction) => {
 						void this.jumpToTranscriptTimestamp(view, direction).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not navigate transcript timestamps", error);
@@ -488,7 +482,26 @@ export default class PerplexitySaverPlugin extends Plugin {
 					focusNote: (target) => this.focusNoteInsertionTarget(target),
 				})
 		);
-		this.refreshNoteVideoActions = registerNoteVideoActions(this, (file, videoId) => this.openOrShowVideo(file, videoId));
+		this.refreshNoteVideoActions = registerNoteVideoActions(this, {
+			getState: (file) => {
+				const parts = this.partLeaves(file);
+				return { player: !!parts.video, transcript: !!parts.transcript };
+			},
+			open: (file, videoId) => this.reopenVideoWorkspace(file, videoId),
+			close: (file) => this.closeVideoWorkspace(file.path),
+			bringForward: async (file) => {
+				const { video, transcript } = this.partLeaves(file);
+				if (video) await this.activatePartLeaf(video, null);
+				if (transcript) await this.activatePartLeaf(transcript, video);
+			},
+			togglePart: async (file, videoId, part) => {
+				const parts = this.partLeaves(file);
+				const player = part === "player" ? !parts.video : !!parts.video;
+				const transcript = part === "transcript" ? !parts.transcript : !!parts.transcript;
+				const layout = player ? transcript ? "both" : "video" : transcript ? "transcript" : "note";
+				await this.applyVideoWorkspace(file, layout, false, false, videoId);
+			},
+		});
 		this.registerVideoCommands();
 		registerTimestampLinks(
 			this,
@@ -629,7 +642,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 				if (!file || file.extension !== "md") return false;
 				const { video, transcript } = this.partLeaves(file);
 				if (!video && !transcript) return false;
-				if (!checking) this.closeVideoWorkspace(file.path);
+				if (!checking) void this.closeVideoWorkspace(file.path);
 				return true;
 			},
 		});
@@ -713,38 +726,29 @@ export default class PerplexitySaverPlugin extends Plugin {
 			await this.activatePartLeaf(leaf, null);
 			return;
 		}
+		await this.reopenVideoWorkspace(file, videoId, true);
+	}
+
+	private async reopenVideoWorkspace(file: TFile, videoId: string, requirePlayer = false): Promise<void> {
 		const saved = this.settings.videoWorkspaces[file.path];
 		const remembered = saved?.videoId === videoId ? saved : undefined;
 		const requested = remembered?.layout ?? this.settings.preferredVideoWorkspace;
 		const hasTranscript = requested !== "video" && !!(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length;
-		const layout = hasTranscript ? "both" : "video";
+		const layout = hasTranscript ? requested === "transcript" && !requirePlayer ? "transcript" : "both" : "video";
 		const opened = await this.applyVideoWorkspace(file, layout, true, !!remembered && remembered.layout === layout, videoId);
 		if (!opened) throw new Error("The requested video workspace could not be opened.");
 		if (requested !== "video" && !hasTranscript) new Notice("No transcript found; opened the video only.");
 	}
 
-	private closeVideoWorkspace(filePath: string): void {
+	private async closeVideoWorkspace(filePath: string): Promise<void> {
 		const file = this.app.vault.getFileByPath(filePath);
 		if (!file) {
 			new Notice("The literature note is no longer available.");
 			return;
 		}
-		void this.applyVideoWorkspace(file, "note", false).catch((error: unknown) => {
+		await this.applyVideoWorkspace(file, "note", false).catch((error: unknown) => {
 			console.error("Perplexity Saver: could not close player and transcript", error);
 			new Notice("Could not close player and transcript.");
-		});
-	}
-
-	/** Close the player but keep a visible transcript; with no transcript on screen this closes everything. */
-	private closePlayer(filePath: string): void {
-		const file = this.app.vault.getFileByPath(filePath);
-		if (!file || !visibleTranscriptLeaves(this.app, null, file.path).length) {
-			this.closeVideoWorkspace(filePath);
-			return;
-		}
-		void this.applyVideoWorkspace(file, "transcript", false).catch((error: unknown) => {
-			console.error("Perplexity Saver: could not close player", error);
-			new Notice("Could not close player.");
 		});
 	}
 
@@ -1735,15 +1739,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private viewerInPopout(viewer: WorkspaceLeaf): boolean {
 		const win = getWindowForLeaf(viewer);
 		return !!win && win !== getMainWindow(this.app);
-	}
-
-	private async closeTranscript(leaf: WorkspaceLeaf): Promise<void> {
-		if (!(leaf.view instanceof TranscriptView)) throw new Error("Expected a transcript pane.");
-		const filePath = leaf.view.getFilePath();
-		const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
-		const viewer = file ? this.partLeaves(file).video : null;
-		hideTranscriptPanels(this.app, leaf, filePath);
-		if (viewer) await this.activatePartLeaf(viewer, null);
 	}
 
 	/** The viewer's transcript button: close a visible transcript panel, or show this note's. */

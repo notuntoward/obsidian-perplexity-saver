@@ -1075,6 +1075,61 @@ describe("transcript activation commands", () => {
 		expect(show).toHaveBeenCalledWith(h.file, "dQw4w9WgXcQ");
 	});
 
+	it("routes the note-header toggle through the same close operation as the command", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		(note.view as MarkdownView).editor.getValue = () => "https://youtu.be/dQw4w9WgXcQ";
+		await playbackPanel(h, document);
+		const close = vi.fn(h.plugin["closeVideoWorkspace"].bind(h.plugin));
+		const apply = vi.fn().mockResolvedValue(true);
+		Object.assign(h.plugin, { closeVideoWorkspace: close, applyVideoWorkspace: apply });
+		h.plugin["refreshNoteVideoActions"]?.();
+		await vi.waitFor(() => expect(note.view.containerEl.querySelector('[aria-label="Close video workspace"]')).not.toBeNull());
+		note.view.containerEl.querySelector<HTMLElement>('[aria-label="Close video workspace"]')!.click();
+		expect(close).toHaveBeenCalledWith(h.file.path);
+		expect(apply).toHaveBeenCalledWith(h.file, "note", false);
+	});
+
+	it("opens the note's remembered transcript-only workspace without reusing another note's player", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		(note.view as MarkdownView).editor.getValue = () => "https://youtu.be/dQw4w9WgXcQ";
+		await playbackPanel(h, document);
+		Object.assign(h.viewerLeaf.view, { filePath: "other.md", videoId: "dQw4w9WgXcQ" });
+		h.leaves.splice(h.leaves.indexOf(h.transcriptLeaf), 1);
+		h.plugin.settings.videoWorkspaces[h.file.path] = { videoId: "dQw4w9WgXcQ", layout: "transcript" };
+		const apply = vi.fn().mockResolvedValue(true);
+		Object.assign(h.plugin, { applyVideoWorkspace: apply });
+		h.plugin["refreshNoteVideoActions"]?.();
+		await vi.waitFor(() => expect(note.view.containerEl.querySelector('[aria-label="Open video workspace"]')).not.toBeNull());
+		note.view.containerEl.querySelector<HTMLElement>('[aria-label="Open video workspace"]')!.click();
+		await vi.waitFor(() => expect(apply).toHaveBeenCalledWith(h.file, "transcript", true, true, "dQw4w9WgXcQ"));
+	});
+
+	it("uses note-scoped workspace layouts for menu toggles and raises both associated panes", async () => {
+		const h = await harness();
+		const note = addNote(h);
+		(note.view as MarkdownView).editor.getValue = () => "https://youtu.be/dQw4w9WgXcQ";
+		await playbackPanel(h, document);
+		const apply = vi.fn().mockResolvedValue(true);
+		const activate = vi.fn().mockResolvedValue(undefined);
+		Object.assign(h.plugin, { applyVideoWorkspace: apply, activatePartLeaf: activate });
+		h.plugin["refreshNoteVideoActions"]?.();
+		await vi.waitFor(() => expect(note.view.containerEl.querySelector('[aria-label="Video tools"]')).not.toBeNull());
+		const chevron = note.view.containerEl.querySelector<HTMLElement>('[aria-label="Video tools"]')!;
+		chevron.click();
+		MockMenu.last!.items.find(({ title }) => title === "Bring video workspace forward")!.click();
+		await vi.waitFor(() => expect(activate).toHaveBeenCalledTimes(2));
+		expect(activate.mock.calls).toEqual([[h.viewerLeaf, null], [h.transcriptLeaf, h.viewerLeaf]]);
+		await Promise.resolve();
+		for (const [title, layout] of [["Player", "transcript"], ["Transcript", "video"]]) {
+			chevron.click();
+			MockMenu.last!.items.find((item) => item.title === title)!.click();
+			await vi.waitFor(() => expect(apply).toHaveBeenLastCalledWith(h.file, layout, false, false, "dQw4w9WgXcQ"));
+			await Promise.resolve();
+		}
+	});
+
 	it("shows a matching player from another note without changing its session or transcript", async () => {
 		const h = await harness();
 		addNote(h);
@@ -1773,14 +1828,14 @@ describe("transcript activation commands", () => {
 		expect(focus).toHaveBeenCalledOnce();
 	});
 
-	it("closing the transcript toolbar targets its own window and restores the associated viewer", async () => {
+	it("hiding the transcript restores the associated pop-out viewer", async () => {
 		const h = await harness();
 		const popDoc = document.implementation.createHTMLDocument();
 		Object.defineProperty(popDoc, "defaultView", { value: { closed: false } });
 		h.viewerLeaf.view.containerEl = popDoc.createElement("div");
 		h.leaves.push(h.transcriptLeaf);
 		const focus = vi.spyOn(h.viewerLeaf.view as VideoView, "focusKeys");
-		await h.plugin["closeTranscript"](h.transcriptLeaf);
+		await h.plugin.toggleTranscript(h.file as TFile, h.viewerLeaf);
 		expect(h.transcriptLeaf.detach).toHaveBeenCalledOnce();
 		expect(h.app.workspace.setActiveLeaf).toHaveBeenLastCalledWith(h.viewerLeaf, { focus: true });
 		expect(focus).toHaveBeenCalledOnce();

@@ -20,7 +20,6 @@ async function toolbar(doc = document) {
 	const jump = vi.fn();
 	const onPlayback = vi.fn();
 	const closeMedia = vi.fn();
-	const closePlayer = vi.fn();
 	let transcriptShown = false;
 	const vaultEvents = new Map<string, (file: { path: string }, oldPath: string) => void>();
 	const app = {
@@ -41,7 +40,6 @@ async function toolbar(doc = document) {
 		isTranscriptShown: () => transcriptShown,
 		toggleTranscript: async () => {},
 		closeMedia,
-		closePlayer,
 		jumpToTranscriptTimestamp: jump,
 		onPlayback,
 		focusNote: async () => {},
@@ -54,7 +52,7 @@ async function toolbar(doc = document) {
 	doc.adoptNode(view.contentEl);
 	const timestamp = view.contentEl.querySelector<HTMLElement>(".perplexity-saver-video-insert-timestamp")!;
 	const camera = view.contentEl.querySelector<HTMLElement>('[data-icon="camera"]')!;
-	return { view, timestamp, camera, copy, screenshot, insertTimestamp, insertScreenshot, jump, onPlayback, vaultEvents, closeMedia, closePlayer,
+	return { view, timestamp, camera, copy, screenshot, insertTimestamp, insertScreenshot, jump, onPlayback, vaultEvents, closeMedia,
 		setTranscriptShown: (value: boolean) => { transcriptShown = value; },
 		setAction: (value: typeof action) => { action = value; }, setUnit: (value: typeof unit) => { unit = value; },
 		setInsertionTime: (value: TimestampInsertionTime) => { insertionTime = value; } };
@@ -96,7 +94,7 @@ describe("video toolbar capture destinations", () => {
 		const doc = popout ? document.implementation.createHTMLDocument() : document;
 		const h = await toolbar(doc);
 		const groups = h.view.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-video-control-group");
-		expect(Array.from(groups, (group) => group.dataset.group)).toEqual(["transport", "navigation", "capture", "view", "close"]);
+		expect(Array.from(groups, (group) => group.dataset.group)).toEqual(["transport", "navigation", "capture", "view"]);
 		expect(Array.from(groups[0].querySelectorAll("[data-icon]"), (button) => button.getAttribute("data-icon")))
 			.toEqual(["play", "gauge"]);
 		expect(groups[0].querySelector('[aria-label^="Back"]')!.textContent).toBe("-10s");
@@ -116,26 +114,18 @@ describe("video toolbar capture destinations", () => {
 		]);
 	});
 
-	it("offers close-both only while the transcript is also open", async () => {
+	it("leaves workspace closing in More without duplicate toolbar close buttons", async () => {
 		const h = await toolbar();
 		Object.assign(h.view, { filePath: "note.md" });
 		const el = h.view.contentEl;
-		const only = el.querySelector<HTMLButtonElement>('[aria-label="Close player"]')!;
-		const both = el.querySelector<HTMLButtonElement>('[aria-label="Close player and transcript"]')!;
-		expect(both.hidden).toBe(true);
-		expect(only.querySelector('[data-icon="square-play"]')).not.toBeNull();
-		expect(both.nextElementSibling).toBeNull();
 		h.setTranscriptShown(true);
 		h.view.refreshTranscriptControls();
-		expect(both.hidden).toBe(false);
-		expect(both.querySelectorAll("[data-icon]")).toHaveLength(3);
-		both.click();
+		expect(el.querySelector('[aria-label="Close player"]')).toBeNull();
+		expect(el.querySelector('[aria-label="Close player and transcript"]')).toBeNull();
+		expect(el.querySelector(".perplexity-saver-video-close-group")).toBeNull();
+		el.querySelector<HTMLButtonElement>('[aria-label="More video options"]')!.click();
+		MockMenu.last!.items.find(({ title }) => title === "Close player and transcript")!.click();
 		expect(h.closeMedia).toHaveBeenCalledWith("note.md");
-		only.click();
-		expect(h.closePlayer).toHaveBeenCalledWith("note.md");
-		h.setTranscriptShown(false);
-		h.view.refreshTranscriptControls();
-		expect(both.hidden).toBe(true);
 	});
 
 	it("reports state transitions without treating time updates as state changes", async () => {

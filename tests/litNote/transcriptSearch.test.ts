@@ -115,25 +115,14 @@ async function panel(doc = document, host: Partial<TranscriptViewHost> = {}, ali
 }
 
 describe("transcript reading formats and saved timing", () => {
-	it("shows close-both on the right only while a player is also open", async () => {
-		let playerShown = false;
+	it("leaves workspace closing in More without duplicate header close buttons", async () => {
 		const closeMedia = vi.fn();
-		const closePanel = vi.fn(async () => {});
-		const view = await panel(document, { isPlayerShown: () => playerShown, closeMedia, closePanel });
-		const only = view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Close transcript pane"]')!;
-		const both = view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Close player and transcript"]')!;
-		expect(both.hidden).toBe(true);
-		expect(only.nextElementSibling).toBe(both);
-		playerShown = true;
-		view.refreshPlaybackControls();
-		expect(both.hidden).toBe(false);
-		both.click();
+		const view = await panel(document, { closeMedia });
+		expect(view.contentEl.querySelector('button[aria-label="Close transcript pane"]')).toBeNull();
+		expect(view.contentEl.querySelector('button[aria-label="Close player and transcript"]')).toBeNull();
+		view.contentEl.querySelector<HTMLElement>('[aria-label="More transcript options"]')!.click();
+		menuChoices.find(({ title }) => title === "Close player and transcript")!.run!();
 		expect(closeMedia).toHaveBeenCalledWith("note.md");
-		only.click();
-		expect(closePanel).toHaveBeenCalledWith(view.leaf);
-		playerShown = false;
-		view.refreshPlaybackControls();
-		expect(both.hidden).toBe(true);
 	});
 
 	it.each([false, true])("keeps the existing More repair action available without a settings opt-in or added button (popout=%s)", async (popout) => {
@@ -708,9 +697,8 @@ describe("accepting transcript search", () => {
 		expect(menuChoices).toHaveLength(0);
 	});
 
-	it("restores native pane chrome directly and closes using the host", async () => {
-		const closePanel = vi.fn(async () => {});
-		const view = await panel(document, { toggleOrientation: vi.fn(async () => {}), closePanel });
+	it("restores native pane chrome directly for native tab closing", async () => {
+		const view = await panel(document, { toggleOrientation: vi.fn(async () => {}) });
 		const layout = view.contentEl.querySelector<HTMLElement>('button[aria-label="Show pane tabs and navigation"]')!;
 		expect(layout.getAttribute("aria-pressed")).toBe("false");
 		layout.click();
@@ -721,8 +709,6 @@ describe("accepting transcript search", () => {
 		expect(toggle.getAttribute("aria-pressed")).toBe("true");
 		toggle.click();
 		expect(view.contentEl.hasClass("show-pane-chrome")).toBe(false);
-		view.contentEl.querySelector<HTMLElement>('button[aria-label="Close transcript pane"]')!.click();
-		expect(closePanel).toHaveBeenCalledWith(view.leaf);
 	});
 
 	it("keeps search and help out of the browsing layout and reveals search on demand", async () => {

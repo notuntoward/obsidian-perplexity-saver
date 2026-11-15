@@ -39,7 +39,6 @@ import { readInlineTimings } from "./transcriptTimingStorage";
 import { needsCaptionTimingRepair } from "./captionTiming";
 import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
-import { createCloseControls, type CloseControls } from "../closeControls";
 
 export const TRANSCRIPT_VIEW_TYPE = "perplexity-saver-transcript";
 
@@ -197,8 +196,6 @@ export interface TranscriptViewHost {
 	/** True when a player for this note is loaded in any window, so the panel stays with that player. */
 	hasPlayerFor?(filePath: string): boolean;
 	isVideoVisible?(filePath: string, leaf: WorkspaceLeaf): boolean;
-	/** True when a player for this note is on screen in any window. */
-	isPlayerShown?(filePath: string): boolean;
 	isPlaybackPlaying?(filePath: string): boolean;
 	onPlaybackSessionChanged?(filePath: string, videoId: string): void;
 	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert"): void;
@@ -206,7 +203,6 @@ export interface TranscriptViewHost {
 	toggleOrientation?(filePath: string): Promise<void>;
 	getOrientation?(filePath: string): "below" | "beside";
 	onFormatChanged?(filePath: string): void;
-	closePanel?(leaf: WorkspaceLeaf): Promise<void>;
 	closeMedia?(filePath: string): void;
 }
 
@@ -373,7 +369,6 @@ export class TranscriptView extends ItemView {
 	private observedRevealEl: HTMLElement | null = null;
 	private followingPaused = false;
 	private playingPassageBtn: HTMLElement | null = null;
-	private closeControls: CloseControls | null = null;
 	private followBtn: HTMLElement | null = null;
 	private selectionBar: HTMLElement | null = null;
 	private selectedSourceStart: number | null = null;
@@ -1005,22 +1000,6 @@ export class TranscriptView extends ItemView {
 			menu.showAtPosition({ x: rect.left, y: rect.bottom }, more.ownerDocument);
 		});
 		more.setAttribute("aria-haspopup", "menu");
-		this.closeControls = createCloseControls(actions, {
-			part: "transcript",
-			thisLabel: "Close transcript pane",
-			thisClass: "perplexity-saver-transcript-close",
-			closeThis: () => {
-				if (this.host.closePanel) void this.host.closePanel(this.leaf).catch((error: unknown) => {
-					console.error("Perplexity Saver: could not close transcript", error);
-					new Notice("Could not close transcript pane.");
-				});
-				else this.leaf.detach();
-			},
-			closeBoth: this.host.closeMedia ? () => {
-				if (this.filePath) this.host.closeMedia?.(this.filePath);
-			} : undefined,
-		});
-		this.updateCloseControls();
 		this.playingPassageBtn = this.iconButton(header, "locate", "Show playing passage", () => {
 			// With Follow on this ends the hold; with Follow off it stays a one-time reveal.
 			if (this.follow) this.releaseHold();
@@ -1136,12 +1115,7 @@ export class TranscriptView extends ItemView {
 		});
 	}
 
-	private updateCloseControls(): void {
-		this.closeControls?.update(!!this.filePath && !!this.host.isPlayerShown?.(this.filePath));
-	}
-
 	refreshPlaybackControls(playing = this.playbackIsPlaying()): void {
-		this.updateCloseControls();
 		const controls = this.contentEl.querySelector<HTMLElement>(".perplexity-saver-transcript-playback");
 		if (!controls) return;
 		controls.hidden = !this.filePath || !!this.host.isVideoVisible?.(this.filePath, this.leaf);
