@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.19
+// @version      8.21
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1205,7 +1205,9 @@
     const ids = new Set();
     return results.map((entry) => {
       const workflow = entry.blocks?.find((b) => b.workflow_block)?.workflow_block;
-      const sources = entry.blocks?.find((b) => b.web_result_block)?.web_result_block?.web_results;
+      const sourceBlock = entry.blocks?.find((b) => "web_result_block" in b);
+      // Completed answers without web searches omit the entire source block.
+      const sources = sourceBlock ? sourceBlock.web_result_block?.web_results : [];
       const answers = workflow?.steps?.flatMap((step) => step.items || []).filter(
         (item) => item.type === "WORKFLOW_ITEM_TEXT" && item.variant === "answer"
       );
@@ -1306,9 +1308,10 @@
         reactUrls: turn.sources.slice(0, 6).map((s) => String(s.url).slice(0, 100)),
       });
     }
+    // Native Markdown escapes query separators; structured URLs are not Markdown.
     const firstBad = definitions.findIndex((d, i) =>
       d.turn !== number || d.number !== i + 1 ||
-      normalizeSourceUrl(d.url) !== normalizeSourceUrl(turn.sources[i].url)
+      normalizeSourceUrl(d.url.replace(/\\&/g, "&")) !== normalizeSourceUrl(turn.sources[i].url)
     );
     if (firstBad !== -1) {
       const native = definitions[firstBad];

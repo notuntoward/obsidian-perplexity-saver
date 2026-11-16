@@ -117,6 +117,41 @@ describe("native session exports", () => {
     expect(output.text).toContain("<!-- PPLX-ROLE: sources -->\n(none)");
   });
 
+  it("verifies and imports mixed sessions whose uncited turns omit the web-result block", () => {
+    const data = turns();
+    data[1] = { ...data[1], response: "An answer without a web search.", sources: [] };
+    const structured = results(data);
+    structured[1].blocks = structured[1].blocks.filter(b => !b.web_result_block);
+    const api = load();
+    expect(api.sessionTurnsFromResults(structured)).toEqual(data);
+    const output = api.annotateSessionConversation(nativeExport(data), api.sessionTurnsFromResults(structured));
+    const dialog = parsePerplexityDialog(output.text);
+    expect(output.warnings).toEqual([]);
+    expect(dialog.turns.map(t => t.role)).toEqual(["prompt", "ai", "prompt", "ai", "prompt", "ai"]);
+    expect(dialog.turns[3].rawText).toBe(data[1].response);
+    expect(dialog.turns[3].citations).toEqual([]);
+    expect(dialog.turns[5].citations[0].url).toBe(data[2].sources[0].url);
+  });
+
+  it.each([undefined, null, {}, [{ url: null }]])(
+    "rejects a present web-result block with malformed sources: %j",
+    (web_results) => {
+      const structured = results();
+      const block = structured[0].blocks.find(b => b.web_result_block)!;
+      Object.assign(block, { web_result_block: { web_results } });
+      expect(() => load().sessionTurnsFromResults(structured)).toThrow(/incomplete|unsupported/i);
+    },
+  );
+
+  it("rejects unresolved citations even when the web-result block is absent", () => {
+    const data = [{ ...turns()[0], response: "A claim.[1]", sources: [] }];
+    const structured = results(data);
+    structured[0].blocks = structured[0].blocks.filter(b => !b.web_result_block);
+    const api = load();
+    const extracted = api.sessionTurnsFromResults(structured);
+    expect(() => api.annotateSessionConversation(nativeExport(data), extracted)).toThrow(/verify/i);
+  });
+
   it("accepts native footnotes added for named references while retaining numbered citations", () => {
     const data = [{ ...turns()[0], response: "An answer.[1] Another fact [Publisher]." }];
     const native = nativeExport(data).replace("[Publisher]", "[Publisher][^1_2]");
@@ -180,6 +215,19 @@ describe("native session exports", () => {
     expect(output.warnings).toEqual([]);
     expect(output.text).toContain("[^1_1]: https://example.com/reports/84%200013_April25.pdf");
     expect(output.text).not.toContain("84 0013_April25.pdf");
+  });
+
+  it("verifies Markdown-escaped source query separators and emits the structured URL", () => {
+    const url = "https://www.tampermonkey.net/changelog.php?locale=en&more=true&show=neuu";
+    const data = [{ ...turns()[0], response: "An answer.[1]", sources: [{ url }] }];
+    const native = nativeExport(data).replace(url, url.replace(/&/g, "\\&"));
+    const output = load().annotateSessionConversation(native, data);
+    expect(output.warnings).toEqual([]);
+    expect(output.text).toContain(`[^1_1]: ${url}`);
+    expect(output.text).not.toContain("\\&");
+    expect(parsePerplexityDialog(output.text).turns[1].citations[0].url).toBe(url);
+    expect(() => load().annotateSessionConversation(native.replace("more=true", "more=false"), data)).toThrow(/verify/i);
+    expect(() => load().annotateSessionConversation(native.replace(/\\&/g, "%26"), data)).toThrow(/verify/i);
   });
 
   it("imports the assembled output as three complete prompt/answer pairs with sources", () => {

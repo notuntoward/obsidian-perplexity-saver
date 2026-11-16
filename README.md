@@ -420,6 +420,13 @@ Before copying, it checks response text (ignoring formatting/citation syntax),
 cited source numbers, every source URL and the conversation's turn order.
 It preserves native response formatting; it does not add source-card snippets
 or titles that the native export omits.
+Version 8.20 also accepts completed answers that omit the web-source block
+because they did not use web search, including sessions mixing sourced and
+source-free answers. Malformed source blocks and unresolved citations still
+fail verification rather than being silently dropped.
+Version 8.21 recognizes native Markdown's escaped `\&` query separators when
+checking source URLs, while keeping changed query values and encoded `%26`
+distinct. The output retains the structured URL without Markdown backslashes.
 Version 8.14 also repairs named citation labels that native export incorrectly
 wraps in multiline `$$` math delimiters. It restores the original bracketed
 label only when confirmed by the structured answer and followed by a native
