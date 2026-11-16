@@ -6,7 +6,7 @@ import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat
 import { insertionMessage, insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
 
 export type NotePlayback = Pick<VideoView,
-	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "getPlaybackToken" | "seekTo" |
+	"getVideoId" | "getFilePath" | "getPlaybackSeconds" | "getPlaybackToken" | "getDuration" | "seekTo" |
 	"isPlaying" | "isReady" | "togglePlay" | "pausePlayback" | "stepRate" | "setRate" |
 	"copyTimestampLink" | "openInBrowser" | "insertTimestampBullet">;
 
@@ -54,6 +54,7 @@ export class BackgroundPlayback implements NotePlayback {
 	}
 	getFilePath(): string { return this.filePath; }
 	getPlaybackSeconds(): number { return this.player.info.currentTime; }
+	getDuration(): number { return this.player.info.duration; }
 	getPlaybackToken(): { player: object; revision: number } | null {
 		return this.destroyed ? null : { player: this.player, revision: this.playbackRevision };
 	}

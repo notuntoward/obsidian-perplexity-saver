@@ -697,6 +697,12 @@
 .perplexity-saver-video-time {
 	flex: 0 1 auto;
 	min-width: 0;
+	height: auto;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	cursor: pointer;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -704,6 +710,17 @@
 	color: var(--text-muted);
 	font-size: var(--font-ui-small);
 	margin: 0 var(--size-4-1);
+}
+
+.perplexity-saver-video-time:hover {
+	color: var(--text-normal);
+	background: transparent;
+	box-shadow: none;
+}
+
+.perplexity-saver-video-time:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
 }
 
 .perplexity-saver-video-position {

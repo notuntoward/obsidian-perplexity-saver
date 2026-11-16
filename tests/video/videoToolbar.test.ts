@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 import { MockMenu, setIcon } from "commons/testing";
 import { VideoView, type TimestampInsertionTime } from "../../src/video/videoView";
+import * as goToTime from "../../src/video/goToTime";
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
@@ -70,6 +71,24 @@ describe("video toolbar capture destinations", () => {
 		};
 	});
 
+	it.each([false, true])("opens timestamp entry from the time display (popout=%s)", async (popout) => {
+		const doc = popout ? document.implementation.createHTMLDocument() : document;
+		Object.defineProperty(doc, "activeElement", { configurable: true, value: doc.body });
+		vi.stubGlobal("activeDocument", doc);
+		vi.stubGlobal("activeWindow", window);
+		try {
+			const h = await toolbar(doc);
+			const open = vi.spyOn(goToTime, "openGoToTime").mockImplementation(() => {});
+			const time = h.view.contentEl.querySelector<HTMLButtonElement>('button[aria-label="Go to time"]')!;
+			expect(time.ownerDocument).toBe(doc);
+			time.click();
+			expect(open).toHaveBeenCalledWith(h.view.app, h.view);
+			open.mockRestore();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it.each([false, true])("offers separate timestamp actions and persistent shared-first help (popout=%s)", async (popout) => {
 		const h = await toolbar(popout ? document.implementation.createHTMLDocument() : document);
 		const el = h.view.contentEl;
@@ -133,6 +152,7 @@ describe("video toolbar capture destinations", () => {
 		Object.assign(h.view, { videoId: "dQw4w9WgXcQ", filePath: "note.md" });
 		const info = { currentTime: 1, duration: 120, playbackRate: 1, playerState: 2 };
 		h.view["update"](info);
+		expect(h.view.contentEl.querySelector(".perplexity-saver-video-time")?.getAttribute("aria-label")).toBe("Go to time; 0:01 / 2:00");
 		h.view["update"]({ ...info, currentTime: 2 });
 		h.view["update"]({ ...info, currentTime: 2, playerState: 1 });
 		h.view["update"]({ ...info, currentTime: 3, playerState: 1 });

@@ -33,6 +33,7 @@ import {
 	type TimestampCopyFormat,
 } from "./youtubeLinks";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "./youtubePlayer";
+import { openGoToTime } from "./goToTime";
 
 export const VIDEO_VIEW_TYPE = "perplexity-saver-video";
 
@@ -221,6 +222,10 @@ export class VideoView extends ItemView {
 		return this.player?.info.currentTime ?? this.startTime;
 	}
 
+	getDuration(): number {
+		return this.player?.info.duration ?? 0;
+	}
+
 	/** Closing an unstarted viewer must not erase its unchosen saved position. */
 	getBookmarkSeconds(): number {
 		return this.resumeAt ?? this.getPlaybackSeconds();
@@ -299,7 +304,11 @@ export class VideoView extends ItemView {
 		this.bindOverlay(overlay);
 
 		const position = el.createDiv({ cls: "perplexity-saver-video-position" });
-		this.timeEl = position.createSpan({ cls: "perplexity-saver-video-time", text: "0:00" });
+		this.timeEl = position.createEl("button", {
+			cls: "perplexity-saver-video-time", text: "0:00",
+			attr: { type: "button", "aria-label": "Go to time", title: "Go to time..." },
+		});
+		this.timeEl.addEventListener("click", () => openGoToTime(this.app, this));
 		const timeline = el.createDiv({ cls: "perplexity-saver-video-timeline" });
 		this.trackEl = timeline.createDiv({
 			cls: "perplexity-saver-video-track",
@@ -407,7 +416,8 @@ export class VideoView extends ItemView {
 				["video-viewer-play-pause", "play / pause"], ["video-seek-backward-10-seconds", "back 10 seconds"],
 				["video-seek-forward-10-seconds", "forward 10 seconds"], ["video-viewer-previous-note-timestamp", "previous segment"],
 				["video-viewer-next-note-timestamp", "next segment"], ["video-viewer-insert-timestamp", "insert timestamp"],
-				["video-viewer-copy-timestamp", "copy timestamp"], ["show-youtube-transcript", "show / hide transcript"],
+				["video-viewer-copy-timestamp", "copy timestamp"], ["video-go-to-time", "go to time"],
+				["show-youtube-transcript", "show / hide transcript"],
 				["video-viewer-faster", "faster"], ["video-viewer-slower", "slower"],
 				["video-close-media", "close player and transcript"],
 			].map(([id, action]) => {
@@ -650,6 +660,7 @@ export class VideoView extends ItemView {
 	private update(info: PlayerInfo): void {
 		const duration = info.duration;
 		this.timeEl.setText(duration > 0 ? `${formatClock(info.currentTime)} / ${formatClock(duration)}` : formatClock(info.currentTime));
+		this.timeEl.setAttribute("aria-label", `Go to time; ${this.timeEl.getText()}`);
 		const pct = duration > 0 ? Math.min(100, (info.currentTime / duration) * 100) : 0;
 		this.trackEl.setCssProps({ "--perplexity-saver-video-pos": `${pct}%` });
 		this.trackEl.setAttribute("aria-valuemax", String(Math.floor(duration)));

@@ -16,6 +16,7 @@ import * as workspaceApi from "commons/workspace";
 import * as windowsApi from "commons/windows";
 import { registerInsertionTargetMarker } from "../../src/video/insertionMarker";
 import { runCaptionTiming } from "../../src/litNote/captionTiming";
+import * as goToTime from "../../src/video/goToTime";
 
 const markerWindowSetup = vi.hoisted(() => vi.fn<typeof import("commons/windows").forEachWindow>());
 
@@ -274,7 +275,7 @@ describe("transcript playback state", () => {
 		const info: PlayerInfo = { currentTime: 1, duration: 120, playbackRate: 1, playerState: PLAYER_STATE.playing };
 		Object.assign(viewer, {
 			videoId: "dQw4w9WgXcQ", filePath: h.file.path, player: { info },
-			timeEl: { setText: vi.fn(), getText: () => "0:00" },
+			timeEl: { setText: vi.fn(), getText: () => "0:00", setAttribute: vi.fn() },
 			trackEl: { setCssProps: vi.fn(), setAttribute: vi.fn() },
 			playBtn, renderMarks: vi.fn(),
 		});
@@ -599,6 +600,61 @@ describe("ten second playback commands", () => {
 		expect(playback!.isPlaying()).toBe(playing);
 		expect(h.app.workspace.setActiveLeaf).not.toHaveBeenCalled();
 		await h.transcript.onClose();
+	});
+});
+
+describe("go to time entry points", () => {
+	it.each(["note", "video", "transcript"] as const)("opens the shared form for the associated player from %s", async (context) => {
+		const h = await harness();
+		navigationPlayer(h);
+		navigationContext(h, context);
+		const open = vi.spyOn(goToTime, "openGoToTime").mockImplementation(() => {});
+		const command = navigationCommands(h).commands.find((item) => item.id === "video-go-to-time")!;
+		expect(command.checkCallback!(true)).toBe(true);
+		command.checkCallback!(false);
+		await vi.waitFor(() => expect(open).toHaveBeenCalledWith(h.app, h.viewerLeaf.view));
+	});
+
+	it.each(["note", "transcript"] as const)("opens the shared form for background playback from %s", async (context) => {
+		const h = await harness();
+		h.leaves.length = 0;
+		const note = addNote(h);
+		h.leaves.push(h.transcriptLeaf);
+		h.app.workspace.activeLeaf = context === "note" ? note : h.transcriptLeaf;
+		h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+		const playback = await h.plugin["backgroundPlaybackFor"](h.file as TFile);
+		const open = vi.spyOn(goToTime, "openGoToTime").mockImplementation(() => {});
+		const command = navigationCommands(h).commands.find((item) => item.id === "video-go-to-time")!;
+		expect(command.checkCallback!(false)).toBe(true);
+		await vi.waitFor(() => expect(open).toHaveBeenCalledWith(h.app, playback));
+		await h.transcript.onClose();
+	});
+
+	it.each([false, true])("uses the transcript menu's own playback, even in a popout (background=%s)", async (background) => {
+		const doc = document.implementation.createHTMLDocument();
+		Object.defineProperty(doc, "activeElement", { configurable: true, value: doc.body });
+		vi.stubGlobal("activeDocument", doc);
+		vi.stubGlobal("activeWindow", window);
+		try {
+			const h = await harness();
+			addNote(h);
+			const { panel } = await playbackPanel(h, doc);
+			const open = vi.spyOn(goToTime, "openGoToTime").mockImplementation(() => {});
+			let target: unknown = h.viewerLeaf.view;
+			if (background) {
+				h.leaves.splice(h.leaves.indexOf(h.viewerLeaf), 1);
+				h.app.vault.cachedRead = vi.fn(async () => "https://youtu.be/dQw4w9WgXcQ");
+				target = await h.plugin["backgroundPlaybackFor"](h.file as TFile);
+			}
+			expect(target).not.toBeNull();
+			panel.contentEl.querySelector<HTMLElement>('[aria-label="More transcript options"]')!.click();
+			h.app.workspace.activeLeaf = null;
+			MockMenu.last!.items.find((item) => item.title === "Go to time...")!.click();
+			await vi.waitFor(() => expect(open).toHaveBeenCalledWith(h.app, target));
+			if (background) await panel.onClose();
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
 

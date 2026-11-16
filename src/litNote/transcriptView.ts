@@ -198,7 +198,7 @@ export interface TranscriptViewHost {
 	isVideoVisible?(filePath: string, leaf: WorkspaceLeaf): boolean;
 	isPlaybackPlaying?(filePath: string): boolean;
 	onPlaybackSessionChanged?(filePath: string, videoId: string): void;
-	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert"): void;
+	runPlaybackControl?(filePath: string, action: "play" | "previous" | "next" | "insert" | "go-to-time"): void;
 	movePanel?(filePath: string, location: TranscriptPanelLocation): Promise<void>;
 	toggleOrientation?(filePath: string): Promise<void>;
 	getOrientation?(filePath: string): "below" | "beside";
@@ -983,6 +983,10 @@ export class TranscriptView extends ItemView {
 		const actions = controls.createDiv({ cls: "perplexity-saver-transcript-control-group" });
 		const more = this.iconButton(actions, "ellipsis", "More transcript options", () => {
 			const menu = new Menu();
+			if (this.filePath && this.host.runPlaybackControl) {
+				const filePath = this.filePath;
+				menu.addItem((item) => item.setTitle("Go to time...").onClick(() => this.host.runPlaybackControl?.(filePath, "go-to-time")));
+			}
 			menu.addItem((item) => item.setTitle("Transcript details").onClick(() => { new Notice(`${details}. ${this.alignmentStatus}`, 12000); }));
 			if (this.aligning) {
 				menu.addItem((item) => item.setTitle("Cancel caption timing").onClick(() => this.host.cancelAlignment?.()));

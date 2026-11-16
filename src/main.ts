@@ -89,6 +89,7 @@ import { findNoteVideoId, parseYouTubeUrl, type TimestampCopyFormat } from "./vi
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
 import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, isSavedVideoWorkspace, type SavedVideoWorkspace, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
+import { openGoToTime } from "./video/goToTime";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
 import { registerInsertionTargetMarker } from "./video/insertionMarker";
 import { openVideoLeaf, registerNoteVideoActions } from "./video/noteVideoAction";
@@ -565,6 +566,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-play-pause", "Video: play or pause", (v) => v.togglePlay()],
 			["video-seek-backward-10-seconds", "Video: back 10 seconds", (v) => v.seekTo(v.getPlaybackSeconds() - 10)],
 			["video-seek-forward-10-seconds", "Video: forward 10 seconds", (v) => v.seekTo(v.getPlaybackSeconds() + 10)],
+			["video-go-to-time", "Video: go to time...", (v) => openGoToTime(this.app, v)],
 			["video-viewer-faster", "Video viewer: faster playback", (v) => v.stepRate(1)],
 			["video-viewer-slower", "Video viewer: slower playback", (v) => v.stepRate(-1)],
 			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
@@ -1210,9 +1212,14 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	/** Toolbar play/previous/next/insert: drive the session's player, never start a second one. */
-	private async runTranscriptControl(file: TFile, action: "play" | "previous" | "next" | "insert"): Promise<void> {
+	private async runTranscriptControl(file: TFile, action: "play" | "previous" | "next" | "insert" | "go-to-time"): Promise<void> {
 		const origin = mediaWindowFor(this.app, file);
 		const attached = playerForNote(this.app, file)?.view ?? null;
+		if (action === "go-to-time") {
+			const playback = attached ?? await this.backgroundPlaybackFor(file, undefined, origin);
+			if (playback) openGoToTime(this.app, playback);
+			return;
+		}
 		if (action === "play") {
 			if (attached) {
 				attached.togglePlay();
