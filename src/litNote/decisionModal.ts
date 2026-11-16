@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { applyModalAppearance } from "commons/modal";
 
 /**
  * A decision the user can make when a lit note already exists (create flow) or
@@ -54,14 +55,16 @@ export function askNoteDecision(
 				const modal = new (class extends Modal {
 					onOpen(): void {
 						this.titleEl.setText(title);
+						applyModalAppearance(this, { size: "standard" });
+						const messageEl = this.contentEl.createDiv({ cls: "commons-modal-intro" });
 						for (const p of message.split("\n\n")) {
 							const trimmed = p.trim();
 							if (!trimmed) continue;
 							const lines = trimmed.split("\n");
 							if (lines.length === 1) {
-								this.contentEl.createEl("p", { text: trimmed });
+								messageEl.createEl("p", { text: trimmed });
 							} else {
-								const pEl = this.contentEl.createEl("p");
+								const pEl = messageEl.createEl("p");
 								for (let i = 0; i < lines.length; i++) {
 									if (i > 0) {
 										pEl.createEl("br");
@@ -71,7 +74,7 @@ export function askNoteDecision(
 							}
 						}
 						const row = this.contentEl.createDiv({
-							cls: "modal-button-container",
+							cls: "modal-button-container commons-modal-actions",
 						});
 						for (const button of buttons) {
 							const el = row.createEl("button", { text: button.label });

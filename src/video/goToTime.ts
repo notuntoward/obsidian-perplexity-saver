@@ -1,5 +1,5 @@
 import { Modal, type App } from "obsidian";
-import { closeOnEscapeFromOtherWindows } from "commons/modal";
+import { applyModalAppearance, closeOnEscapeFromOtherWindows } from "commons/modal";
 import type { NotePlayback } from "./backgroundPlayback";
 import { formatClock, parseYouTubeTime } from "./youtubeLinks";
 
@@ -12,13 +12,19 @@ export function openGoToTime(app: App, playback: SeekablePlayback): void {
 
 		onOpen(): void {
 			this.titleEl.setText("Go to time");
+			applyModalAppearance(this, { size: "compact" });
 			const form = this.contentEl.createEl("form");
-			form.createEl("p", { text: "Enter seconds, m:ss, or h:mm:ss." });
-			const input = form.createEl("input", {
-				attr: { type: "text", "aria-label": "Video timestamp", placeholder: "1:23", autocomplete: "off" },
+			const field = form.createEl("label", { cls: "commons-modal-field" });
+			field.createSpan({ text: "Timestamp" });
+			const control = field.createSpan({ cls: "commons-modal-control" });
+			const formatHelp = "Seconds, m:ss, or h:mm:ss.";
+			const input = control.createEl("input", {
+				cls: "commons-modal-input",
+				attr: { type: "text", "aria-label": "Video timestamp", "aria-description": formatHelp, placeholder: "1:23", autocomplete: "off" },
 			});
-			const error = form.createDiv({ attr: { role: "alert" } });
-			const buttons = form.createDiv({ cls: "modal-button-container" });
+			control.createSpan({ cls: "commons-modal-description", text: formatHelp });
+			const error = form.createDiv({ cls: "commons-modal-error", attr: { role: "alert" } });
+			const buttons = form.createDiv({ cls: "modal-button-container commons-modal-actions" });
 			const cancel = buttons.createEl("button", { text: "Cancel", attr: { type: "button" } });
 			cancel.addEventListener("click", () => this.close());
 			buttons.createEl("button", { text: "Go to time", cls: "mod-cta", attr: { type: "submit" } });

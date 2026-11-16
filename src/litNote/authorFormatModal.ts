@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { applyModalAppearance } from "commons/modal";
 import type { AuthorFormatIssue } from "./authorFormatValidator";
 
 export type AuthorFormatDecision = "create-anyway" | "auto-correct" | "edit" | "cancel";
@@ -43,10 +44,11 @@ export function askAuthorFormatDecision(
 				const modal = new (class extends Modal {
 					onOpen(): void {
 						this.titleEl.setText("Author name format warning");
+						applyModalAppearance(this, { size: "standard" });
 
 						this.contentEl.createEl("p", {
 							text: "One or more creator fields are not in the 'last, first' format required for Obsidian bases searches by last name:",
-							cls: "author-format-desc",
+							cls: "author-format-desc commons-modal-intro",
 						});
 
 						const listContainer = this.contentEl.createDiv({
@@ -102,7 +104,7 @@ export function askAuthorFormatDecision(
 						}
 
 						const row = this.contentEl.createDiv({
-							cls: "modal-button-container",
+							cls: "modal-button-container commons-modal-actions",
 						});
 
 						// Option 1 (conditional): Auto-correct & create

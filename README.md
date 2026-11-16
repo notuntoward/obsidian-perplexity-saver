@@ -9,6 +9,13 @@ This plugin saves conversational threads from Perplexity.ai into your Obsidian v
 
 It also supports rich integration with Zotero 7/8/9 to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
 
+The time-entry, literature-note decision and author-format dialogs use the shared
+`commons/modal` appearance: plain headings, readable unshaded text, aligned form
+controls and responsive action rows, following the active Obsidian theme. The time
+dialog has a labeled timestamp field with format guidance beneath it; labels stack
+above controls on narrow screens. Simple dialogs omit decorative icons and
+standard-key shortcut footers. Existing validation, warning actions, prompt
+serialization and cancel behavior are unchanged.
 
 ```mermaid
 flowchart TD

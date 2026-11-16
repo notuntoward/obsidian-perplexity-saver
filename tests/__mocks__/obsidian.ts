@@ -203,6 +203,28 @@ export class Modal {
 /** Registry of Modal instances so tests can drive button clicks. */
 export const createdModals: Modal[] = [];
 
+/** Real DOM counterpart for modal layout and accessibility tests. */
+export class DomModal {
+	modalEl: HTMLElement;
+	titleEl: HTMLElement;
+	contentEl: HTMLElement;
+	closed = false;
+
+	constructor(doc: Document) {
+		installEditorDomHelpers(doc);
+		this.modalEl = doc.createElement("div");
+		this.modalEl.className = "modal";
+		this.titleEl = this.modalEl.createDiv({ cls: "modal-title" });
+		this.contentEl = this.modalEl.createDiv({ cls: "modal-content" });
+		doc.body.appendChild(this.modalEl);
+	}
+
+	open(): void { this.onOpen(); }
+	close(): void { this.closed = true; this.onClose(); this.modalEl.remove(); }
+	onOpen(): void {}
+	onClose(): void {}
+}
+
 /**
  * Tiny DOM-element stand-in so modal code can build button rows and tests can
  * find and click the buttons without a real DOM.

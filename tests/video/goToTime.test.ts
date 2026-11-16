@@ -8,15 +8,8 @@ import { installEditorDomHelpers } from "../__mocks__/obsidian";
 const state = vi.hoisted(() => ({ doc: null as Document | null, modal: null as { contentEl: HTMLElement; closed: boolean } | null }));
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
-	Modal: class {
-		titleEl = state.doc!.createElement("h2");
-		contentEl = state.doc!.createElement("div");
-		closed = false;
-		constructor() { state.modal = this; }
-		open(): void { this.onOpen(); }
-		close(): void { this.closed = true; this.onClose(); }
-		onOpen(): void {}
-		onClose(): void {}
+	Modal: class extends (await original<typeof import("../__mocks__/obsidian")>()).DomModal {
+		constructor() { super(state.doc!); state.modal = this; }
 	},
 }));
 
@@ -96,10 +89,25 @@ describe("go to time", () => {
 			installEditorDomHelpers(doc);
 			const h = open();
 			expect(h.input.ownerDocument).toBe(doc);
+			expect(doc.head.querySelector("style[data-commons-modal]")).not.toBeNull();
+			expect(h.input.closest("label")?.textContent).toBe("TimestampSeconds, m:ss, or h:mm:ss.");
+			expect(h.input.getAttribute("aria-description")).toBe("Seconds, m:ss, or h:mm:ss.");
 			h.submit("1:23");
 			expect(h.playback.seekTo).toHaveBeenCalledWith(83);
 		} finally {
 			vi.unstubAllGlobals();
 		}
+	});
+
+	it("keeps the input focused and clears validation feedback when editing", () => {
+		const h = open();
+		expect(document.activeElement).toBe(h.input);
+		expect(h.input.closest(".commons-modal-compact")).not.toBeNull();
+		h.submit("invalid");
+		h.input.value = "1:23";
+		h.input.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(h.modal.contentEl.querySelector('[role="alert"]')?.textContent).toBe("");
+		h.submit(h.input.value);
+		expect(h.playback.seekTo).toHaveBeenCalledWith(83);
 	});
 });
