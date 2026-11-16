@@ -297,6 +297,27 @@ describe("native session exports", () => {
     }
   });
 
+  it("reports bounded unmatched trailing content instead of silently discarding it", () => {
+    const data = turns();
+    const extra = "Unexpected additional answer. ".repeat(100);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => load().annotateSessionConversation(nativeExport(data) + "\n\n---\n\n" + extra, data))
+        .toThrow("Could not verify all session export turns.");
+      const report = spy.mock.calls.map(call => String(call[0]))
+        .find(message => message.includes("[PPLX Session Diag]"));
+      expect(report).toBeTruthy();
+      const payload = JSON.parse(String(report).slice(String(report).indexOf("{")));
+      expect(payload.reason).toBe("unmatched-trailing-content");
+      expect(payload.turnCount).toBe(3);
+      expect(payload.remainingLength).toBe(extra.trim().length);
+      expect(payload.head).toBe(extra.slice(0, 240));
+      expect(payload.tail).toBe(extra.trim().slice(-240));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("reads only the known results property on a bounded ancestor chain", () => {
     document.body.innerHTML = '<main><div data-message-bubble="right">Only the last visible prompt</div></main>';
     const bubble = document.querySelector("[data-message-bubble]");

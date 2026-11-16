@@ -445,7 +445,10 @@ the clipboard unchanged and saves the unmodified native file instead. That file
 may still lack prompts; it is not a verified complete conversation. Version 8.16
 and later log a single `[PPLX Session Diag]` console entry first, naming the
 failed check (source count or order, answer text, citation IDs) with short
-head/tail samples of the attempted chunks. Source URLs are compared after
+head/tail samples of the attempted chunks.
+Version 8.22 also reports `unmatched-trailing-content` with the remaining
+length and bounded head/tail samples when text remains after all turns match.
+Source URLs are compared after
 decoding percent-escapes, because Perplexity's native Markdown can contain a
 raw space where its structured data uses `%20` (for example
 `84 0013_April25.pdf`); version 8.18 writes that encoded form into the note so

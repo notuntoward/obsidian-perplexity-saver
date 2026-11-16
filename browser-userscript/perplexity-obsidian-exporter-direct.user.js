@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.21
+// @version      8.22
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1479,7 +1479,21 @@
         `<!-- PPLX-ROLE: sources -->\n${verified.sources || "(none)"}`
       );
     }
-    if (text.slice(offset).trim()) throw new Error("Could not verify all session export turns.");
+    const remaining = text.slice(offset).trim();
+    if (remaining) {
+      console.error("[PPLX Session Diag] " + JSON.stringify({
+        version: typeof GM_info !== "undefined" && GM_info?.script?.version ? GM_info.script.version : "unknown",
+        reason: "unmatched-trailing-content",
+        exportLength: text.length,
+        separators: separators.length,
+        turnCount: turns.length,
+        offset,
+        remainingLength: remaining.length,
+        head: remaining.slice(0, 240),
+        tail: remaining.slice(-240),
+      }));
+      throw new Error("Could not verify all session export turns.");
+    }
     return { text: output.join("\n\n"), warnings: [] };
   }
 
