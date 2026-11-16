@@ -10,6 +10,12 @@ Restore only missing/changed sections after compaction.
   build inputs AND linked commons; validate unchecked pending source once.
 - Source changes: targeted iteration tests, required final checks once; reuse
   composite steps and verify their bundle rather than rebundling.
+- Userscript-only changes (including related tests): Tampermonkey loads
+  `browser-userscript/*.user.js` directly, independently of the Obsidian bundle.
+  Run focused userscript tests and syntax checks; do not build or verify `main.js`.
+  The full unit suite is required only when plugin source, shared parser behavior,
+  or build inputs also change. Update README only when installation instructions
+  or user-visible behavior need clarification, not merely for diagnostic logging.
 Keep fresh Git branch/identity/message/hook checks and final remote-tip verification.
 
 ## Shared library: commons
@@ -25,7 +31,7 @@ commons-adoption branch and explicit-ref/tag-disabled publication rules.
 
 ## Build verification rule
 
-For changed source/build inputs, use the package's fast bundler only during an
+For changed Obsidian plugin source/build inputs, use the package's fast bundler only during an
 actual runtime iteration. At completion, run its production build and required
 unit tests once; skip steps already included in the composite build. Record the
 build start and verify root main.js is newer and contains a unique changed
@@ -118,7 +124,8 @@ The OS-level window raising and Windows Foreground Lock bypass logic is now owne
 - `tests/litNote/decisionModal.test.ts` drives the mock `Modal` exported by
   `tests/__mocks__/obsidian.ts` (which exposes `createdModals`). Extend that
   mock rather than re-implementing DOM stubs.
-- Run `npm run test:run` before declaring a change done.
+- Run `npm run test:run` before declaring a plugin change done; for userscript-only
+  changes, follow the focused validation exception under Task scope and validation.
 
 ## Literature Note Format History (Read Before Touching Note I/O)
 
