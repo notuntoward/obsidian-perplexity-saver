@@ -110,24 +110,26 @@ describe("Direct exporter controls ported from the Complexity workflow", () => {
     vi.stubGlobal("GM_setClipboard", clipboard);
     vi.stubGlobal("ResizeObserver", class { observe() {} });
     vi.stubGlobal("MutationObserver", class { observe() {} disconnect() {} });
-    vi.stubGlobal("URL", { createObjectURL: () => "blob:export" });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({
+        entries: [{
+          uuid: "turn", query_str: "Full prompt", status: "completed",
+          text: JSON.stringify([{ content: { answer: JSON.stringify({
+            answer: "An answer with no web search.", web_results: [],
+          }) } }]),
+        }],
+        has_next_page: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetcher);
     const windowListeners = vi.spyOn(window, "addEventListener");
     const documentListeners = vi.spyOn(document, "addEventListener");
-    const bubble = document.querySelector("[data-message-bubble]")!;
-    Object.defineProperty(bubble, "__reactFiber$test", { enumerable: true, value: {
-      memoizedProps: { placeholderResults: [{
-        uuid: "turn", query_str: "Full prompt", status: "COMPLETED",
-        blocks: [{ workflow_block: {
-          status: "WORKFLOW_COMPLETED",
-          steps: [{ items: [{
-            type: "WORKFLOW_ITEM_TEXT", variant: "answer",
-            payload: { text_payload: { text: "An answer with no web search.", is_streaming: false } },
-          }] }],
-        } }, { web_result_block: { web_results: [] } }],
-      }] },
-    } });
     try {
-      new Function("location", script)({ href: "https://www.perplexity.ai/session/test", pathname: "/session/test" });
+      new Function("location", script)({
+        href: "https://www.perplexity.ai/session/test", pathname: "/session/test",
+        origin: "https://www.perplexity.ai",
+      });
       const control = button();
       const exportBlob = () => {
         const blob = new Blob(["native"]);
@@ -156,6 +158,13 @@ describe("Direct exporter controls ported from the Complexity workflow", () => {
 
       exportBlob();
       await vi.advanceTimersByTimeAsync(0);
+      expect(clipboard).toHaveBeenCalledTimes(2);
+      expect(control.disabled).toBe(false);
+
+      fetcher.mockRejectedValueOnce(new Error("Session request failed"));
+      exportBlob();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(download).toHaveBeenCalledTimes(2);
       expect(clipboard).toHaveBeenCalledTimes(2);
       expect(control.disabled).toBe(false);
     } finally {

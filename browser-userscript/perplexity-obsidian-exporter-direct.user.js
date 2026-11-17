@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.22
+// @version      8.24
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1204,40 +1204,80 @@
     }
     const ids = new Set();
     return results.map((entry) => {
-      const workflow = entry.blocks?.find((b) => b.workflow_block)?.workflow_block;
-      const sourceBlock = entry.blocks?.find((b) => "web_result_block" in b);
-      // Completed answers without web searches omit the entire source block.
-      const sources = sourceBlock ? sourceBlock.web_result_block?.web_results : [];
-      const answers = workflow?.steps?.flatMap((step) => step.items || []).filter(
-        (item) => item.type === "WORKFLOW_ITEM_TEXT" && item.variant === "answer"
-      );
+      let response, sources;
+      const apiRecord = entry.status === "completed" && typeof entry.text === "string";
+      if (apiRecord) {
+        const steps = JSON.parse(entry.text);
+        const serialized = Array.isArray(steps) && steps.at(-1)?.content?.answer;
+        if (typeof serialized !== "string") throw new Error("Session answer data is unavailable or unsupported.");
+        const answer = JSON.parse(serialized);
+        response = answer?.answer;
+        sources = answer?.web_results;
+      } else {
+        const workflow = entry.blocks?.find((b) => b.workflow_block)?.workflow_block;
+        const sourceBlock = entry.blocks?.find((b) => "web_result_block" in b);
+        sources = sourceBlock ? sourceBlock.web_result_block?.web_results : [];
+        const answers = workflow?.steps?.flatMap((step) => step.items || []).filter(
+          (item) => item.type === "WORKFLOW_ITEM_TEXT" && item.variant === "answer"
+        );
+        if (entry.status !== "COMPLETED" || workflow?.status !== "WORKFLOW_COMPLETED" ||
+            !answers?.length || answers.some((item) =>
+              typeof item.payload?.text_payload?.text !== "string" ||
+              item.payload.text_payload.is_streaming)) {
+          throw new Error("Session conversation data is incomplete or unsupported.");
+        }
+        response = answers.map((item) => item.payload.text_payload.text).join("\n\n");
+      }
       if (typeof entry.uuid !== "string" || ids.has(entry.uuid) ||
           typeof entry.query_str !== "string" || !entry.query_str.trim() ||
-          entry.status !== "COMPLETED" || workflow?.status !== "WORKFLOW_COMPLETED" ||
-          !answers?.length || answers.some((item) =>
-            typeof item.payload?.text_payload?.text !== "string" ||
-            item.payload.text_payload.is_streaming) ||
-          !Array.isArray(sources) || sources.some((s) => typeof s.url !== "string")) {
+          typeof response !== "string" ||
+          !Array.isArray(sources) || sources.some((s) => typeof s?.url !== "string")) {
         throw new Error("Session conversation data is incomplete or unsupported.");
       }
       ids.add(entry.uuid);
-      const response = answers.map((item) => item.payload.text_payload.text).join("\n\n");
       if (!response.trim()) throw new Error("Session answer is empty.");
-      return { id: entry.uuid, prompt: entry.query_str, response, sources: sources.map((s) => ({ url: s.url })) };
+      return { id: entry.uuid, prompt: entry.query_str, response, sources: sources.map((s) => {
+        if (!apiRecord) return { url: s.url };
+        // API source URLs can carry an HTML-entity layer absent from native Markdown.
+        const decoder = document.createElement("textarea");
+        decoder.innerHTML = s.url;
+        return { url: decoder.value };
+      }) };
     });
   }
 
-  function readSessionTurns() {
-    // Earlier turns may not be mounted. The session component above a visible
-    // bubble holds all results; inspect only this known prop, never hooks/DOM graphs.
-    const seed = document.querySelector('main [data-message-bubble="right"], main [data-workflow-entry]');
-    const key = seed && Object.keys(seed).find((k) => k.startsWith("__reactFiber$"));
-    let fiber = key ? seed[key] : null;
-    for (let depth = 0; fiber && depth < 80; depth++, fiber = fiber.return) {
-      const results = fiber.memoizedProps?.placeholderResults;
-      if (Array.isArray(results)) return sessionTurnsFromResults(results);
+  async function readSessionTurns() {
+    // React's placeholderResults can contain only the initial turn, even when
+    // the live conversation and native export contain many more.
+    const session = location.pathname.match(/^\/session\/([^/]+)\/?$/);
+    if (!session) throw new Error("Cannot identify the session to export.");
+    const entries = [];
+    const cursors = new Set();
+    const signal = AbortSignal.timeout(15000);
+    let cursor = null;
+    for (let page = 0; page < 10; page++) {
+      const url = new URL(`/rest/thread/${encodeURIComponent(session[1])}`, location.origin);
+      url.search = new URLSearchParams({
+        version: "2.18", source: "default", from_first: "true", limit: "100",
+      }).toString();
+      if (cursor !== null) url.searchParams.set("cursor", cursor);
+      const response = await fetch(url, { credentials: "same-origin", signal });
+      if (!response.ok) throw new Error(`Session request failed (HTTP ${response.status}).`);
+      const data = await response.json();
+      if (!Array.isArray(data?.entries) || !data.entries.length ||
+          typeof data.has_next_page !== "boolean") {
+        throw new Error("Session response is incomplete or unsupported.");
+      }
+      entries.push(...data.entries);
+      if (entries.length > 1000) throw new Error("Session conversation is too large to verify.");
+      if (!data.has_next_page) return sessionTurnsFromResults(entries);
+      if (typeof data.next_cursor !== "string" || !data.next_cursor || cursors.has(data.next_cursor)) {
+        throw new Error("Session pagination cursor is missing or repeated.");
+      }
+      cursor = data.next_cursor;
+      cursors.add(cursor);
     }
-    throw new Error("Cannot read the full session conversation. Reload the page and retry.");
+    throw new Error("Session pagination limit reached before the full conversation was read.");
   }
 
   function sessionComparable(text) {
@@ -1308,10 +1348,11 @@
         reactUrls: turn.sources.slice(0, 6).map((s) => String(s.url).slice(0, 100)),
       });
     }
-    // Native Markdown escapes query separators; structured URLs are not Markdown.
+    // CommonMark backslash escapes apply to ASCII punctuation in native URLs,
+    // not to the structured URLs or percent-encoded reserved characters.
     const firstBad = definitions.findIndex((d, i) =>
       d.turn !== number || d.number !== i + 1 ||
-      normalizeSourceUrl(d.url.replace(/\\&/g, "&")) !== normalizeSourceUrl(turn.sources[i].url)
+      normalizeSourceUrl(d.url.replace(/\\([!-/:-@[-`{-~])/g, "$1")) !== normalizeSourceUrl(turn.sources[i].url)
     );
     if (firstBad !== -1) {
       const native = definitions[firstBad];
@@ -1543,7 +1584,7 @@
     let assembled;
     if (/^\/session\//.test(location.pathname)) {
       try {
-        assembled = annotateSessionConversation(logoStripped, readSessionTurns());
+        assembled = annotateSessionConversation(logoStripped, await readSessionTurns());
       } catch (err) {
         console.error("[PPLX Obsidian Exporter] Session verification failed:", err);
         showToast("Session export could not be verified - clipboard unchanged; saving native file instead. See Console.", "error");

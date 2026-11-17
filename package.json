@@ -17,7 +17,9 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "debug:perplexity": "node scripts/perplexity-debug.mjs",
+    "test:perplexity-debug": "node scripts/perplexity-debug.self-test.mjs"
   },
   "keywords": [
     "obsidian",

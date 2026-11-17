@@ -50,6 +50,11 @@ unload cleanup. Bootstrap official scaffolding/types only in a confirmed blank r
 
 ## 4. Userscript Maintenance & Anti-Pattern Warnings
 
+For Perplexity export failures, follow
+[debug-perplexity-export](.agents/skills/debug-perplexity-export/SKILL.md):
+use the authenticated private Playwright corpus and offline replay before asking
+the user to paste console diagnostics. Keep profiles and real captures out of Git.
+
 When modifying the Tampermonkey script (`browser-userscript/perplexity-obsidian-exporter-direct.user.js`), be extremely careful when performing deep object traversal across React Hook states or global properties.
 
 > **CRITICAL BROWSER HANG WARNING:**

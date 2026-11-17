@@ -24,7 +24,7 @@ function helper(name: string) {
   return match[0];
 }
 
-function load() {
+function load(fetcher = vi.fn()) {
   const names = [
     "buildComparableWithMap", "sessionComparable", "sessionMarkdownMarkers",
     "sessionTurnsFromResults", "readSessionTurns", "normalizeSourceUrl",
@@ -33,10 +33,12 @@ function load() {
   ];
   const api: {
     sessionTurnsFromResults: (results: unknown) => SessionTurn[];
-    readSessionTurns: () => SessionTurn[];
+    readSessionTurns: () => Promise<SessionTurn[]>;
     annotateSessionConversation: (text: string, turns: SessionTurn[]) => AnnotatedExport;
-  } = new Function("document", names.map(helper).join("\n") +
-    "\nreturn { sessionTurnsFromResults, readSessionTurns, annotateSessionConversation };")(document);
+  } = new Function("document", "fetch", "location", names.map(helper).join("\n") +
+    "\nreturn { sessionTurnsFromResults, readSessionTurns, annotateSessionConversation };")(
+      document, fetcher, new URL("https://www.perplexity.ai/session/test"),
+    );
   return api;
 }
 
@@ -73,6 +75,15 @@ function results(data = turns()) {
       } },
       { web_result_block: { web_results: t.sources } },
     ],
+  }));
+}
+
+function apiEntries(data = turns()) {
+  return data.map(t => ({
+    uuid: t.id, query_str: t.prompt, status: "completed",
+    text: JSON.stringify([{ content: { answer: JSON.stringify({
+      answer: t.response, web_results: t.sources,
+    }) } }]),
   }));
 }
 
@@ -230,6 +241,30 @@ describe("native session exports", () => {
     expect(() => load().annotateSessionConversation(native.replace(/\\&/g, "%26"), data)).toThrow(/verify/i);
   });
 
+  it("verifies Markdown escapes for dollar signs, underscores and parentheses in source URLs", () => {
+    const url = "https://example.com/Income_Over_$1_Million_(2026)";
+    const data = [{ ...turns()[0], response: "An answer.[1]", sources: [{ url }] }];
+    const native = nativeExport(data).replace(url, url.replace(/[$_()]/g, "\\$&"));
+    const output = load().annotateSessionConversation(native, data);
+    expect(output.warnings).toEqual([]);
+    expect(output.text).toContain(`[^1_1]: ${url}`);
+    expect(() => load().annotateSessionConversation(native.replace("Million", "Billion"), data)).toThrow(/verify/i);
+  });
+
+  it.each(["&amp;", "&#38;", "&#x26;"])("decodes API source URL entities (%s) before verification and output", (entity) => {
+    const url = "https://app.leg.wa.gov/RCW/default.aspx?cite=26.04.010&pdf=true";
+    const data = [{ ...turns()[0], response: "An answer.[1]", sources: [{ url }] }];
+    const encoded = [{ ...data[0], sources: [{ url: url.replace("&", entity) }] }];
+    const api = load();
+    const extracted = api.sessionTurnsFromResults(apiEntries(encoded));
+    expect(extracted).toEqual(data);
+    const native = nativeExport(data).replace(url, url.replace("&", "\\&"));
+    const output = api.annotateSessionConversation(native, extracted);
+    expect(output.warnings).toEqual([]);
+    expect(output.text).toContain(`[^1_1]: ${url}`);
+    expect(parsePerplexityDialog(output.text).turns[1].citations[0].url).toBe(url);
+  });
+
   it("imports the assembled output as three complete prompt/answer pairs with sources", () => {
     const output = load().annotateSessionConversation(nativeExport(), turns());
     const dialog = parsePerplexityDialog(output.text);
@@ -318,32 +353,69 @@ describe("native session exports", () => {
     }
   });
 
-  it("reads only the known results property on a bounded ancestor chain", () => {
-    document.body.innerHTML = '<main><div data-message-bubble="right">Only the last visible prompt</div></main>';
-    const bubble = document.querySelector("[data-message-bubble]");
-    const root = { memoizedProps: { placeholderResults: results() }, return: null };
-    Object.defineProperty(bubble, "__reactFiber$test", { enumerable: true, value: { memoizedProps: {}, return: root } });
-    expect(load().readSessionTurns()).toEqual(turns());
-  });
-
-  it("does not recursively traverse hooks, DOM nodes, or unrelated result collections", () => {
-    document.body.innerHTML = '<main><div data-message-bubble="right">A prompt</div></main>';
-    const trap = vi.fn(() => { throw new Error("Unrelated state was read"); });
-    const props = {};
-    Object.defineProperty(props, "unrelated", { get: trap });
-    const fiber = { memoizedProps: props, return: null };
-    Object.defineProperty(fiber, "memoizedState", { get: trap });
-    Object.defineProperty(document.querySelector("[data-message-bubble]"), "__reactFiber$test", { enumerable: true, value: fiber });
-    expect(() => load().readSessionTurns()).toThrow(/session/i);
+  it("reads all paginated API turns instead of partial React placeholders", async () => {
+    document.body.innerHTML = '<main><div data-message-bubble="right"></div></main>';
+    const trap = vi.fn(() => { throw new Error("React state was read"); });
+    Object.defineProperty(document.querySelector("[data-message-bubble]"), "__reactFiber$test", { enumerable: true, get: trap });
+    const expected = [...turns(), {
+      ...turns()[0], id: "fourth", prompt: "One more question.", response: "Fourth answer.[1]",
+    }].map((turn, i) => ({
+      ...turn, sources: Array.from({ length: [10, 15, 16, 4][i] }, (_, j) => ({ url: `https://example.com/${i}/${j}` })),
+    }));
+    const entries = apiEntries(expected);
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ entries: entries.slice(0, 1), has_next_page: true, next_cursor: "page&2" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ entries: entries.slice(1), has_next_page: false, next_cursor: null }) });
+    const api = load(fetcher);
+    const data = await api.readSessionTurns();
+    expect(data).toEqual(expected);
+    expect(api.annotateSessionConversation(nativeExport(expected), data).warnings).toEqual([]);
+    const urls = fetcher.mock.calls.map(call => new URL(String(call[0])));
+    expect(urls[0].pathname).toBe("/rest/thread/test");
+    expect(urls[0].searchParams.get("from_first")).toBe("true");
+    expect(urls[1].searchParams.get("cursor")).toBe("page&2");
+    expect(fetcher.mock.calls[0][1].signal).toBe(fetcher.mock.calls[1][1].signal);
     expect(trap).not.toHaveBeenCalled();
   });
 
-  it("terminates even if a React parent link is cyclic", () => {
-    document.body.innerHTML = '<main><div data-message-bubble="right"></div></main>';
-    const fiber: { memoizedProps: object; return?: object } = { memoizedProps: {} };
-    fiber.return = fiber;
-    Object.defineProperty(document.querySelector("[data-message-bubble]"), "__reactFiber$test", { enumerable: true, value: fiber });
-    expect(() => load().readSessionTurns()).toThrow(/session/i);
+  it.each([
+    ["HTTP error", { ok: false, status: 403 }, /403/],
+    ["missing entries", { ok: true, json: async () => ({ has_next_page: false }) }, /session/i],
+    ["missing pagination state", { ok: true, json: async () => ({ entries: apiEntries() }) }, /session/i],
+    ["missing cursor", { ok: true, json: async () => ({ entries: apiEntries(), has_next_page: true }) }, /cursor/i],
+  ])("rejects %s instead of returning partial turns", async (_label, response, error) => {
+    await expect(load(vi.fn().mockResolvedValue(response)).readSessionTurns()).rejects.toThrow(error);
+  });
+
+  it("rejects repeating pagination cursors instead of looping", async () => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ entries: apiEntries(), has_next_page: true, next_cursor: "same" }),
+    });
+    await expect(load(fetcher).readSessionTurns()).rejects.toThrow(/cursor/i);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds pagination even when every cursor is new", async () => {
+    let cursor = 0;
+    const fetcher = vi.fn().mockImplementation(async () => ({
+      ok: true, json: async () => ({
+        entries: apiEntries(), has_next_page: true, next_cursor: String(++cursor),
+      }),
+    }));
+    await expect(load(fetcher).readSessionTurns()).rejects.toThrow(/pagination limit/i);
+    expect(fetcher).toHaveBeenCalledTimes(10);
+  });
+
+  it.each([
+    ["unfinished entry", { ...apiEntries()[0], status: "in_progress" }],
+    ["malformed serialized data", { ...apiEntries()[0], text: "not JSON" }],
+    ["missing serialized answer", { ...apiEntries()[0], text: "[]" }],
+    ["malformed source list", { ...apiEntries()[0], text: JSON.stringify([{ content: { answer: JSON.stringify({ answer: "A claim.", web_results: null }) } }]) }],
+  ])("rejects API %s", async (_label, entry) => {
+    const fetcher = vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ entries: [entry], has_next_page: false }),
+    });
+    await expect(load(fetcher).readSessionTurns()).rejects.toThrow();
   });
 
   it("refuses incomplete, duplicate, streaming, or unsupported structured data", () => {
@@ -371,7 +443,7 @@ describe("native session exports", () => {
       "buildHeader", "writeToClipboard",
       helper("copyText") + "\nreturn copyText;",
     )(
-      { pathname: "/session/test" }, vi.fn(), () => turns(), api.annotateSessionConversation,
+      { pathname: "/session/test" }, vi.fn(), async () => turns(), api.annotateSessionConversation,
       expand, legacy, (text: string) => ({ result: text }), vi.fn(),
       () => "[Perplexity](https://www.perplexity.ai/session/test)\n\n", clipboard,
     );

@@ -413,9 +413,12 @@ that caused the "Could not process export" error and prevented busy-state cleanu
 
 On `/session/` pages, version 8.11 and later restore full prompts that Perplexity omits
 from its native Markdown, including long collapsed prompts and quoted context.
-It reads the session's structured conversation data through a bounded React
-ancestor lookup, so earlier prompts need not be visible and **Read more** need
-not be clicked. Responses and source URL footnotes come from the native export.
+Version 8.24 reads the session's complete structured conversation through
+Perplexity's same-site thread API, rather than React startup placeholders that
+can contain only the first turn. Earlier prompts need not be visible and
+**Read more** need not be clicked. Requests follow pagination, with a 15-second
+total timeout and limits of 10 pages / 1,000 turns; incomplete or failed requests
+leave the clipboard unchanged. Responses and source URL footnotes come from the native export.
 Before copying, it checks response text (ignoring formatting/citation syntax),
 cited source numbers, every source URL and the conversation's turn order.
 It preserves native response formatting; it does not add source-card snippets
@@ -424,9 +427,11 @@ Version 8.20 also accepts completed answers that omit the web-source block
 because they did not use web search, including sessions mixing sourced and
 source-free answers. Malformed source blocks and unresolved citations still
 fail verification rather than being silently dropped.
-Version 8.21 recognizes native Markdown's escaped `\&` query separators when
-checking source URLs, while keeping changed query values and encoded `%26`
-distinct. The output retains the structured URL without Markdown backslashes.
+Version 8.24 recognizes native Markdown's ASCII punctuation escapes in source
+URLs, including `\&`, `\$`, `\_` and `\(`, while keeping changed URL values and
+percent-encoded reserved characters distinct. The output retains the structured
+URL without Markdown backslashes and decodes HTML entities such as `&amp;`
+in API source URLs before verification and output.
 Version 8.14 also repairs named citation labels that native export incorrectly
 wraps in multiline `$$` math delimiters. It restores the original bracketed
 label only when confirmed by the structured answer and followed by a native
@@ -454,6 +459,29 @@ raw space where its structured data uses `%20` (for example
 `84 0013_April25.pdf`); version 8.18 writes that encoded form into the note so
 the footnote links stay clickable. Existing `/search/` exports retain their
 previous processing.
+
+#### Automated userscript debugging
+
+The opt-in debugging runner uses a dedicated Chrome profile, not your everyday
+browser. Sign in once, then rerun existing dialogs without copying console output:
+
+```bash
+npm run debug:perplexity -- init 'https://www.perplexity.ai/session/YOUR-SESSION-ID'
+npm run debug:perplexity -- login
+# Sign in in the dedicated window, then close it.
+npm run debug:perplexity -- run
+```
+
+It clicks the real floating button, captures relevant console/network evidence
+and checks the result with the Obsidian importer. It neither submits new queries
+nor changes your system clipboard. Private profiles, corpus URLs, screenshots
+and conversation captures stay in Git-ignored `.perplexity-debug/`.
+
+Replay a printed `replay.json` path with `npm run debug:perplexity -- replay PATH`
+to debug offline; `npm run test:perplexity-debug` checks the harness with synthetic
+success and failure cases. These commands are separate from normal unit/UI tests.
+See the [debugging skill](.agents/skills/debug-perplexity-export/SKILL.md) for
+privacy safeguards, evidence layout and limits of the Tampermonkey API shim.
 
 ### C. Gemini Web Clipper Setup
 1. Install the official **Obsidian Web Clipper** from your browser's extension store.

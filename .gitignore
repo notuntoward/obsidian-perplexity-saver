@@ -10,6 +10,7 @@ tsconfig.tsbuildinfo
 node_modules
 .eslintcache
 test-results/
+.perplexity-debug/
 
 # IDEs
 .vscode/
