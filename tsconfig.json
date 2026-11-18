@@ -12,7 +12,7 @@
     "isolatedModules": true,
     "strictNullChecks": true,
     "skipLibCheck": true,
-    "lib": ["DOM", "ES2020"],
+    "lib": ["DOM", "ES2022"],
     "types": ["node", "vitest/globals"],
     "paths": {
       "obsidian": ["./node_modules/obsidian"],
