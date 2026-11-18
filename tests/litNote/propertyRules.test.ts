@@ -11,6 +11,7 @@ import {
 	FRONTMATTER_ORDER,
 	orderFrontmatter,
 	formatTimestampWithOffset,
+	formatTimezoneOffset,
 } from "../../src/litNote/propertyUtils";
 import {
 	convertDataviewPropsToFrontmatter,
@@ -414,14 +415,16 @@ citekey: Smith24
 			expect(res.success).toBe(true);
 
 			const fm = res.updatedFm!;
+			const modifiedOffset = formatTimezoneOffset(new Date(2024, 4, 9, 15, 30, 0));
+			const expectedModifiedDate = `2024-05-09T15:30:00${modifiedOffset}`;
 			expect(fm.created_date).toBe("2024-05-08T14:01:11-07:00");
-			expect(fm.modified_date).toBe("2024-05-09T15:30:00-07:00");
+			expect(fm.modified_date).toBe(expectedModifiedDate);
 			expect(fm["created date"]).toBeUndefined();
 			expect(fm["modified date"]).toBeUndefined();
 
 			const content = res.updatedContent!;
 			expect(content).toContain("created_date: 2024-05-08T14:01:11-07:00");
-			expect(content).toContain("modified_date: 2024-05-09T15:30:00-07:00");
+			expect(content).toContain(`modified_date: ${expectedModifiedDate}`);
 			expect(content).not.toContain("created date:");
 			expect(content).not.toContain("modified date:");
 
