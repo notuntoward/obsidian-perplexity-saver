@@ -6,7 +6,6 @@ import {
 	Platform,
 	Plugin,
 	PluginSettingTab,
-	Setting,
 	SettingDefinitionItem,
 	TFile,
 	debounce,
@@ -94,7 +93,7 @@ import { openGoToTime } from "./video/goToTime";
 import { registerVideoNoteFocusIndicator } from "./video/focusIndicator";
 import { registerInsertionTargetMarker } from "./video/insertionMarker";
 import { openVideoLeaf, registerNoteVideoActions } from "./video/noteVideoAction";
-import { isVisiblePart, loadedPlayers, mediaWindowFor, playerForNote, primaryPlayer, transcriptsForNote, visiblePlayers, visibleTranscripts, type VisiblePart } from "./video/session";
+import { isVisiblePart, loadedPlayers, mediaWindowFor, playerForNote, primaryPlayer, transcriptsForNote, visiblePlayers, type VisiblePart } from "./video/session";
 import { buildNavigationModel, capturePaneArrangement, restorePaneArrangement, closePopoutWindowIfEmpty, getGroupForLeaf, isSidebarLeaf, findLeafForFile, getActiveLeafInFocusedWindow, getLeafFileKey, getMainWindow, getWindowForLeaf, loadLeafIfDeferred, openFileInLeaf, revealAndFocusLeaf } from "commons/workspace";
 import { setTimeoutIn, readClipboardIn, type CancelTimer } from "commons/windows";
 import { raiseWindow } from "commons/os";
@@ -226,7 +225,7 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	autoRelinkSources: false,
 	litNoteLastViewed: {},
 	validateAuthorNameFormat: false,
-	authorFormatStyle: "last-first" as NameStyle,
+	authorFormatStyle: "last-first",
 	authorDropVon: false,
 	downloadYoutubeTranscripts: true,
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
@@ -439,7 +438,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 						const view = file ? this.partLeaves(file).video?.view : null;
 						if (view instanceof VideoView) view.refreshTranscriptControls();
 					},
-					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
+					closeMedia: (filePath) => {
+						void this.closeVideoWorkspace(filePath);
+					},
 				})
 		);
 		this.registerTranscriptCommands();
@@ -476,7 +477,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 					isTranscriptShown: (viewer) => visibleTranscriptLeaves(this.app, null,
 						viewer.view instanceof VideoView ? viewer.view.getFilePath() : null).length > 0,
 					toggleTranscript: (file, viewer) => this.toggleTranscript(file, viewer),
-					closeMedia: (filePath) => this.closeVideoWorkspace(filePath),
+					closeMedia: (filePath) => {
+						void this.closeVideoWorkspace(filePath);
+					},
 					jumpToTranscriptTimestamp: (view, direction) => {
 						void this.jumpToTranscriptTimestamp(view, direction).catch((error: unknown) => {
 							console.error("Perplexity Saver: could not navigate transcript timestamps", error);
@@ -589,8 +592,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-toggle-transcript", "Toggle YouTube transcript panel (legacy viewer shortcut)", (v) => v.toggleTranscript()],
 		];
 		for (const [id, name, run] of viewerCommands) {
-			const register = id === "video-viewer-toggle-transcript" ? this.addBoundAlias.bind(this) : this.addCommand.bind(this);
-			register({
+			const command = {
 				id,
 				name,
 				checkCallback: (checking: boolean) => {
@@ -615,7 +617,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 					});
 					return true;
 				},
-			});
+			};
+			if (id === "video-viewer-toggle-transcript") {
+				this.addBoundAlias(command);
+			} else {
+				this.addCommand(command);
+			}
 		}
 	}
 
@@ -1341,7 +1348,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 		await this.revealTranscriptIfVideoUnavailable(file, request).catch((error: unknown) => {
 			console.error("Perplexity Saver: could not reveal the transcript", error);
 		});
-		if (playbackError) throw playbackError;
+		if (playbackError !== undefined) {
+			throw playbackError instanceof Error
+				? playbackError
+				: new Error(typeof playbackError === "string" ? playbackError : "Video playback failed.");
+		}
 	}
 
 	/**
@@ -1858,7 +1869,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 			return;
 		}
 
-		const cm6View = (editor as any).cm as EditorView;
+		const cm6Candidate: unknown = (editor as unknown as { cm?: unknown }).cm;
+		const cm6View = cm6Candidate instanceof EditorView ? cm6Candidate : null;
 		if (!cm6View) {
 			new Notice("Could not access editor.");
 			return;
@@ -1932,7 +1944,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		const stored: Partial<PerplexitySaverSettings> & { captionWordTiming?: boolean; whisperxEnabled?: boolean; whisperxPythonPath?: string } = await this.loadData() ?? {};
+		const loaded: unknown = await this.loadData();
+		const stored: Partial<PerplexitySaverSettings> & { captionWordTiming?: boolean; whisperxEnabled?: boolean; whisperxPythonPath?: string } =
+			loaded && typeof loaded === "object"
+				? loaded
+				: {};
 		const { captionWordTiming: _timing, whisperxEnabled: _whisperx, whisperxPythonPath: _pythonPath, ...current } = stored;
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, current);
 		this.settings.videoPlayback = { ...this.settings.videoPlayback };
@@ -2022,42 +2038,48 @@ class InlineInputWidget extends WidgetType {
 			input.select();
 		}, 10);
 
-		input.addEventListener("keydown", async (e: KeyboardEvent) => {
-			if (e.key === "Enter") {
-				e.preventDefault();
-				e.stopPropagation();
-				if (this.submitting) return;
-				const filename = input.value.trim();
-				if (filename) {
-					this.submitting = true;
-					try {
-						await this.handleSubmit(filename);
-					} finally {
-						// Must run even if handleSubmit throws (e.g. an
-						// uncaught vault I/O or CM6 dispatch error):
-						// otherwise `submitting` stays stuck at true forever
-						// and every later Enter press silently no-ops,
-						// looking exactly like a permanent hang.
-						this.submitting = false;
-					}
-				}
-			} else if (e.key === "Escape") {
-				e.preventDefault();
-				e.stopPropagation();
-				const originalText = this.data.originalSelectedText;
-				this.data.editorView.dispatch({
-					changes: originalText
-						? { from: this.data.pos, to: this.data.pos, insert: originalText }
-						: undefined,
-					effects: clearPerplexityInput.of(null),
-				});
-				this.data.editorView.focus();
-			}
+		input.addEventListener("keydown", (e: KeyboardEvent) => {
+			void this.handleKeydown(e);
 		});
 
 		wrap.appendChild(input);
 		wrap.appendChild(spinner);
 		return wrap;
+	}
+
+	private async handleKeydown(e: KeyboardEvent): Promise<void> {
+		const input = this.inputEl;
+		if (!input) return;
+		if (e.key === "Enter") {
+			e.preventDefault();
+			e.stopPropagation();
+			if (this.submitting) return;
+			const filename = input.value.trim();
+			if (filename) {
+				this.submitting = true;
+				try {
+					await this.handleSubmit(filename);
+				} finally {
+					// Must run even if handleSubmit throws (e.g. an
+					// uncaught vault I/O or CM6 dispatch error):
+					// otherwise `submitting` stays stuck at true forever
+					// and every later Enter press silently no-ops,
+					// looking exactly like a permanent hang.
+					this.submitting = false;
+				}
+			}
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			e.stopPropagation();
+			const originalText = this.data.originalSelectedText;
+			this.data.editorView.dispatch({
+				changes: originalText
+					? { from: this.data.pos, to: this.data.pos, insert: originalText }
+					: undefined,
+				effects: clearPerplexityInput.of(null),
+			});
+			this.data.editorView.focus();
+		}
 	}
 
 	ignoreEvent(): boolean {

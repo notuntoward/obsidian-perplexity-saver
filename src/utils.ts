@@ -1,7 +1,7 @@
 import { App, Editor, TFile } from "obsidian";
 
 export function sanitizeFilename(filename: string): string {
-  return filename.replace(/[\\/:*?"<>|#^\[\]]/g, "");
+  return filename.replace(/[\\/:*?"<>|#^[\]]/g, "");
 }
 
 /**
@@ -176,7 +176,7 @@ export function normalizeUrl(url: string): string {
 
 		// ArXiv URL canonicalization: /pdf/1805.09785.pdf, /html/1805.09785v1 -> /abs/1805.09785
 		const arxivMatch =
-			/^\/(?:abs|pdf|html)\/(\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?(?:\.pdf)?$/i.exec(
+			/^\/(?:abs|pdf|html)\/(\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?(?:\.pdf)?$/i.exec(
 				path
 			);
 		if (parsed.hostname.includes("arxiv.org") && arxivMatch) {

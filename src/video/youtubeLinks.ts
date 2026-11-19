@@ -74,7 +74,8 @@ export function findYouTubeLinks(text: string): YouTubeLink[] {
 
 /** The video a note is about: the first YouTube video linked in it. */
 export function findNoteVideoId(text: string): string | null {
-	return youtubeLinks(text).next().value?.videoId ?? null;
+	const first = youtubeLinks(text).next();
+	return first.done ? null : first.value.videoId;
 }
 
 /**

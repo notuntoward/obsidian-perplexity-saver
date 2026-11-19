@@ -1,5 +1,5 @@
 import { setTimeoutIn } from "commons/windows";
-import { App, Editor, Notice, TFile } from "obsidian";
+import { App, Editor, MarkdownView, Notice } from "obsidian";
 import { relinkSourcesInNote } from "../zotero/relinker";
 import { ZoteroClient } from "../zotero/zoteroClient";
 import { isAiDialogNote } from "../utils";
@@ -19,8 +19,10 @@ export function registerRelinkSourcesCommand(
 	plugin.addCommand({
 		id: "relink-sources-with-zotero",
 		name: "Relink sources with Zotero",
-		editorCallback: async (editor: Editor, view: { file?: TFile }) => {
-			const win = (view as any).containerEl?.ownerDocument?.defaultView ?? (typeof activeWindow !== "undefined" ? activeWindow : null) ?? window;
+		editorCallback: async (editor: Editor, view: MarkdownView) => {
+			const win =
+				view.containerEl?.ownerDocument?.defaultView ??
+				(typeof activeWindow !== "undefined" ? activeWindow : window);
 			const file = view.file;
 			if (!file) {
 				new Notice("No active file.");
@@ -61,9 +63,10 @@ export function registerRelinkSourcesCommand(
 					`Relinking complete! Matched ${result.relinkedCount} source(s) (${result.litNoteCount} Lit Note(s), ${result.zoteroCount} Zotero Item(s)).`
 				);
 				setTimeoutIn(win, () => notice.hide(), 5000);
-			} catch (err: any) {
+			} catch (err: unknown) {
 				console.error("Zotero relinking error:", err);
-				notice.setMessage(err.message || "Failed to relink sources with Zotero.");
+				const message = err instanceof Error ? err.message : String(err);
+				notice.setMessage(message || "Failed to relink sources with Zotero.");
 				setTimeoutIn(win, () => notice.hide(), 7000);
 			}
 		},

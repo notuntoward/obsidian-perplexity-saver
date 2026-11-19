@@ -79,7 +79,7 @@ class TurnJumpModal extends FuzzySuggestModal<TurnItem> {
 	}
 
 	onOpen() {
-		super.onOpen();
+		void super.onOpen();
 		// SuggestModal's UI renders synchronously initially or right after open.
 		// Wait a tick for the DOM and chooser items to populate before setting selection.
 		const win = this.containerEl.ownerDocument?.defaultView ?? window;

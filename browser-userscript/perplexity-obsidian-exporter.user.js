@@ -24,7 +24,7 @@
   }
 
   function findPopoverContent() {
-    return [...document.querySelectorAll('[data-scope=\"popover\"][data-part=\"content\"]')].find(
+    return [...document.querySelectorAll('[data-scope="popover"][data-part="content"]')].find(
       (el) => el.getBoundingClientRect().width > 0 && /choose format/i.test(el.textContent)
     );
   }
@@ -171,7 +171,11 @@
     }
 
     const icons = { progress: "⏳", success: "✅", error: "⚠️" };
-    t.innerHTML = `<span>${icons[kind] || icons.error}</span> <span>${msg}</span>`;
+    const icon = document.createElement("span");
+    icon.textContent = icons[kind] || icons.error;
+    const message = document.createElement("span");
+    message.textContent = msg;
+    t.replaceChildren(icon, message);
     t.style.opacity = "1";
     
     clearTimeout(t._hideTimer);
@@ -219,7 +223,7 @@
 
   function restoreNativeToasts() {
     if (toastSuppressionStyle) {
-      setTimeout(() => {
+      window.setTimeout(() => {
         if (toastSuppressionStyle) {
           toastSuppressionStyle.remove();
           toastSuppressionStyle = null;
@@ -267,7 +271,9 @@
     let initialClipboard = "";
     try {
       initialClipboard = await navigator.clipboard.readText();
-    } catch (_) {}
+    } catch {
+      // Clipboard probing is best-effort; export still uses the final read.
+    }
 
     copyBtn.click();
 
@@ -285,13 +291,15 @@
           rawMd = current;
           break;
         }
-      } catch (_) {}
+      } catch {
+        // Keep polling while clipboard permission is temporarily unavailable.
+      }
     }
 
     if (!rawMd) {
       try {
         rawMd = await navigator.clipboard.readText();
-      } catch (e) {
+      } catch {
         showToast("Couldn't read clipboard. Grant clipboard-read permission if prompted.", "error");
         return;
       }
@@ -308,9 +316,10 @@
     );
 
     const finalMd = wrapMarkdown(rawMd, window.location.href);
-    if (typeof GM_setClipboard !== "undefined") {
+    const gmSetClipboard = Reflect.get(globalThis, "GM_setClipboard");
+    if (typeof gmSetClipboard === "function") {
       try {
-        GM_setClipboard(finalMd, "text");
+        gmSetClipboard(finalMd, "text");
       } catch (err) {
         console.warn("[PPLX Obsidian Exporter] GM_setClipboard failed, falling back:", err);
         await navigator.clipboard.writeText(finalMd);
@@ -379,14 +388,15 @@
     btn.id = "pplx-obsidian-export-btn";
 
     // Optimized viewBox scale and path alignment to securely fill out the circle wrapper
-    btn.innerHTML = `
+    const svgDocument = new DOMParser().parseFromString(`
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="5 6 90 90" width="30" height="30" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
         <path d="M34 38 L22 63 L41 84 L60 88 L72 61 L64 39 L53 25 C51 22, 47 22, 45 25 Z" />
         <path d="M49 23 C42 41, 44 51, 64 64" />
         <path d="M34 38 C34 47, 40 54, 38 68" />
         <path d="M38 68 C44 63, 54 62, 64 64" />
       </svg>
-    `;
+    `, "image/svg+xml");
+    btn.appendChild(document.importNode(svgDocument.documentElement, true));
 
     btn.style.cssText = `
       position: fixed;

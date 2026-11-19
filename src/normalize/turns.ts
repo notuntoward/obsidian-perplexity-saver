@@ -234,14 +234,14 @@ export function deduplicateSameTurnCitations(turn: DialogTurn): void {
 	let text = turn.rawText;
 
 	// 1. Replace [^num] with a temp token
-	text = text.replace(/\[\^(\d+)\]/g, (match, num) => {
+	text = text.replace(/\[\^(\d+)\]/g, (match, num: string) => {
 		const newNum = oldNumToNewNum.get(num);
 		if (!newNum) return match;
 		return `[^TEMP_${newNum}_TEMP]`;
 	});
 
 	// 2. Replace [num] with a temp token
-	text = text.replace(/\[(\d+)\]/g, (match, num) => {
+	text = text.replace(/\[(\d+)\]/g, (match, num: string) => {
 		const newNum = oldNumToNewNum.get(num);
 		if (!newNum) return match;
 		return `[TEMP_${newNum}_TEMP]`;

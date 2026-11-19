@@ -80,12 +80,14 @@ const TRANSCRIPT_MODES = {
 };
 
 function isTranscriptMode(value: unknown): value is TranscriptViewMode {
-	return typeof value === "string" && (Object.prototype.hasOwnProperty.call(TRANSCRIPT_MODES, value) ||
-		value === "paragraphs" || value === "aligned-sentences");
+	return value === "readable-paragraphs" || value === "sentences" || value === "lines" ||
+		value === "paragraphs" || value === "aligned-sentences";
 }
 
 function readingMode(mode: TranscriptViewMode): keyof typeof TRANSCRIPT_MODES {
-	return mode === "paragraphs" ? "readable-paragraphs" : mode === "aligned-sentences" ? "sentences" : mode;
+	if (mode === "paragraphs") return "readable-paragraphs";
+	if (mode === "aligned-sentences") return "sentences";
+	return mode;
 }
 
 export interface TranscriptSearchSettings {
@@ -874,7 +876,7 @@ export class TranscriptView extends ItemView {
 		if (!file) {
 			el.createDiv({
 				cls: "perplexity-saver-transcript-empty",
-				text: "Open a literature note and run \"Video: show or hide transcript\".",
+				text: "Open a literature note and run \"video: show or hide transcript\".",
 			});
 			return;
 		}

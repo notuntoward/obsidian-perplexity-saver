@@ -81,6 +81,7 @@ export interface LitNoteItemResult {
 
 export interface LitNoteResponse {
 	success: boolean;
+	citekeys?: string[];
 	results?: LitNoteItemResult[];
 	path?: string;
 	error?: string;

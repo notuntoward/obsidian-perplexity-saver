@@ -1,4 +1,4 @@
-import { StateEffect, StateField, type Text } from "@codemirror/state";
+import { StateEffect, StateField, type EditorState, type Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { GFM, parser } from "@lezer/markdown";
 import { flashEditorLine, type LineFlashMode } from "commons/flash";
@@ -21,8 +21,12 @@ export const noteInsertionAnchors = StateField.define<InsertionAnchors>({
 	update: (anchors, transaction) => {
 		if (!transaction.docChanged && !transaction.effects.some((effect) => effect.is(setInsertionAnchor) || effect.is(clearInsertionAnchor))) return anchors;
 		const mapped: InsertionAnchors = {};
-		for (const [id, position] of Object.entries(anchors)) {
-			mapped[Number(id)] = transaction.changes.mapPos(position, 1);
+		for (const id of Object.keys(anchors)) {
+			const numericId = Number(id);
+			const position = anchors[numericId];
+			if (typeof position === "number") {
+				mapped[numericId] = transaction.changes.mapPos(position, 1);
+			}
 		}
 		for (const effect of transaction.effects) {
 			if (effect.is(setInsertionAnchor)) mapped[effect.value.id] = effect.value.position;
@@ -31,6 +35,19 @@ export const noteInsertionAnchors = StateField.define<InsertionAnchors>({
 		return mapped;
 	},
 });
+
+export function readNoteInsertionAnchors(state: EditorState): InsertionAnchors | null {
+	const value: unknown = state.field(noteInsertionAnchors, false);
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const anchors: InsertionAnchors = {};
+	for (const [id, position] of Object.entries(value)) {
+		const numericId = Number(id);
+		if (Number.isInteger(numericId) && typeof position === "number") {
+			anchors[numericId] = position;
+		}
+	}
+	return anchors;
+}
 
 export interface NoteInsertionAnchor {
 	view: EditorView;
@@ -518,14 +535,14 @@ export function insertPlaybackTimestamp(
 
 /** Track the editor cursor through edits while an asynchronous capture is running. */
 export function createNoteInsertionAnchor(view: EditorView): NoteInsertionAnchor | null {
-	if (!view.state.field(noteInsertionAnchors, false)) return null;
+	if (readNoteInsertionAnchors(view.state) === null) return null;
 	const id = nextAnchorId++;
 	view.dispatch({ effects: setInsertionAnchor.of({ id, position: view.state.selection.main.head }) });
 	return { view, id };
 }
 
 export function getNoteInsertionPosition(anchor: NoteInsertionAnchor): number | null {
-	return anchor.view.state.field(noteInsertionAnchors, false)?.[anchor.id] ?? null;
+	return readNoteInsertionAnchors(anchor.view.state)?.[anchor.id] ?? null;
 }
 
 export function releaseNoteInsertionAnchor(anchor: NoteInsertionAnchor): void {

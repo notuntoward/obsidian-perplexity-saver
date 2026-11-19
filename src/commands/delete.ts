@@ -66,10 +66,14 @@ export class DeleteTurnSuggestModal extends SuggestModal<TurnSuggestion> {
 		this.setPlaceholder("Search turns by number or heading text...");
 	}
 
-	async onOpen(): Promise<void> {
+	onOpen(): void {
+		void this.loadItems();
+	}
+
+	private async loadItems(): Promise<void> {
 		const noteText = await this.app.vault.read(this.file);
 		this.items = getTurnsFromNote(noteText);
-		super.onOpen();
+		await super.onOpen();
 	}
 
 	getSuggestions(query: string): TurnSuggestion[] {
@@ -106,7 +110,11 @@ export class DeleteTurnSuggestModal extends SuggestModal<TurnSuggestion> {
 		}
 	}
 
-	async onChooseSuggestion(item: TurnSuggestion, evt: MouseEvent | KeyboardEvent): Promise<void> {
+	onChooseSuggestion(item: TurnSuggestion, _evt: MouseEvent | KeyboardEvent): void {
+		void this.chooseSuggestion(item);
+	}
+
+	private async chooseSuggestion(item: TurnSuggestion): Promise<void> {
 		await highlightDialogTurn(this.app, this.editor, this.file, item.turnNum);
 		await this.onDelete(item.turnNum);
 	}

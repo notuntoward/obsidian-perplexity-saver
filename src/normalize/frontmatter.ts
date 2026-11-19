@@ -12,7 +12,7 @@ export function stripLeadingFrontmatterIfPresent(text: string): {
 } {
 	const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
 	if (!match) return { body: text };
-	const parsed = parseYaml(match[1]);
+	const parsed: unknown = parseYaml(match[1]);
 	const existing: Record<string, unknown> | undefined =
 		parsed && typeof parsed === "object" && !Array.isArray(parsed)
 			? (parsed as Record<string, unknown>)
@@ -37,7 +37,7 @@ export async function createDialogNote(
 	frontmatterFields: Record<string, unknown>
 ): Promise<TFile> {
 	const file = await app.vault.create(path, bodyMarkdown);
-	await app.fileManager.processFrontMatter(file, (fm) => {
+	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
 		for (const [key, value] of Object.entries(frontmatterFields)) {
 			if (value !== undefined) {
 				fm[key] = value;
@@ -58,7 +58,7 @@ export async function updateFrontMatter(
 	file: TFile,
 	fields: Record<string, unknown>
 ): Promise<void> {
-	await app.fileManager.processFrontMatter(file, (fm) => {
+	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
 		for (const [key, value] of Object.entries(fields)) {
 			if (value === undefined) {
 				delete fm[key];
@@ -80,7 +80,7 @@ export async function overwriteDialogNote(
 	frontmatterFields: Record<string, unknown>
 ): Promise<void> {
 	await app.vault.modify(file, bodyMarkdown);
-	await app.fileManager.processFrontMatter(file, (fm) => {
+	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
 		for (const [key, value] of Object.entries(frontmatterFields)) {
 			if (value === undefined) {
 				delete fm[key];

@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile, TFolder } from "obsidian";
+import { App, normalizePath, TFile } from "obsidian";
 import { notePathFor } from "./writeLitNote";
 
 /**
@@ -29,6 +29,14 @@ export function isMarkdownFile(file: TFile): boolean {
 	if (normPath && normPath.endsWith(".pdf")) return false;
 	if (normPath && !normPath.endsWith(".md")) return false;
 	return true;
+}
+
+function fileFrontmatter(file: TFile): Record<string, unknown> | undefined {
+	if (!("frontmatter" in file)) return undefined;
+	const value: unknown = file.frontmatter;
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
 }
 
 /**
@@ -70,14 +78,13 @@ export function isLiteratureNote(
 	// 3. Must have category: literaturenote in frontmatter (when metadataCache is available)
 	if (app?.metadataCache?.getFileCache) {
 		const cache = app.metadataCache.getFileCache(file);
-		const frontmatter = (cache?.frontmatter || (file as any).frontmatter) as
-			| Record<string, unknown>
-			| undefined;
+		const frontmatter = cache?.frontmatter ?? fileFrontmatter(file);
 		if (!hasLiteratureNoteCategory(frontmatter)) {
 			return false;
 		}
-	} else if ((file as any).frontmatter) {
-		if (!hasLiteratureNoteCategory((file as any).frontmatter)) {
+	} else {
+		const frontmatter = fileFrontmatter(file);
+		if (frontmatter && !hasLiteratureNoteCategory(frontmatter)) {
 			return false;
 		}
 	}
@@ -96,17 +103,13 @@ export function getLitNoteFiles(app: App, litNotesFolder: string): TFile[] {
 	let candidateFiles: TFile[] | null = null;
 	if (litNotesFolder && litNotesFolder.trim()) {
 		const normFolder = normalizePath(litNotesFolder.trim());
-		const folder = (
-			typeof (app.vault as any).getFolderByPath === "function"
-				? (app.vault as any).getFolderByPath(normFolder)
-				: typeof app.vault.getAbstractFileByPath === "function"
+		const folder = typeof app.vault.getFolderByPath === "function"
+			? app.vault.getFolderByPath(normFolder)
+			: typeof app.vault.getAbstractFileByPath === "function"
 				? app.vault.getAbstractFileByPath(normFolder)
-				: null
-		) as any;
-		if (folder && Array.isArray(folder.children)) {
-			candidateFiles = folder.children.filter(
-				(c: any) => c instanceof TFile || (c && !c.children && isMarkdownFile(c))
-			);
+				: null;
+		if (folder && "children" in folder && Array.isArray(folder.children)) {
+			candidateFiles = folder.children.filter((child): child is TFile => child instanceof TFile);
 		}
 	}
 

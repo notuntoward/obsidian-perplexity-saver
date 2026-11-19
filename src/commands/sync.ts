@@ -12,6 +12,7 @@ import { HeadlineOptions } from "../normalize/headlines";
 import { DialogFile } from "../parsers/types";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
+import type { ZoteroClient } from "../zotero/zoteroClient";
 import { resolveLinkAtCursor, isAiDialogNote } from "../utils";
 
 export interface SyncDialogResult {
@@ -27,7 +28,7 @@ export interface SyncDialogOptions {
 	zoteroPort?: number;
 	litNotesFolder?: string;
 	minTitleMatchScore?: number;
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 	onProgress?: (message: string) => void;
 	collapseBlankLines?: boolean;
 	collapsePromptCallouts?: boolean;
@@ -64,8 +65,16 @@ export async function syncDialogFromClipboard(
 	}
 
 	const cache = app.metadataCache.getFileCache(file);
-	const frontmatter = cache?.frontmatter;
-	let syncedCount = frontmatter ? frontmatter["ai-source-turns-synced"] : undefined;
+	const rawFrontmatter: unknown = cache?.frontmatter;
+	const frontmatter =
+		typeof rawFrontmatter === "object" && rawFrontmatter !== null && !Array.isArray(rawFrontmatter)
+			? (rawFrontmatter as Record<string, unknown>)
+			: undefined;
+	const watermark = frontmatter?.["ai-source-turns-synced"];
+	let syncedCount =
+		typeof watermark === "number" && Number.isFinite(watermark) && watermark >= 0
+			? watermark
+			: undefined;
 
 	if (syncedCount === undefined) {
 		// Fallback for legacy notes lacking the watermark field:
@@ -169,7 +178,7 @@ function spliceIntoNote(
 	const sourcesMatch = existingText.match(/(# Sources\s*\n)([\s\S]*)$/);
 	if (sourcesMatch) {
 		const header = sourcesMatch[1];
-		const before = existingText.slice(0, sourcesMatch.index!);
+		const before = existingText.slice(0, sourcesMatch.index ?? 0);
 		return `${before}${newTurnsChunk}\n${header}${sourcesBlock}`;
 	}
 	let out = existingText;
@@ -195,7 +204,7 @@ export function registerSyncCommand(plugin: {
 		collapseBlankLines: boolean;
 		collapsePromptCallouts: boolean;
 	};
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 }): void {
 	plugin.addCommand({
 		id: "sync-ai-dialog-from-clipboard",
@@ -288,7 +297,7 @@ export function registerSyncViaLinkCommand(plugin: {
 		collapseBlankLines: boolean;
 		collapsePromptCallouts: boolean;
 	};
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 }): void {
 	plugin.addCommand({
 		id: "sync-ai-dialog-from-clipboard-via-link",

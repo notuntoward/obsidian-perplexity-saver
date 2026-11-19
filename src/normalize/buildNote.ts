@@ -1,5 +1,5 @@
 import { DialogFile, DialogTurn } from "../parsers/types";
-import { renderSourceLine, parseSourceLine, SourceLinkState, toBlockId } from "../zotero/sourceLinkState";
+import { renderSourceLine, parseSourceLine, SourceLinkState } from "../zotero/sourceLinkState";
 import { renderTurn, assignTurnIds } from "./turns";
 import { HeadlineOptions, headlineForPrompt } from "./headlines";
 
@@ -203,7 +203,7 @@ function rewriteCitationsForTurn(
 	});
 
 	// Next, rewrite bracket format [num] to [^id]
-	return text.replace(/\[(\d+)\]/g, (match, num) => {
+	return text.replace(/\[(\d+)\]/g, (match, num: string) => {
 		const id = numToId.get(num);
 		if (!id) return match;
 		return `[^${id}]`;

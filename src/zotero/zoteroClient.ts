@@ -3,6 +3,37 @@ import { requestUrl } from "obsidian";
 import { matchTitles } from "./matcher";
 import { normalizeUrl } from "../utils";
 
+type UnknownRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is UnknownRecord {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecordArray(value: unknown): UnknownRecord[] {
+	if (!Array.isArray(value)) return [];
+	return (value as unknown[]).filter(isRecord);
+}
+
+function toError(value: unknown): Error {
+	if (value instanceof Error) return value;
+	if (typeof value === "string") return new Error(value);
+	if (isRecord(value) && typeof value.message === "string") return new Error(value.message);
+	return new Error(String(value));
+}
+
+function errorMessage(value: unknown): string {
+	return toError(value).message;
+}
+
+function fetchFromActiveWindow(
+	input: RequestInfo | URL,
+	init?: RequestInit
+): Promise<Response> {
+	const requestWindow =
+		(typeof activeWindow !== "undefined" ? activeWindow : null) ?? window;
+	return requestWindow.fetch(input, init);
+}
+
 export interface ZoteroItemData {
 	zotkey: string;
 	citekey: string;
@@ -41,8 +72,8 @@ function nodeRequest(
 				(res) => {
 					let data = "";
 					res.setEncoding("utf-8");
-					res.on("data", (chunk) => {
-						data += chunk;
+					res.on("data", (chunk: Buffer | string) => {
+						data += typeof chunk === "string" ? chunk : chunk.toString("utf-8");
 					});
 					res.on("end", () => {
 						const hdrs: Record<string, string> = {};
@@ -62,8 +93,8 @@ function nodeRequest(
 				req.write(options.body);
 			}
 			req.end();
-		} catch (err) {
-			reject(err);
+		} catch (err: unknown) {
+			reject(toError(err));
 		}
 	});
 }
@@ -108,12 +139,12 @@ export class ZoteroClient {
 		return Date.now() - this.lastFetchTime < ttlMs;
 	}
 
-	private async postJson(endpointPath: string, payload: any, timeoutMs = 3000): Promise<any> {
+	private async postJson(endpointPath: string, payload: unknown, timeoutMs = 3000): Promise<unknown> {
 		const hostsToTry = [this.host, "127.0.0.1", "localhost"];
 		const uniqueHosts = [...new Set(hostsToTry)];
 		const jsonString = JSON.stringify(payload);
 
-		let lastError: any = null;
+		let lastError: unknown = null;
 		for (const host of uniqueHosts) {
 			const url = `http://${host}:${this.port}${endpointPath}`;
 
@@ -136,11 +167,12 @@ export class ZoteroClient {
 						throw new Error("HTTP 403: Forbidden - Local API access was rejected by Zotero");
 					}
 					lastError = new Error(`HTTP ${res.status}: ${res.text || "Request failed"}`);
-				} catch (err: any) {
-					if (err?.message?.includes("403") || err?.message?.toLowerCase()?.includes("forbidden")) {
+				} catch (err: unknown) {
+					const message = errorMessage(err);
+					if (message.includes("403") || message.toLowerCase().includes("forbidden")) {
 						throw err;
 					}
-					lastError = err;
+					lastError = toError(err);
 				}
 				continue;
 			}
@@ -157,47 +189,45 @@ export class ZoteroClient {
 					},
 					body: jsonString,
 				});
-				let parsed: any;
+				let parsed: unknown;
 				if (response.json) {
-					parsed = response.json;
+					parsed = response.json as unknown;
 				} else if (response.text) {
 					parsed = JSON.parse(response.text);
 				}
 				if (parsed) return parsed;
-			} catch (err: any) {
-				lastError = err;
-				if (typeof fetch !== "undefined") {
-					try {
-						const res = await fetch(url, {
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-								"Zotero-API-Version": "3",
-								"Zotero-Allowed-Request": "true",
-							},
-							body: jsonString,
-						});
-						if (res.ok) {
-							return await res.json();
-						}
-						lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
-					} catch (fetchErr) {
-						lastError = fetchErr;
+			} catch (err: unknown) {
+				lastError = toError(err);
+				try {
+					const res = await fetchFromActiveWindow(url, {
+						method: "POST",
+						headers: {
+							"Content-Type": "application/json",
+							"Zotero-API-Version": "3",
+							"Zotero-Allowed-Request": "true",
+						},
+						body: jsonString,
+					});
+					if (res.ok) {
+						return (await res.json()) as unknown;
 					}
+					lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
+				} catch (fetchErr: unknown) {
+					lastError = toError(fetchErr);
 				}
 			}
 		}
-		throw lastError || new Error("Failed to connect to local Zotero HTTP API.");
+		throw toError(lastError ?? new Error("Failed to connect to local Zotero HTTP API."));
 	}
 
 	private async fetchJsonWithHeaders(
 		endpointPath: string,
 		timeoutMs = 6000
-	): Promise<{ data: any; headers: Record<string, string> }> {
+	): Promise<{ data: unknown; headers: Record<string, string> }> {
 		const hostsToTry = [this.host, "127.0.0.1", "localhost"];
 		const uniqueHosts = [...new Set(hostsToTry)];
 
-		let lastError: any = null;
+		let lastError: unknown = null;
 		for (const host of uniqueHosts) {
 			const url = `http://${host}:${this.port}${endpointPath}`;
 
@@ -212,11 +242,12 @@ export class ZoteroClient {
 						throw new Error("HTTP 403: Forbidden - Local API access was rejected by Zotero");
 					}
 					lastError = new Error(`HTTP ${res.status}: ${res.text || "Request failed"}`);
-				} catch (err: any) {
-					if (err?.message?.includes("403") || err?.message?.toLowerCase()?.includes("forbidden")) {
+				} catch (err: unknown) {
+					const message = errorMessage(err);
+					if (message.includes("403") || message.toLowerCase().includes("forbidden")) {
 						throw err;
 					}
-					lastError = err;
+					lastError = toError(err);
 				}
 				continue;
 			}
@@ -234,41 +265,39 @@ export class ZoteroClient {
 				const hdrs: Record<string, string> = {};
 				if (response.headers) {
 					for (const [k, v] of Object.entries(response.headers)) {
-						if (v) hdrs[k.toLowerCase()] = String(v);
+						if (v) hdrs[k.toLowerCase()] = v;
 					}
 				}
-				let parsed: any;
+				let parsed: unknown;
 				if (response.json) {
-					parsed = response.json;
+					parsed = response.json as unknown;
 				} else if (response.text) {
 					parsed = JSON.parse(response.text);
 				}
 				if (parsed) return { data: parsed, headers: hdrs };
-			} catch (err: any) {
-				lastError = err;
-				if (typeof fetch !== "undefined") {
-					try {
-						const res = await fetch(url, {
-							headers: {
-								"Zotero-API-Version": "3",
-								"Zotero-Allowed-Request": "true",
-							},
-						});
-						if (res.ok) {
-							const json = await res.json();
-							return { data: json, headers: {} };
-						}
-						lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
-					} catch (fetchErr) {
-						lastError = fetchErr;
+			} catch (err: unknown) {
+				lastError = toError(err);
+				try {
+					const res = await fetchFromActiveWindow(url, {
+						headers: {
+							"Zotero-API-Version": "3",
+							"Zotero-Allowed-Request": "true",
+						},
+					});
+					if (res.ok) {
+						const json = (await res.json()) as unknown;
+						return { data: json, headers: {} };
 					}
+					lastError = new Error(`HTTP ${res.status}: ${res.statusText}`);
+				} catch (fetchErr: unknown) {
+					lastError = toError(fetchErr);
 				}
 			}
 		}
-		throw lastError || new Error("Failed to connect to local Zotero HTTP API.");
+		throw toError(lastError ?? new Error("Failed to connect to local Zotero HTTP API."));
 	}
 
-	private async fetchJson(endpointPath: string, timeoutMs = 6000): Promise<any> {
+	private async fetchJson(endpointPath: string, timeoutMs = 6000): Promise<unknown> {
 		const res = await this.fetchJsonWithHeaders(endpointPath, timeoutMs);
 		return res.data;
 	}
@@ -307,8 +336,8 @@ export class ZoteroClient {
 				},
 				2000
 			);
-			const obj = res?.result;
-			if (obj && typeof obj === "object") {
+			const obj = isRecord(res) ? res.result : undefined;
+			if (isRecord(obj)) {
 				for (const [k, v] of Object.entries(obj)) {
 					if (typeof v === "string" && v.trim()) {
 						keyToCitekey.set(k, v.trim());
@@ -361,9 +390,9 @@ export class ZoteroClient {
 			`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=0`
 		);
 		const totalResults = parseInt(initialRes.headers["total-results"] || "0", 10);
-		const initialData = Array.isArray(initialRes.data) ? initialRes.data : [];
+		const initialData = asRecordArray(initialRes.data);
 
-		const allRawItems: any[] = [...initialData];
+		const allRawItems: UnknownRecord[] = [...initialData];
 
 		if (totalResults > pageSize) {
 			opts.onProgress?.(`Loading Zotero items (0/${totalResults})...`);
@@ -378,7 +407,7 @@ export class ZoteroClient {
 				const chunkPages = await Promise.all(
 					chunk.map((start) =>
 						this.fetchJson(`/api/users/0/items/top?v=3&format=json&limit=${pageSize}&start=${start}`)
-							.then((pageData) => (Array.isArray(pageData) ? pageData : []))
+							.then(asRecordArray)
 							.catch((err) => {
 								console.warn(`Failed to fetch Zotero items page at start=${start}:`, err);
 								return [];
@@ -397,24 +426,32 @@ export class ZoteroClient {
 		const missingCitekeyZotkeys: string[] = [];
 
 		for (const rawItem of allRawItems) {
-			const itemData = rawItem.data || rawItem;
-			const zotkey = rawItem.key || itemData.key;
-			const title = itemData.title || itemData.shortTitle || itemData.caseName || itemData.name || "";
+			const itemData = isRecord(rawItem.data) ? rawItem.data : rawItem;
+			const zotkeyValue = rawItem.key ?? itemData.key;
+			const zotkey = typeof zotkeyValue === "string" ? zotkeyValue : undefined;
+			const titleValue =
+				itemData.title ?? itemData.shortTitle ?? itemData.caseName ?? itemData.name ?? "";
+			const title = typeof titleValue === "string" ? titleValue : "";
 			if (!title || !zotkey) continue;
 
+			const citekeyValue =
+				rawItem.citationKey ??
+				itemData.citationKey ??
+				itemData.citekey ??
+				itemData["citation-key"] ??
+				itemData.citation_key;
 			const citekey =
-				rawItem.citationKey ||
-				itemData.citationKey ||
-				itemData.citekey ||
-				itemData["citation-key"] ||
-				itemData.citation_key ||
-				extractCitekeyFromExtra(itemData.extra);
+				(typeof citekeyValue === "string" ? citekeyValue : undefined) ??
+				extractCitekeyFromExtra(
+					typeof itemData.extra === "string" ? itemData.extra : undefined
+				);
 
 			if (!citekey) {
 				missingCitekeyZotkeys.push(zotkey);
 			}
 
-			const itemUrl = itemData.url ? String(itemData.url).trim() : undefined;
+			const itemUrl =
+				typeof itemData.url === "string" && itemData.url ? itemData.url.trim() : undefined;
 			const normUrl = itemUrl ? normalizeUrl(itemUrl) : undefined;
 
 			const zotItem: ZoteroItemData = {
@@ -423,8 +460,9 @@ export class ZoteroClient {
 				title,
 				url: itemUrl,
 				normalizedUrl: normUrl,
-				dateModified: itemData.dateModified,
-				version: itemData.version,
+				dateModified:
+					typeof itemData.dateModified === "string" ? itemData.dateModified : undefined,
+				version: typeof itemData.version === "number" ? itemData.version : undefined,
 			};
 
 			items.push(zotItem);
@@ -511,12 +549,12 @@ export class ZoteroClient {
 		}
 	}
 
-	async getItemByKey(itemKey: string): Promise<any> {
+	async getItemByKey(itemKey: string): Promise<UnknownRecord | null> {
 		if (!itemKey) return null;
 		try {
 			const res = await this.fetchJson(`/api/users/0/items/${encodeURIComponent(itemKey)}?v=3&format=json`);
-			if (res) {
-				return res.data || res;
+			if (isRecord(res)) {
+				return isRecord(res.data) ? res.data : res;
 			}
 		} catch {
 			// Item not found or network error
@@ -524,7 +562,7 @@ export class ZoteroClient {
 		return null;
 	}
 
-	async getItemByCitekey(citekey: string): Promise<any> {
+	async getItemByCitekey(citekey: string): Promise<UnknownRecord | null> {
 		if (!citekey) return null;
 		const cleanCite = citekey.trim().toLowerCase();
 
@@ -544,21 +582,32 @@ export class ZoteroClient {
 				`/api/users/0/items?v=3&format=json&q=${encodeURIComponent(citekey)}&qmode=everything`
 			);
 			if (Array.isArray(res) && res.length > 0) {
-				for (const raw of res) {
-					const data = raw.data || raw;
-					const extraKey = extractCitekeyFromExtra(data.extra);
+				for (const rawValue of res as unknown[]) {
+					if (!isRecord(rawValue)) continue;
+					const data = isRecord(rawValue.data) ? rawValue.data : rawValue;
+					const key = typeof data.key === "string" ? data.key : undefined;
+					const extraKey = extractCitekeyFromExtra(
+						typeof data.extra === "string" ? data.extra : undefined
+					);
 					if (
 						(extraKey && extraKey.toLowerCase() === cleanCite) ||
-						(data.key && data.key.toLowerCase() === cleanCite)
+						(key && key.toLowerCase() === cleanCite)
 					) {
 						return data;
 					}
 				}
 				// If no exact match in extra, verify first result key via Better BibTeX RPC
-				const firstData = res[0].data || res[0];
-				if (firstData && firstData.key) {
-					const bbtMap = await this.resolveBbtCitekeys([firstData.key]);
-					if (bbtMap.get(firstData.key)?.toLowerCase() === cleanCite) {
+				const firstRaw = (res as unknown[])[0];
+				const firstData =
+					isRecord(firstRaw) && isRecord(firstRaw.data)
+						? firstRaw.data
+						: isRecord(firstRaw)
+							? firstRaw
+							: undefined;
+				const firstKey = firstData && typeof firstData.key === "string" ? firstData.key : undefined;
+				if (firstData && firstKey) {
+					const bbtMap = await this.resolveBbtCitekeys([firstKey]);
+					if (bbtMap.get(firstKey)?.toLowerCase() === cleanCite) {
 						return firstData;
 					}
 				}
@@ -570,7 +619,9 @@ export class ZoteroClient {
 					`/api/users/0/items?v=3&format=json&citationKey=${encodeURIComponent(citekey)}`
 				);
 				if (Array.isArray(res) && res.length > 0) {
-					return res[0].data || res[0];
+					const firstRaw = (res as unknown[])[0];
+					if (!isRecord(firstRaw)) return null;
+					return isRecord(firstRaw.data) ? firstRaw.data : firstRaw;
 				}
 			} catch {
 				// Fail silently

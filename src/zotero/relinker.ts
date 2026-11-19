@@ -47,9 +47,9 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 				cancel();
 				resolve(value);
 			},
-			(err) => {
+			(err: unknown) => {
 				cancel();
-				reject(err);
+				reject(err instanceof Error ? err : new Error(String(err)));
 			}
 		);
 	});
@@ -87,7 +87,8 @@ export async function autoRelinkSourcesInNote(
 			AUTO_RELINK_TIMEOUT_MS
 		);
 		return result.updatedText;
-	} catch (err: any) {
+	} catch (err: unknown) {
+		const error = err instanceof Error ? err : new Error(String(err));
 		// Note: this must be a *static* top-level import (see above), not a
 		// dynamic `await import("obsidian")`. Obsidian plugins are bundled
 		// as CommonJS with "obsidian" marked external, so esbuild compiles a
@@ -96,7 +97,7 @@ export async function autoRelinkSourcesInNote(
 		// path in that runtime and always throws
 		// `TypeError: Failed to resolve module specifier 'obsidian'`,
 		// silently swallowing whatever error actually triggered this catch.
-		if (err?.message === AUTO_RELINK_TIMEOUT_SENTINEL) {
+		if (error.message === AUTO_RELINK_TIMEOUT_SENTINEL) {
 			console.warn(
 				`Auto-relinking timed out after ${AUTO_RELINK_TIMEOUT_MS}ms; saving note unlinked.`
 			);
@@ -105,8 +106,8 @@ export async function autoRelinkSourcesInNote(
 				19000
 			);
 		} else {
-			console.warn("Auto-relinking failed:", err);
-			const msg = String(err?.message || "");
+			console.warn("Auto-relinking failed:", error);
+			const msg = error.message;
 			if (msg.includes("403") || msg.toLowerCase().includes("forbidden")) {
 				new Notice(
 					"Auto-relinking with Zotero failed: Local API access was rejected (HTTP 403). In Zotero, go to settings → advanced and ensure 'allow other applications on this computer to communicate with Zotero' is enabled.",
@@ -115,7 +116,7 @@ export async function autoRelinkSourcesInNote(
 			} else {
 				const port = settings.zoteroPort ?? 23119;
 				new Notice(
-					`Auto-relinking with Zotero failed: ${err?.message || `Could not connect to Zotero on port ${port}. Ensure Zotero is running.`}`,
+					`Auto-relinking with Zotero failed: ${error.message || `Could not connect to Zotero on port ${port}. Ensure Zotero is running.`}`,
 					19000
 				);
 			}
@@ -142,9 +143,10 @@ export async function relinkSourcesInNote(
 			ttlMs: options.cacheTtlMs,
 			onProgress: options.onProgress,
 		});
-	} catch (err: any) {
-		console.warn("Could not connect to local Zotero HTTP API:", err);
-		const detail = err?.message ? ` (${err.message})` : "";
+	} catch (err: unknown) {
+		const error = err instanceof Error ? err : new Error(String(err));
+		console.warn("Could not connect to local Zotero HTTP API:", error);
+		const detail = error.message ? ` (${error.message})` : "";
 		throw new Error(
 			`Could not connect to Zotero${detail}. Ensure Zotero 7/8/9 is running with Local API enabled (port ` +
 				(options.zoteroPort ?? 23119) +

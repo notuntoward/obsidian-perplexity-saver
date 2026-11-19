@@ -5,7 +5,7 @@ import { getEditorLeafLocations } from "commons/workspace";
 import { forEachWindow } from "commons/windows";
 import { hasLiteratureNoteCategory } from "../litNote/litNoteFinder";
 import { isTranscriptCapturePosition, transcriptStart } from "../litNote/transcriptProtection";
-import { blockInsertion, noteInsertionAnchors, resolveNoteInsertionEditor, type TimestampListStyle } from "./noteInsertion";
+import { blockInsertion, noteInsertionAnchors, readNoteInsertionAnchors, resolveNoteInsertionEditor, type TimestampListStyle } from "./noteInsertion";
 import { loadedPlayers, visibleTranscripts } from "./session";
 
 const refreshMarker = StateEffect.define<null>();
@@ -44,7 +44,10 @@ export function insertionTargetMarker(context: (view: EditorView) => InsertionMa
 			const options = context(this.view);
 			if (!options.enabled) return;
 			const state = this.view.state;
-			const cursor = Object.values(state.field(noteInsertionAnchors, false) ?? {})[0] ?? state.selection.main.head;
+			const anchors = readNoteInsertionAnchors(state);
+			const firstAnchorId = anchors ? Object.keys(anchors)[0] : undefined;
+			const firstAnchorPosition = firstAnchorId === undefined ? undefined : anchors?.[Number(firstAnchorId)];
+			const cursor = typeof firstAnchorPosition === "number" ? firstAnchorPosition : state.selection.main.head;
 			try {
 				const placed = blockInsertion(state.doc, cursor, { content: "" }, options.style,
 					transcriptStart(state) ?? state.doc.length, isTranscriptCapturePosition(state, cursor), options.literatureNote);
@@ -75,7 +78,7 @@ export function registerInsertionTargetMarker(plugin: Plugin, settings: () => { 
 		const associated = loadedPlayers(app).some(({ view: player }) => player.getFilePath() === file.path) ||
 			visibleTranscripts(app).some(({ view: transcript }) => transcript.getFilePath() === file.path);
 		if (!associated) return { enabled: false };
-		const pending = Object.keys(view.state.field(noteInsertionAnchors, false) ?? {}).length > 0;
+		const pending = Object.keys(readNoteInsertionAnchors(view.state) ?? {}).length > 0;
 		const destination = pending ? null : resolveNoteInsertionEditor(app, file.path);
 		return {
 			enabled: !view.state.readOnly && (pending || !!destination && !("unavailable" in destination) && destination.view === view),

@@ -103,8 +103,8 @@ export function readAlignmentCache(value: unknown, transcript: PreparedTranscrip
 	});
 	if (position !== words.length) throw new Error("Caption anchors do not cover the transcript words.");
 	return {
-		version: 2, sourceHash: transcript.hash, videoId: raw.videoId, engine: raw.engine as AlignmentCache["engine"],
-		model: raw.model as AlignmentCache["model"], paddingSeconds: 0, createdAt: raw.createdAt,
+		version: 2, sourceHash: transcript.hash, videoId: raw.videoId, engine: raw.engine,
+		model: raw.model, paddingSeconds: 0, createdAt: raw.createdAt,
 		audioSha256: raw.audioSha256, captionSha256: raw.captionSha256, audioDuration: duration, words, captions, wordSources,
 	};
 }

@@ -22,6 +22,8 @@ import { App, Notice, normalizePath, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import {
 	focusLeafAndWindow,
+	getActiveLeafInFocusedWindow,
+	getMainWindow,
 	getWindowForLeaf,
 	isLeafAttached,
 	openFileInLeaf,
@@ -33,7 +35,6 @@ import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } fro
 import type {
 	LitNoteItemResult,
 	LitNoteItemStatus,
-	LitNoteOpenRequest,
 	LitNoteRequest,
 	LitNoteResponse,
 	ZoteroItemPayload,
@@ -78,8 +79,6 @@ import {
 	ensureFolder,
 	ensureWorkspaceReady,
 	existingFile,
-	notePathFor,
-	writeLitNote,
 	writeNote,
 } from "./writeLitNote";
 import {
@@ -369,8 +368,34 @@ async function handleCreateBatch(
 // Handler: open / focus lit notes
 // ---------------------------------------------------------------------------
 
+interface CursorEditorLike {
+	getValue?: () => string;
+	lineCount?: () => number;
+	getLine?: (line: number) => string;
+	setCursor?: (position: { line: number; ch: number }) => void;
+	scrollIntoView?: (
+		range: { from: { line: number; ch: number }; to: { line: number; ch: number } },
+		center?: boolean
+	) => void;
+	replaceRange?: (
+		replacement: string,
+		position: { line: number; ch: number }
+	) => void;
+	focus?: () => void;
+}
+
+function isCursorEditor(value: unknown): value is CursorEditorLike {
+	return typeof value === "object" && value !== null;
+}
+
+function editorFromLeaf(leaf: WorkspaceLeaf): CursorEditorLike | null {
+	const view: unknown = leaf.view;
+	if (!view || typeof view !== "object" || !("editor" in view)) return null;
+	return isCursorEditor(view.editor) ? view.editor : null;
+}
+
 export function positionCursorTwoLinesPastEnd(
-	editor: any,
+	editor: CursorEditorLike | null | undefined,
 	modifyText = true,
 	transcriptHeading?: string
 ): number {
@@ -493,7 +518,10 @@ async function restorePreviousLeaf(
 ): Promise<void> {
 	if (!leaf) return;
 	try {
-		const leafWin = getWindowForLeaf(leaf) ?? window;
+		const leafWin = getWindowForLeaf(leaf) ??
+			getMainWindow(app) ??
+			(typeof activeWindow !== "undefined" ? activeWindow : null);
+		if (!leafWin) return;
 		await new Promise<void>((resolve) => setTimeoutIn(leafWin, resolve, 10));
 
 		const attached = isLeafAttached(leaf);
@@ -506,7 +534,7 @@ async function restorePreviousLeaf(
 				await app.workspace.revealLeaf(target);
 			}
 			raiseAndFocus(app, target);
-			const editor = (target.view as any)?.editor;
+			const editor = editorFromLeaf(target);
 			editor?.focus?.();
 		}
 	} catch (err) {
@@ -526,7 +554,7 @@ async function handleOpenBatch(
 ): Promise<LitNoteItemResult[]> {
 	const initialWin =
 		(typeof activeWindow !== "undefined" ? activeWindow : null) ??
-		(typeof window !== "undefined" ? window : null);
+		null;
 	if (initialWin) {
 		raiseWindow(initialWin, app);
 	}
@@ -578,7 +606,7 @@ async function handleOpenBatch(
 				(typeof app.workspace.getMostRecentLeaf === "function"
 					? app.workspace.getMostRecentLeaf()
 					: null) ??
-				(app.workspace as any).activeLeaf ??
+				getActiveLeafInFocusedWindow(app) ??
 				null;
 			let blankLeaf: WorkspaceLeaf | null = null;
 			let blankLeafConsumed = false;
@@ -779,7 +807,7 @@ async function handleRequest(
 				}
 			}
 		}
-		sendJson(res, 200, { success: true, citekeys: citekeys } as any);
+		sendJson(res, 200, { success: true, citekeys });
 		return;
 	}
 
@@ -791,7 +819,12 @@ async function handleRequest(
 
 	// Read body
 	const chunks: Buffer[] = [];
-	for await (const chunk of req) {
+	for await (const rawChunk of req) {
+		const chunk = rawChunk as unknown;
+		if (typeof chunk !== "string" && !Buffer.isBuffer(chunk)) {
+			sendJson(res, 400, { success: false, error: "Invalid request body" });
+			return;
+		}
 		chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
 		// approximate length check
 		if (chunks.length > 50000) {
@@ -822,7 +855,7 @@ async function handleRequest(
 			);
 			sendJson(res, 200, resultsResponse(results));
 		} else if (parsed.action === "open") {
-			const openRequest = parsed as LitNoteOpenRequest;
+			const openRequest = parsed;
 			const data = Array.isArray(openRequest.data) ? openRequest.data : [];
 			const entries: OpenEntry[] = data.length
 				? data.map((item) => ({ item, citekey: citekeyOf(item) }))
@@ -887,7 +920,6 @@ export function startLitNoteServer(app: App, settings: LitNoteServerSettings): h
 	});
 
 	server.listen(HTTP_PORT, "127.0.0.1", () => {
-		console.log(`[LitNoteServer] Listening on 127.0.0.1:${HTTP_PORT}`);
 	});
 
 	return server;
@@ -900,8 +932,6 @@ export function stopLitNoteServer(server: http.Server): void {
 	server.close((err) => {
 		if (err) {
 			console.warn("[LitNoteServer] Error on close:", err);
-		} else {
-			console.log("[LitNoteServer] Server stopped.");
 		}
 	});
 }

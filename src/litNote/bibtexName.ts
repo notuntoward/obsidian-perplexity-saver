@@ -30,7 +30,7 @@ export interface Name {
 
 /** Walk a string and return the depth after processing each character. */
 function braceDepths(s: string): number[] {
-	const depths: number[] = new Array(s.length);
+	const depths = Array<number>(s.length);
 	let depth = 0;
 	for (let i = 0; i < s.length; i++) {
 		if (s[i] === "{") depth++;

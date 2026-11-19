@@ -7,6 +7,7 @@ import { readClipboardIn } from "commons/windows";
 import { HeadlineOptions } from "../normalize/headlines";
 import { resolveSourceTitles } from "../scraper";
 import { maybeAutoRelinkSources } from "../zotero/autoRelink";
+import type { ZoteroClient } from "../zotero/zoteroClient";
 import { resolveLinkAtCursor, isAiDialogNote } from "../utils";
 
 export interface ReplaceDialogResult {
@@ -20,7 +21,7 @@ export interface ReplaceDialogOptions {
 	zoteroPort?: number;
 	litNotesFolder?: string;
 	minTitleMatchScore?: number;
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 	onProgress?: (message: string) => void;
 	collapseBlankLines?: boolean;
 	collapsePromptCallouts?: boolean;
@@ -84,10 +85,14 @@ export async function replaceDialogFromClipboard(
 	}
 
 	const cache = app.metadataCache.getFileCache(file);
-	const existingFrontmatter: Record<string, unknown> = cache?.frontmatter
-		? { ...cache.frontmatter }
-		: {};
-	delete (existingFrontmatter as Record<string, unknown>).position;
+	const cachedFrontmatter: unknown = cache?.frontmatter;
+	const existingFrontmatter: Record<string, unknown> =
+		typeof cachedFrontmatter === "object" &&
+		cachedFrontmatter !== null &&
+		!Array.isArray(cachedFrontmatter)
+			? { ...(cachedFrontmatter as Record<string, unknown>) }
+			: {};
+	delete existingFrontmatter.position;
 
 	const logicalTurnCount = groupLogicalTurns(dialog.turns).length;
 	const frontmatterFields: Record<string, unknown> = {
@@ -132,7 +137,7 @@ export function registerReplaceViaLinkCommand(plugin: {
 		collapsePromptCallouts: boolean;
 		generatedTag: string;
 	};
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 }): void {
 	plugin.addCommand({
 		id: "replace-linked-ai-dialog-from-clipboard",

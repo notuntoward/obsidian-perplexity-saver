@@ -1,4 +1,4 @@
-import { DialogFile, DialogTurn, NoteRole, ParsedCitation } from "./types";
+import { DialogFile, DialogTurn, ParsedCitation } from "./types";
 
 /**
  * Inline citation marker in a Perplexity response, e.g. "...forum[1]...".
@@ -25,8 +25,6 @@ const PERPLEXITY_DIVIDER_RE = /<div style="text-align: ?center">.*?<\/div>/i;
 
 /** Save My Chatbot section headers. */
 const SMC_PROMPT_HEADER = "**You**";
-const SMC_RESPONSE_HEADER = "**AI answer**";
-const SMC_SOURCES_HEADER = "**Sources:**";
 
 /**
  * Checks if the content has annotated Perplexity format (HTML comments).
@@ -379,13 +377,13 @@ function splitStockSection(section: string): {
 	// Split off the trailing # Citations: or # Sources: block, if present.
 	// Accepts heading levels # to ###, bold **Citations:** or **Sources:**, and optional colons/whitespace.
 	const citationsMatch = bodyText.match(
-		/\n(?:\#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)|^>(?:\#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)/i
+		/\n(?:#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)|^>(?:#{1,3}|\*\*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\n|$)/i
 	) || bodyText.match(
 		/\n\s*(?:Citations?|Sources?)\s*:\s*(?:\n|$)|^\s*(?:Citations?|Sources?)\s*:\s*(?:\n|$)/i
 	);
 	if (citationsMatch) {
 		sourceListText = bodyText.slice(citationsMatch.index! + citationsMatch[0].length).trim();
-		bodyText = bodyText.slice(0, citationsMatch.index!).trim();
+		bodyText = bodyText.slice(0, citationsMatch.index).trim();
 	}
 
 	// Stock exports may also use a centered HTML divider before the source list.
@@ -477,7 +475,7 @@ function extractCitations(responseText: string, sourceListText: string): ParsedC
 export function isPerplexityContent(text: string): boolean {
 	return (
 		/\[Perplexity\]\(https?:\/\/(?:[a-zA-Z0-9-]+\.)*perplexity\.ai/im.test(text) ||
-		/^(?:\#{1,3}|\*\*|\s*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\s*)$/im.test(text) ||
+		/^(?:#{1,3}|\*\*|\s*)\s*(?:Citations?|Sources?)\s*:?\s*(?:\*\*|\s*)$/im.test(text) ||
 		/<div style="text-align: ?center">/i.test(text) ||
 		/\*\*You\*\*/.test(text) ||
 		/<!-- PPLX-TURN \d+ -->/i.test(text)

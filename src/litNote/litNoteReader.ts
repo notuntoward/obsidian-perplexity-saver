@@ -1,6 +1,12 @@
 import { parseYaml } from "obsidian";
 import { buildAliases, cleanFieldValue, formatObsidianDate } from "./buildLitNote";
 
+function frontmatterString(value: unknown): string {
+	if (typeof value === "string") return value;
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	return "";
+}
+
 export interface LitNoteMetadata {
 	title: string;
 	aliases: string[];
@@ -19,18 +25,23 @@ export function extractLitNoteMetadata(
 ): LitNoteMetadata {
 	const fm = frontmatter || {};
 	const fmTitle = fm.title || fm.Title;
-	const cleanTitle = fmTitle ? cleanFieldValue(String(fmTitle)) : "";
+	const cleanTitle = fmTitle ? cleanFieldValue(frontmatterString(fmTitle)) : "";
 	const rawDate = fm.publication_date || fm.date;
 	const pubDate = rawDate ? formatObsidianDate(rawDate) : undefined;
-	const citekey = String(
-		fm.citekey ||
-		fm["citation key"] ||
-		fm["citation_key"] ||
+	const citekey = (
+		frontmatterString(fm.citekey) ||
+		frontmatterString(
+			fm["citation key"] ||
+			fm["citation_key"]
+		) ||
 		fallbackStem
 	).trim();
 
 	const authors = Array.isArray(fm.authors)
-		? fm.authors.map((a) => cleanFieldValue(String(a)))
+		? fm.authors
+			.map(frontmatterString)
+			.filter(Boolean)
+			.map(cleanFieldValue)
 		: undefined;
 
 	return {
@@ -59,7 +70,7 @@ export function readLitNote(
 	let frontmatter: Record<string, unknown> = {};
 	if (fmMatch) {
 		try {
-			const parsed = parseYaml(fmMatch[1]);
+			const parsed = parseYaml(fmMatch[1]) as unknown;
 			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
 				frontmatter = parsed as Record<string, unknown>;
 			}

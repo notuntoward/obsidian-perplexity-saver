@@ -1,4 +1,5 @@
 import type { ZoteroClient } from "../zotero/zoteroClient";
+import type { ZoteroCreator } from "./types";
 import { buildAliases } from "./buildLitNote";
 import {
 	toSnakeCase,
@@ -9,7 +10,6 @@ import {
 	cleanTextValue,
 	canonicalizeDoi,
 	parseObsidianDate,
-	formatObsidianDate,
 	parseAuthorStringFallback,
 	extractZoteroItemKey,
 	FRONTMATTER_ORDER,
@@ -21,7 +21,6 @@ import {
 	extractDataviewFields,
 	parseOldFormatNote,
 	KNOWN_DATAVIEW_KEYS,
-	CONVERTED_DATAVIEW_KEYS,
 	isConvertedDataviewKey,
 	DATAVIEW_LINE_REGEX,
 	normalizeDataviewKey,
@@ -57,6 +56,24 @@ export {
 	orderFrontmatter,
 	formatTimestampWithOffset,
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUnknownArray(value: unknown): value is unknown[] {
+	return Array.isArray(value);
+}
+
+function isZoteroCreator(value: unknown): value is ZoteroCreator {
+	if (!isRecord(value)) return false;
+	return (
+		(value.firstName === undefined || typeof value.firstName === "string") &&
+		(value.lastName === undefined || typeof value.lastName === "string") &&
+		(value.name === undefined || typeof value.name === "string") &&
+		(value.creatorType === undefined || typeof value.creatorType === "string")
+	);
+}
 
 /** Backward-compatible set of remove keys */
 export const REMOVE_DATAVIEW_KEYS = KNOWN_DATAVIEW_KEYS;
@@ -281,7 +298,7 @@ function formatYamlValue(val: unknown, indent = 0): string {
 		return trimmed;
 	}
 
-	if (Array.isArray(val)) {
+	if (isUnknownArray(val)) {
 		const filtered = val.filter((item) => !isEmptyValue(item));
 		if (filtered.length === 0) return "";
 		const lines: string[] = [];
@@ -438,15 +455,19 @@ export async function convertDataviewPropsToFrontmatter(
 		if (existingFm[targetKey] !== undefined) {
 			// If plural property, merge them
 			if (targetKey === "tags" || targetKey === "aliases" || targetKey === "cssclasses") {
-				const currentList = Array.isArray(existingFm[targetKey])
-					? (existingFm[targetKey] as unknown[])
-					: [existingFm[targetKey]];
-				const newList = Array.isArray(val) ? val : [val];
+				const currentValue = existingFm[targetKey];
+				const currentList: unknown[] = isUnknownArray(currentValue)
+					? currentValue
+					: [currentValue];
+				const newList: unknown[] = isUnknownArray(val) ? val : [val];
 				const merged = [
 					...new Set(
 						[...currentList, ...newList]
-							.map(String)
-							.map(cleanTextValue)
+							.flatMap((entry) =>
+								typeof entry === "string" || typeof entry === "number" || typeof entry === "boolean"
+									? [cleanTextValue(String(entry))]
+									: []
+							)
 							.filter((s) => !isEmptyValue(s))
 					),
 				];
@@ -479,7 +500,10 @@ export async function convertDataviewPropsToFrontmatter(
 	let layoutType: "LayoutA" | "LayoutB" | "NoAuthors" = oldNote.layoutType;
 
 	if (Array.isArray(existingFm.authors) && existingFm.authors.length > 0) {
-		authorsList = (existingFm.authors as string[]).map(cleanTextValue).filter((s) => !isEmptyValue(s));
+		authorsList = existingFm.authors
+			.filter((author): author is string => typeof author === "string")
+			.map(cleanTextValue)
+			.filter((s) => !isEmptyValue(s));
 	} else if (typeof existingFm.authors === "string" && !isEmptyValue(existingFm.authors)) {
 		authorsList = [cleanTextValue(existingFm.authors)];
 	} else if (oldNote.layoutType === "LayoutA") {
@@ -500,7 +524,7 @@ export async function convertDataviewPropsToFrontmatter(
 
 		if (zoteroClient && (itemKeyToFetch || lookupKey)) {
 			try {
-				let item: any = null;
+				let item: unknown = null;
 				if (itemKeyToFetch) {
 					item = await zoteroClient.getItemByKey(itemKeyToFetch);
 				}
@@ -508,8 +532,9 @@ export async function convertDataviewPropsToFrontmatter(
 					item = await zoteroClient.getItemByCitekey(lookupKey);
 				}
 
-				if (item && item.creators && Array.isArray(item.creators) && item.creators.length > 0) {
-					zoteroCreators = extractAuthorsFromZoteroCreators(item.creators);
+				if (isRecord(item) && isUnknownArray(item.creators) && item.creators.length > 0) {
+					const creators = item.creators.filter(isZoteroCreator);
+					zoteroCreators = extractAuthorsFromZoteroCreators(creators);
 				}
 			} catch (err) {
 				console.debug("Zotero creator lookup error:", err);
@@ -619,8 +644,8 @@ export async function convertDataviewPropsToFrontmatter(
 			updatedFm.doi = bareDoi;
 			changesMade.push(`Set frontmatter 'doi': ${bareDoi}`);
 		}
-	} else if (updatedFm.doi) {
-		updatedFm.doi = canonicalizeDoi(String(updatedFm.doi));
+	} else if (typeof updatedFm.doi === "string") {
+		updatedFm.doi = canonicalizeDoi(updatedFm.doi);
 	}
 
 	if (dv.url) {
@@ -657,12 +682,12 @@ export async function convertDataviewPropsToFrontmatter(
 	if (dv.createdDate && !updatedFm.created_date) {
 		const formatted = formatTimestampWithOffset(dv.createdDate);
 		updatedFm.created_date = formatted || dv.createdDate;
-		changesMade.push(`Set frontmatter 'created_date' from Dataview field: ${updatedFm.created_date}`);
+		changesMade.push(`Set frontmatter 'created_date' from Dataview field: ${String(updatedFm.created_date)}`);
 	}
 	if (dv.modifiedDate && !updatedFm.modified_date) {
 		const formatted = formatTimestampWithOffset(dv.modifiedDate);
 		updatedFm.modified_date = formatted || dv.modifiedDate;
-		changesMade.push(`Set frontmatter 'modified_date' from Dataview field: ${updatedFm.modified_date}`);
+		changesMade.push(`Set frontmatter 'modified_date' from Dataview field: ${String(updatedFm.modified_date)}`);
 	}
 
 	if (updatedFm.created_date) {

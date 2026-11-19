@@ -13,7 +13,8 @@ export function normalizeTranscriptLanguage(value: unknown): string | undefined 
 
 export function resolveTranscriptLanguage(values: readonly unknown[]): string | undefined {
 	const languages = new Set(values.map(normalizeTranscriptLanguage));
-	return languages.size === 1 ? languages.values().next().value : undefined;
+	const first = languages.values().next();
+	return languages.size === 1 && !first.done ? first.value : undefined;
 }
 
 export function isEnglishTranscript(language: string | undefined): boolean {

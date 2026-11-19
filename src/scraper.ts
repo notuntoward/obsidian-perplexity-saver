@@ -75,9 +75,10 @@ export function extractZoteroTitleFromDoc(doc: Document): string | null {
 		for (let i = 0; i < jsonLdScripts.length; i++) {
 			const script = jsonLdScripts[i];
 			if (script.textContent) {
-				const data = JSON.parse(script.textContent);
-				const item = Array.isArray(data) ? data[0] : data;
-				const ldTitle = item?.headline || item?.name;
+				const data: unknown = JSON.parse(script.textContent);
+				const item: unknown = Array.isArray(data) ? data[0] : data;
+				const record = item && typeof item === "object" ? item as Record<string, unknown> : null;
+				const ldTitle = record?.headline || record?.name;
 				if (typeof ldTitle === "string" && notBlank(ldTitle)) {
 					return ldTitle.trim();
 				}
@@ -134,7 +135,7 @@ export function cleanScrapedTitle(title: string): string {
 	if (!title) return "";
 	let cleaned = title.trim();
 	// Strip arXiv ID bracket prefixes like [1805.09785] or [math.NT/0203001]
-	cleaned = cleaned.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
+	cleaned = cleaned.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
 	return cleaned;
 }
 

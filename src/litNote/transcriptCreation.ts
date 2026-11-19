@@ -120,7 +120,7 @@ export class TranscriptVideoModal extends Modal {
 		this.titleEl.setText(`${actionLabel} transcript from YouTube`);
 		applyModalAppearance(this, { size: "standard" });
 		const form = this.contentEl.createEl("form");
-		const intro = this.contentEl.createEl("div", { cls: "commons-modal-intro" });
+		const intro = this.contentEl.createDiv({ cls: "commons-modal-intro" });
 		intro.createEl("p", {
 			text: this.context.action === "create"
 				? `Download captions and add a "${this.context.headingName}" section to "${this.context.fileName}".`

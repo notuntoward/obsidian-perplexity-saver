@@ -65,7 +65,7 @@ export function askAuthorFormatDecision(
 								cls: "author-format-badge",
 							});
 
-							itemEl.createEl("span", {
+							itemEl.createSpan({
 								text: `[Field: ${issue.creatorType}] `,
 							});
 
@@ -74,7 +74,7 @@ export function askAuthorFormatDecision(
 								cls: "author-format-code",
 							});
 
-							itemEl.createEl("div", {
+							itemEl.createDiv({
 								text: issue.detail,
 								cls: "setting-item-description",
 							});
@@ -83,7 +83,7 @@ export function askAuthorFormatDecision(
 								const suggEl = itemEl.createDiv({
 									cls: "author-format-suggestion",
 								});
-								suggEl.createEl("span", { text: "Suggested: " });
+								suggEl.createSpan({ text: "Suggested: " });
 								suggEl.createEl("code", {
 									text: issue.suggestion,
 									cls: "author-format-code",

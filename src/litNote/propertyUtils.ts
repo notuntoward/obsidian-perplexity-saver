@@ -273,7 +273,14 @@ export function parseObsidianDate(val: unknown): ParsedDateResult {
 		};
 	}
 
-	let str = String(val).trim();
+	let str = (
+		typeof val === "string" ||
+		typeof val === "number" ||
+		typeof val === "boolean" ||
+		typeof val === "bigint"
+			? String(val)
+			: ""
+	).trim();
 	if (!str) return { formatted: "", isAmbiguous: false };
 
 	// Strip surrounding quotes
@@ -444,7 +451,14 @@ export function formatTimestampWithOffset(val: unknown): string | null {
 		return `${y}-${m}-${d}T${hh}:${mm}:${ss}${offset}`;
 	}
 
-	let str = String(val).trim();
+	let str = (
+		typeof val === "string" ||
+		typeof val === "number" ||
+		typeof val === "boolean" ||
+		typeof val === "bigint"
+			? String(val)
+			: ""
+	).trim();
 	if (!str) return null;
 
 	// Strip surrounding quotes

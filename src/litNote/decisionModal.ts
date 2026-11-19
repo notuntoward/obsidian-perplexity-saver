@@ -69,7 +69,7 @@ export function askNoteDecision(
 									if (i > 0) {
 										pEl.createEl("br");
 									}
-									pEl.createEl("span", { text: lines[i] });
+									pEl.createSpan({ text: lines[i] });
 								}
 							}
 						}

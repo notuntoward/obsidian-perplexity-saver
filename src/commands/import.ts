@@ -14,5 +14,5 @@ export function suggestFilenameFromClipboard(
 	const firstPrompt = dialog.turns.find((t) => t.role === "prompt")?.rawText ?? "";
 	if (!firstPrompt.trim()) return fallback;
 	const words = firstPrompt.split(/\s+/).slice(0, 8).join(" ");
-	return words.replace(/[\\/:*?"<>|#^\[\]]/g, "").trim() || fallback;
+	return words.replace(/[\\/:*?"<>|#^[\]]/g, "").trim() || fallback;
 }

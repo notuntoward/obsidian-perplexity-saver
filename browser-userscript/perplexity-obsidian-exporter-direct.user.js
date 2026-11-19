@@ -15,8 +15,9 @@
   // Include the running version so a stale Tampermonkey copy is obvious in
   // the console; verification failures are otherwise reported with line
   // numbers that look plausible for any recent version.
-  const SCRIPT_VERSION = typeof GM_info !== "undefined" && GM_info?.script?.version
-    ? GM_info.script.version
+  const gmInfo = Reflect.get(globalThis, "GM_info");
+  const SCRIPT_VERSION = gmInfo?.script?.version
+    ? gmInfo.script.version
     : "unknown";
   console.log(`[PPLX Obsidian Exporter Direct] Userscript v${SCRIPT_VERSION} active. Click 'Copy for Obsidian' or use 'Export as Markdown'.`);
 
@@ -33,9 +34,13 @@
         blobRegistry.set(url, obj);
         try {
           dismissPerplexityToasts();
-        } catch (_) {}
+        } catch {
+          // Toast dismissal is best-effort.
+        }
       }
-    } catch (_) {}
+    } catch {
+      // Blob interception must not break the page's object URL API.
+    }
     return url;
   };
 
@@ -181,7 +186,9 @@
         try {
           const Ctor = type.startsWith("pointer") && typeof PointerEvent !== "undefined" ? PointerEvent : MouseEvent;
           btn.dispatchEvent(new Ctor(type, opts));
-        } catch (_) {}
+        } catch {
+          // Synthetic pointer events are best-effort; click() still runs.
+        }
       });
       if (typeof btn.click === "function") {
         btn.click();
@@ -391,7 +398,9 @@
             const r = deepSearch(val, depth + 1, visited);
             if (r) return r;
           }
-        } catch (_) {}
+        } catch {
+          // React state may expose throwing accessors.
+        }
       }
       return null;
     }
@@ -480,7 +489,9 @@
         const r = deepSearch(window.__NEXT_DATA__, 0, visited);
         if (r) return simplifyMessages(r);
       }
-    } catch (_) {}
+    } catch {
+      // SSR data is optional and may be inaccessible.
+    }
 
     // ===============================================================
     // Strategy 3: Scan window-level properties for Zustand stores.
@@ -501,9 +512,13 @@
               }
             }
           }
-        } catch (_) {}
+        } catch {
+          // Ignore inaccessible window-level stores.
+        }
       }
-    } catch (_) {}
+    } catch {
+      // Window property enumeration is best-effort.
+    }
 
     return null;
   }
@@ -774,20 +789,17 @@
 
     const textParts = [];
     let sib = el;
-    let sibIdx = 0;
     while (sib) {
       const hasAi = containsAiResponse(sib);
       if (hasAi) {
         responseStartText = extractResponseStart(sib);
         break; // Stop if we hit the AI response element or container
       }
-      const rawSibText = sib.textContent || "";
       const text = getCleanText(sib);
       if (text) {
         textParts.push(text);
       }
       sib = sib.nextElementSibling;
-      sibIdx++;
     }
     const promptText = textParts.join("\n\n").trim();
     return { promptText, responseStartText };
@@ -1240,9 +1252,8 @@
       return { id: entry.uuid, prompt: entry.query_str, response, sources: sources.map((s) => {
         if (!apiRecord) return { url: s.url };
         // API source URLs can carry an HTML-entity layer absent from native Markdown.
-        const decoder = document.createElement("textarea");
-        decoder.innerHTML = s.url;
-        return { url: decoder.value };
+        const decoded = new DOMParser().parseFromString(s.url, "text/html").body.textContent || "";
+        return { url: decoded };
       }) };
     });
   }
@@ -1500,7 +1511,7 @@
         // failed (source count/order, answer text, citations) without the
         // full conversation. One line, bounded strings.
         console.error("[PPLX Session Diag] " + JSON.stringify({
-          version: typeof GM_info !== "undefined" && GM_info?.script?.version ? GM_info.script.version : "unknown",
+          version: Reflect.get(globalThis, "GM_info")?.script?.version || "unknown",
           exportLength: text.length,
           separators: separators.length,
           turnCount: turns.length,
@@ -1524,7 +1535,7 @@
     const remaining = text.slice(offset).trim();
     if (remaining) {
       console.error("[PPLX Session Diag] " + JSON.stringify({
-        version: typeof GM_info !== "undefined" && GM_info?.script?.version ? GM_info.script.version : "unknown",
+        version: Reflect.get(globalThis, "GM_info")?.script?.version || "unknown",
         reason: "unmatched-trailing-content",
         exportLength: text.length,
         separators: separators.length,
@@ -1556,9 +1567,10 @@
   // Both attempts are wrapped individually so a thrown error from the
   // preferred method doesn't prevent trying the fallback.
   async function writeToClipboard(full) {
-    if (typeof GM_setClipboard !== "undefined") {
+    const gmSetClipboard = Reflect.get(globalThis, "GM_setClipboard");
+    if (typeof gmSetClipboard === "function") {
       try {
-        GM_setClipboard(full, "text");
+        gmSetClipboard(full, "text");
         return { success: true, method: "GM_setClipboard" };
       } catch (err) {
         console.warn("[PPLX Obsidian Exporter] GM_setClipboard failed, falling back:", err);
@@ -1677,13 +1689,14 @@
       btn.type = "button";
       btn.title = "Export Thread to Obsidian (Markdown)";
       btn.setAttribute("aria-label", "Copy for Obsidian");
-      btn.innerHTML = `
+      const svgDocument = new DOMParser().parseFromString(`
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="5 6 90 90" width="30" height="30" fill="none" stroke="currentColor" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M34 38 L22 63 L41 84 L60 88 L72 61 L64 39 L53 25 C51 22, 47 22, 45 25 Z" />
           <path d="M49 23 C42 41, 44 51, 64 64" />
           <path d="M34 38 C34 47, 40 54, 38 68" />
           <path d="M38 68 C44 63, 54 62, 64 64" />
-        </svg>`;
+        </svg>`, "image/svg+xml");
+      btn.appendChild(document.importNode(svgDocument.documentElement, true));
       btn.style.cssText = `
         position: fixed; bottom: 120px; z-index: 99999; width: 44px; height: 44px;
         display: flex; align-items: center; justify-content: center; padding: 0;
@@ -1811,7 +1824,7 @@
     let frame = null;
     const schedule = () => {
       if (frame !== null) return;
-      frame = requestAnimationFrame(() => {
+      frame = window.requestAnimationFrame(() => {
         frame = null;
         injectButton();
         const toast = document.getElementById("pplx-clip-toast");
@@ -1846,7 +1859,9 @@
       try {
         Object.defineProperty(e, "keyCode", { get: () => 27, configurable: true });
         Object.defineProperty(e, "which", { get: () => 27, configurable: true });
-      } catch (_) {}
+      } catch {
+        // Some runtimes disallow redefining legacy key fields.
+      }
       return e;
     };
 
@@ -1887,7 +1902,9 @@
           }
           el.style.display = "none";
         }
-      } catch (_) {}
+      } catch {
+        // Toast suppression must tolerate foreign DOM nodes.
+      }
     };
 
     const performSuppression = () => {
@@ -1944,10 +1961,14 @@
         setTimeout(() => {
           try {
             observer.disconnect();
-          } catch (_) {}
+          } catch {
+            // Disconnect is best-effort during teardown.
+          }
         }, 10000);
       }
-    } catch (_) {}
+    } catch {
+      // MutationObserver is optional in constrained contexts.
+    }
 
     // Poll for the next 10 seconds to suppress asynchronously spawned toasts
     const start = Date.now();
@@ -2032,7 +2053,9 @@
         node = node.parentElement;
       }
     }, true);
-  } catch (_) {}
+  } catch {
+    // The capture listener is best-effort.
+  }
 
   // Listen for Enter key on inputs containing export commands to trigger suppression immediately
   try {
@@ -2047,12 +2070,16 @@
         }
       }
     }, true);
-  } catch (_) {}
+  } catch {
+    // The keyboard listener is best-effort.
+  }
 
   // Proactively run toast suppression & setup global observer immediately on userscript load
   try {
     dismissPerplexityToasts();
-  } catch (_) {}
+  } catch {
+    // Initial suppression is best-effort.
+  }
 
   if (document.body) start();
   else window.addEventListener("DOMContentLoaded", start, { once: true });

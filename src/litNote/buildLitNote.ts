@@ -14,7 +14,7 @@
  */
 
 import { htmlToMarkdown, App } from "obsidian";
-import type { ZoteroAttachment, ZoteroItemPayload } from "./types";
+import type { ZoteroItemPayload } from "./types";
 import { findLitNoteForCitekey } from "../zotero/matcher";
 import { normalizeTranscriptHeading } from "./transcriptSection";
 
@@ -189,7 +189,7 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload): string {
 	}
 
 	for (const att of item.attachments ?? []) {
-		const rawPath = (att as ZoteroAttachment).path;
+		const rawPath = (att).path;
 		const path = typeof rawPath === "string" ? rawPath : "";
 		const lowerPath = path.toLowerCase();
 		for (const [suffix, label] of Object.entries(ATTACHMENT_LABELS)) {
@@ -248,7 +248,7 @@ export function zoteroHtmlToMd(
 	// Our custom Zotero plugin payload parser injects `data-citekey` and `data-zotero-uri`.
 	const preprocessed = html.replace(
 		/<span[^>]*class="citation"[^>]*>(.*?)<\/span>/gs,
-		(match, innerText) => {
+		(match: string, innerText: string): string => {
 			const citekeyMatch = match.match(/data-citekey="([^"]*)"/);
 			const uriMatch = match.match(/data-zotero-uri="([^"]*)"/);
 			
@@ -368,7 +368,7 @@ export function buildLitNoteFrontmatter(
 	item: ZoteroItemPayload,
 	settings?: { authorFormatStyle?: NameStyle; authorDropVon?: boolean }
 ): Record<string, unknown> {
-	const normalizeTag = (t: any) => (typeof t === "string" ? t.toLowerCase().replace(/ /g, "_") : "");
+	const normalizeTag = (t: unknown) => (typeof t === "string" ? t.toLowerCase().replace(/ /g, "_") : "");
 
 	const creators = extractAuthorsFromZoteroCreators(
 		item.creators,

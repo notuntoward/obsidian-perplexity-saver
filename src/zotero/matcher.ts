@@ -1,5 +1,3 @@
-import { App, normalizePath } from "obsidian";
-
 /**
  * Extract main title by stripping subtitles/authors beyond delimiters (|, :, --, . ).
  * Ported from refwrangle.py extract_main_title.
@@ -8,7 +6,7 @@ export function extractMainTitle(fullTitle: string): string {
 	if (!fullTitle) return "";
 	let trimmed = fullTitle.trim();
 	// Strip arXiv ID bracket prefixes like [1805.09785] or [math.NT/0203001]
-	trimmed = trimmed.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
+	trimmed = trimmed.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
 	// Split by |, :, --, or period followed by a space and capital letter.
 	// The period case is meant to catch genuine title/subtitle boundaries
 	// like "Deep Learning. A Survey" -> "Deep Learning". The negative
@@ -33,7 +31,7 @@ export function extractMainTitle(fullTitle: string): string {
 export function normalizeString(str: string): string {
 	if (!str) return "";
 	// Strip arXiv ID bracket prefixes like [1805.09785]
-	const cleanedStr = str.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
+	const cleanedStr = str.replace(/^\[(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Z]+)?\/\d{7})(?:v\d+)?\]\s*/i, "");
 	const commonWords = new Set([
 		"the",
 		"a",

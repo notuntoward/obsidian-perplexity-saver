@@ -295,7 +295,7 @@ export class VideoView extends ItemView {
 
 		this.emptyEl = el.createDiv({
 			cls: "perplexity-saver-video-empty",
-			text: "Click a timestamp link to a YouTube video, or run \"Video: choose workspace...\" from a literature note.",
+			text: "Click a timestamp link to a YouTube video, or run \"video: choose workspace...\" from a literature note.",
 		});
 
 		this.stageEl = el.createDiv({ cls: "perplexity-saver-video-stage" });
@@ -425,7 +425,7 @@ export class VideoView extends ItemView {
 				return [{ key: key || "Unassigned", action, disabled: !key }];
 			});
 			renderKeyHints(this.helpEl.createDiv({ cls: "perplexity-saver-video-shared-keys" }), shared, "perplexity-saver");
-			this.helpEl.createDiv({ text: "Assign shared shortcuts in Settings → Hotkeys." });
+			this.helpEl.createDiv({ text: "Assign shared shortcuts in settings → hotkeys." });
 			this.helpEl.createDiv({ text: "While the player is focused" });
 			renderKeyHints(this.helpEl.createDiv(), [
 				[{ key: "Space / K", action: "play / pause" }, { key: "J / L", action: "back / forward 10 seconds" }],

@@ -366,6 +366,16 @@ export function preciseSeconds(offsetMs: number): string {
 
 interface CaptionTrack { languageCode?: string; baseUrl: string }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCaptionTrack(value: unknown): value is CaptionTrack {
+	return isRecord(value) &&
+		typeof value.baseUrl === "string" &&
+		(value.languageCode === undefined || typeof value.languageCode === "string");
+}
+
 function findCaptionTrack(captionTracks: CaptionTrack[], langCode = "en"): CaptionTrack | null {
 	let track = captionTracks.find((t) => t.languageCode === langCode);
 	if (track) return track;
@@ -416,12 +426,16 @@ export async function fetchYouTubeCaptions(
 		body,
 	});
 
-	const playerData = typeof playerResponse.json === "object" && playerResponse.json !== null
-		? playerResponse.json
-		: JSON.parse(playerResponse.text);
+	const responseJson: unknown = playerResponse.json as unknown;
+	const playerData: unknown = isRecord(responseJson)
+		? responseJson
+		: JSON.parse(playerResponse.text) as unknown;
+	if (!isRecord(playerData)) {
+		throw new Error(`Invalid YouTube player response for ${videoId}`);
+	}
 
 	const playabilityStatus = playerData.playabilityStatus;
-	if (playabilityStatus) {
+	if (isRecord(playabilityStatus)) {
 		if (
 			playabilityStatus.status === "ERROR" ||
 			playabilityStatus.status === "LOGIN_REQUIRED" ||
@@ -432,16 +446,19 @@ export async function fetchYouTubeCaptions(
 		}
 	}
 
-	const captionsData = playerData.captions?.playerCaptionsTracklistRenderer;
+	const captions = playerData.captions;
+	const captionsData = isRecord(captions)
+		? captions.playerCaptionsTracklistRenderer
+		: undefined;
 	options.signal?.throwIfAborted();
-	if (!captionsData || !Array.isArray(captionsData.captionTracks) || captionsData.captionTracks.length === 0) {
+	if (!isRecord(captionsData) ||
+		!Array.isArray(captionsData.captionTracks) ||
+		captionsData.captionTracks.length === 0) {
 		console.warn(`[LitNote] No caption tracks available for YouTube video ${videoId}`);
 		return null;
 	}
 
-	const tracks = captionsData.captionTracks.filter((track: unknown): track is CaptionTrack =>
-		typeof track === "object" && track !== null && "baseUrl" in track && typeof track.baseUrl === "string" &&
-		(!("languageCode" in track) || track.languageCode === undefined || typeof track.languageCode === "string"));
+	const tracks = captionsData.captionTracks.filter(isCaptionTrack);
 	const captionTrack = findCaptionTrack(tracks, options.lang || "en");
 	if (!captionTrack || !captionTrack.baseUrl) {
 		console.warn(`[LitNote] No matching caption track found for YouTube video ${videoId}`);
@@ -460,7 +477,8 @@ export async function fetchYouTubeCaptions(
 
 	const data: unknown = captionResponse.json ?? JSON.parse(captionResponse.text);
 	options.signal?.throwIfAborted();
-	const duration = Number(playerData.videoDetails?.lengthSeconds);
+	const videoDetails = playerData.videoDetails;
+	const duration = isRecord(videoDetails) ? Number(videoDetails.lengthSeconds) : Number.NaN;
 	const lines = parseCaptionJson3(data, Number.isFinite(duration) && duration > 0 ? duration * 1000 : undefined);
 	if (lines.length === 0) {
 		console.warn(`[LitNote] No nonempty JSON3 captions for YouTube video ${videoId}`);

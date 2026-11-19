@@ -10,6 +10,7 @@ import { DialogFile } from "./parsers/types";
 
 import { resolveSourceTitles } from "./scraper";
 import { maybeAutoRelinkSources } from "./zotero/autoRelink";
+import type { ZoteroClient } from "./zotero/zoteroClient";
 
 interface CreateNoteParams {
 	app: App;
@@ -29,7 +30,7 @@ interface CreateNoteParams {
 	zoteroPort?: number;
 	litNotesFolder?: string;
 	minTitleMatchScore?: number;
-	zoteroClient?: any;
+	zoteroClient?: ZoteroClient;
 	/**
 	 * Optional callback receiving live status messages while auto-relinking
 	 * with Zotero runs, so the caller can surface progress instead of

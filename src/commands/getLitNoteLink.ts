@@ -78,15 +78,21 @@ export class LinkOptionSelectModal extends FuzzySuggestModal<LinkOption> {
 	}
 }
 
+function fileFrontmatter(app: App, file: TFile): Record<string, unknown> | undefined {
+	const cached: unknown = app.metadataCache?.getFileCache(file)?.frontmatter;
+	const fallback: unknown = (file as unknown as { frontmatter?: unknown }).frontmatter;
+	const value = cached ?? fallback;
+	return value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: undefined;
+}
+
 /**
  * Synchronously extract LitNoteInfo from Obsidian's in-memory metadataCache.
  * Avoids slow disk I/O when opening the picker.
  */
 export function getLitNoteInfo(app: App, file: TFile): LitNoteInfo {
-	const cache = app.metadataCache?.getFileCache(file);
-	const fm = (cache?.frontmatter || (file as any).frontmatter) as
-		| Record<string, unknown>
-		| undefined;
+	const fm = fileFrontmatter(app, file);
 	const meta = extractLitNoteMetadata(fm, file.basename);
 	const title = meta.title;
 	const citekey = meta.citekey || file.basename;
@@ -104,10 +110,7 @@ export function getLitNoteInfo(app: App, file: TFile): LitNoteInfo {
 }
 
 export async function parseLitNoteInfo(app: App, file: TFile): Promise<LitNoteInfo> {
-	const cache = app.metadataCache?.getFileCache(file);
-	const fm = (cache?.frontmatter || (file as any).frontmatter) as
-		| Record<string, unknown>
-		| undefined;
+	const fm = fileFrontmatter(app, file);
 	if (fm) {
 		return getLitNoteInfo(app, file);
 	}

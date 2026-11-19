@@ -1,7 +1,6 @@
 import { parseYaml } from "obsidian";
 import { cleanFieldValue } from "./buildLitNote";
 import {
-	cleanTextValue,
 	normalizeDataviewKey,
 	AUTHOR_CREATOR_KEY_SET,
 	NON_AUTHOR_CREATOR_KEY_SET,
@@ -60,6 +59,16 @@ export interface OldFormatNote {
 	layoutType: "LayoutA" | "LayoutB" | "NoAuthors";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function frontmatterString(value: unknown): string {
+	if (typeof value === "string") return value.trim();
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	return "";
+}
+
 /**
  * Normalized keys of all Dataview fields converted to frontmatter properties.
  */
@@ -108,7 +117,7 @@ export const KNOWN_DATAVIEW_KEYS = CONVERTED_DATAVIEW_KEYS;
  * keys with spaces/hyphens/underscores/parentheses, optional spaces before '::', and value.
  */
 export const DATAVIEW_LINE_REGEX =
-	/^(?:\s*(?:>\s*)+)?(?:[-*]\s*)?(?:\*\*)?([A-Za-z0-9_\-\s()]+?)(?:\*\*)?\s*::\s*(.*)$/;
+	/^(?:\s*(?:>\s*)+)?(?:[-*]\s*)?(?:\*\*)?([A-Za-z0-9_\s()-]+?)(?:\*\*)?\s*::\s*(.*)$/;
 
 /**
  * Normalize and expand malformed Dataview lines in body text:
@@ -159,7 +168,7 @@ export function findInfoCalloutLineRange(lines: string[]): [number, number] | nu
 		const trimmed = rawLine.trim();
 
 		// Stop if hitting a different callout block (e.g. > [!note], > [!quote])
-		if (trimmed.match(/^>\s*\[!(?!info)[a-z0-9_\-]+\]/i)) {
+		if (trimmed.match(/^>\s*\[!(?!info)[a-z0-9_-]+\]/i)) {
 			break;
 		}
 		// Stop if hitting unquoted section dividers or headers
@@ -379,9 +388,9 @@ export function parseOldFormatNote(
 		rawFm = fmMatch[1];
 		body = fmMatch[2];
 		try {
-			const parsed = parseYaml(rawFm);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				frontmatter = parsed as Record<string, unknown>;
+			const parsed = parseYaml(rawFm) as unknown;
+			if (isRecord(parsed)) {
+				frontmatter = parsed;
 			}
 		} catch {
 			// Parsing error handled gracefully
@@ -406,22 +415,22 @@ export function parseOldFormatNote(
 	// Resolve title
 	const title =
 		fields.title ||
-		(frontmatter.title ? cleanFieldValue(String(frontmatter.title)) : "") ||
-		(frontmatter.Title ? cleanFieldValue(String(frontmatter.Title)) : "") ||
+		(frontmatter.title ? cleanFieldValue(frontmatterString(frontmatter.title)) : "") ||
+		(frontmatter.Title ? cleanFieldValue(frontmatterString(frontmatter.Title)) : "") ||
 		fallbackStem;
 
 	// Resolve date
 	const date =
 		fields.date ||
-		(frontmatter.publication_date ? String(frontmatter.publication_date).trim() : "") ||
-		(frontmatter.date ? String(frontmatter.date).trim() : "");
+		frontmatterString(frontmatter.publication_date) ||
+		frontmatterString(frontmatter.date);
 
 	// Resolve citekey
 	const citekey =
 		fields.citekey ||
-		(frontmatter.citekey ? String(frontmatter.citekey).trim() : "") ||
-		(frontmatter["citation key"] ? String(frontmatter["citation key"]).trim() : "") ||
-		(frontmatter["citation_key"] ? String(frontmatter["citation_key"]).trim() : "") ||
+		frontmatterString(frontmatter.citekey) ||
+		frontmatterString(frontmatter["citation key"]) ||
+		frontmatterString(frontmatter["citation_key"]) ||
 		fallbackStem;
 
 	// Resolve author layout

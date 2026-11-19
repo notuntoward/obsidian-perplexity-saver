@@ -161,8 +161,13 @@ export async function writeLitNote(
 	if (frontmatter && Object.keys(frontmatter).length > 0 && app.fileManager?.processFrontMatter) {
 		try {
 			await app.fileManager.processFrontMatter(file, (fm) => {
+				const properties = fm as unknown;
+				if (typeof properties !== "object" || properties === null || Array.isArray(properties)) {
+					return;
+				}
+				const record = properties as Record<string, unknown>;
 				for (const [k, v] of Object.entries(frontmatter)) {
-					if (v !== undefined) fm[k] = v;
+					if (v !== undefined) record[k] = v;
 				}
 			});
 		} catch (err: unknown) {
