@@ -18,6 +18,21 @@ Restore only missing/changed sections after compaction.
   or user-visible behavior need clarification, not merely for diagnostic logging.
 Keep fresh Git branch/identity/message/hook checks and final remote-tip verification.
 
+### Safe Perplexity userscript debugging
+
+Do not launch a personal Chrome profile or import cookies, storage state,
+captures, or browser sessions. Start with the userscript, existing tests, and
+source inspection. For a live DOM/React question, use
+`scripts/perplexity-debug.mjs` with a fresh anonymous Playwright Chromium
+context. It must keep private output in browser memory and block POST requests,
+authentication navigation, popups, downloads, WebSockets, and service workers.
+Do not switch the harness into persistent-profile or authenticated mode.
+
+Read the shared `perplexity-debugging` skill at
+`~/.agents/skills/perplexity-debugging/SKILL.md` when it is installed. If it is
+missing, treat live browser escalation as blocked rather than copying an old
+profile or requesting repeated console paste.
+
 ## Shared library: commons
 
 Use commons for workspace/window/tab/focus, per-window timers/clipboard, modal,

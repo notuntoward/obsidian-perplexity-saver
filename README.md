@@ -462,26 +462,23 @@ previous processing.
 
 #### Automated userscript debugging
 
-The opt-in debugging runner uses a dedicated Chrome profile, not your everyday
-browser. Sign in once, then rerun existing dialogs without copying console output:
+The automated debugging harness uses fresh, anonymous Chromium and never imports
+your Chrome profile or sign-in state:
 
 ```bash
-npm run debug:perplexity -- init 'https://www.perplexity.ai/session/YOUR-SESSION-ID'
-npm run debug:perplexity -- login
-# Sign in in the dedicated window, then close it.
-npm run debug:perplexity -- run
+node scripts/perplexity-debug.mjs --self-test
 ```
 
-It clicks the real floating button, captures relevant console/network evidence
-and checks the result with the Obsidian importer. It neither submits new queries
-nor changes your system clipboard. Private profiles, corpus URLs, screenshots
-and conversation captures stay in Git-ignored `.perplexity-debug/`.
+The smoke test checks prompt/response boundaries, paragraphs, citations, and
+network restrictions with synthetic content. For a live check, pass an approved
+public `/search/` or `/page/` thread URL without credentials, query parameters,
+or fragments. HTTP redirects, authentication pages, challenges, POST requests,
+popups, downloads, WebSockets, and service workers are stopped rather than bypassed.
 
-Replay a printed `replay.json` path with `npm run debug:perplexity -- replay PATH`
-to debug offline; `npm run test:perplexity-debug` checks the harness with synthetic
-success and failure cases. These commands are separate from normal unit/UI tests.
-See the [debugging skill](.agents/skills/debug-perplexity-export/SKILL.md) for
-privacy safeguards, evidence layout and limits of the Tampermonkey API shim.
+The harness keeps the simulated clipboard grant in browser memory and saves no
+profile or capture files. It is not an OS sandbox or a substitute for final
+Tampermonkey validation. Authentication or real-extension behavior requires an
+approved disposable isolated environment.
 
 ### C. Gemini Web Clipper Setup
 1. Install the official **Obsidian Web Clipper** from your browser's extension store.

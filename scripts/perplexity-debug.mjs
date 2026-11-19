@@ -1,347 +1,274 @@
-import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium } from "playwright";
-import { build } from "esbuild";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const privateDir = path.join(root, ".perplexity-debug");
-const scriptPath = path.join(root, "browser-userscript", "perplexity-obsidian-exporter-direct.user.js");
+const userscriptPath = fileURLToPath(new URL("../browser-userscript/perplexity-obsidian-exporter-direct.user.js", import.meta.url));
+const threadHosts = new Set(["perplexity.ai", "www.perplexity.ai"]);
+const assetDomains = ["perplexity.ai", "pplx.ai", "pplx-res.cloudinary.com", "challenges.cloudflare.com"];
+class DebugRunError extends Error {}
 
-export function sessionUrl(value) {
-  const url = new URL(value);
-  if (url.protocol !== "https:" || !["www.perplexity.ai", "perplexity.ai"].includes(url.hostname) ||
-      url.port || url.username || url.password || !/^\/session\/[a-z0-9-]+\/?$/i.test(url.pathname) ||
-      url.search || url.hash) {
-    throw new Error("Expected an HTTPS Perplexity session URL without credentials, query or fragment.");
+const smokeUrl = "https://www.perplexity.ai/search/local-debug-smoke";
+const smokeMarkdown = `# Synthetic question
+
+Second prompt paragraph.
+
+Synthetic answer with citation.[^1]
+
+Another answer paragraph.
+
+[^1]: https://example.invalid/source
+
+---
+
+# Synthetic follow-up
+
+Second answer.`;
+const smokeHtml = `<!doctype html><main>
+<h1>Synthetic export fixture</h1>
+<button id="export">Export as Markdown</button>
+<script>
+document.getElementById("export").onclick = () => {
+  const anchor = document.createElement("a");
+  anchor.href = "data:text/markdown," + encodeURIComponent(${JSON.stringify(smokeMarkdown)});
+  anchor.download = "fixture.md";
+  anchor.click();
+};
+</script></main>`;
+
+export function validateThreadUrl(input) {
+  const url = new URL(input);
+  if (url.protocol !== "https:" || !threadHosts.has(url.hostname) ||
+      url.port || url.username || url.password || url.search || url.hash ||
+      !/^\/(?:search|page)\/[^/]+\/?$/.test(url.pathname)) {
+    throw new DebugRunError("Provide an HTTPS Perplexity thread URL without credentials, query, fragment, or a custom port.");
   }
-  return url.href;
+  return url;
 }
 
-export function captureThread(data) {
-  assert.ok(Array.isArray(data?.entries), "Thread response has no entries array.");
-  return {
-    entries: data.entries.map(entry => {
-      // Retain conversation content, not account metadata or read/write tokens.
-      const steps = JSON.parse(entry.text);
-      const answer = JSON.parse(steps.at(-1).content.answer);
-      return {
-        uuid: entry.uuid, query_str: entry.query_str, status: entry.status,
-        text: JSON.stringify([{ content: { answer: JSON.stringify({
-          answer: answer.answer,
-          web_results: Array.isArray(answer.web_results)
-            ? answer.web_results.map(source => ({ url: source.url }))
-            : answer.web_results,
-        }) } }]),
-      };
-    }),
-    has_next_page: data.has_next_page,
-    next_cursor: data.next_cursor,
-  };
-}
-
-export function validateImport(text, expected, parseDialog) {
-  const dialog = parseDialog(text);
-  assert.equal(dialog.turns.length, expected.length * 2, "Importer lost or added turns.");
-  const promptBlocks = [...text.matchAll(/<!-- PPLX-ROLE: prompt -->\n([\s\S]*?)\n\n<!-- PPLX-ROLE: ai -->/g)];
-  assert.equal(promptBlocks.length, expected.length, "Missing annotated prompts.");
-  const comparable = value => value.replace(/\[\^\d+_\d+\]|\[\d+\]/g, "")
-    .replace(/[^\p{L}\p{N}\p{M}]/gu, "").toLowerCase();
-  for (const [i, turn] of expected.entries()) {
-    const prompt = dialog.turns[i * 2];
-    const answer = dialog.turns[i * 2 + 1];
-    assert.equal(prompt.role, "prompt", `Turn ${i + 1}: wrong prompt role.`);
-    assert.equal(answer.role, "ai", `Turn ${i + 1}: wrong answer role.`);
-    assert.equal(promptBlocks[i][1], turn.prompt.trim(), `Turn ${i + 1}: prompt changed.`);
-    const isolated = parseDialog(`<!-- PPLX-TURN 1 -->\n<!-- PPLX-ROLE: prompt -->\n${turn.prompt}\n\n` +
-      "<!-- PPLX-ROLE: ai -->\nExpected answer.\n\n<!-- PPLX-ROLE: sources -->\n(none)");
-    assert.equal(prompt.rawText, isolated.turns[0]?.rawText, `Turn ${i + 1}: importer changed the prompt.`);
-    assert.equal(comparable(answer.rawText), comparable(turn.response), `Turn ${i + 1}: answer changed.`);
-    assert.deepEqual(
-      answer.citations.map(citation => citation.url),
-      turn.sources.map(source => source.url.replace(/ /g, "%20")),
-      `Turn ${i + 1}: importer source list differs.`,
-    );
+export function requestDecision(input, method, navigation, thread) {
+  const url = new URL(input);
+  if (url.protocol !== "https:" || url.port || url.username || url.password) return "scheme-or-authority";
+  if (method !== "GET" && method !== "HEAD") return "method";
+  if (navigation) {
+    return threadHosts.has(url.hostname) &&
+      url.pathname.replace(/\/$/, "") === thread.pathname.replace(/\/$/, "") &&
+      !url.search && !url.hash ? null : "navigation";
   }
-  return { turns: expected.length, sources: expected.map(turn => turn.sources.length) };
+  return assetDomains.some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))
+    ? null : "host";
 }
 
-function productionHelper(script, name) {
-  const match = script.match(new RegExp(`  (?:async )?function ${name}\\([^]*?\\n  \\}`));
-  assert.ok(match, `Missing userscript helper: ${name}`);
-  return match[0];
-}
-
-function captureScript(script) {
-  const version = script.match(/@version\s+(\S+)/)?.[1];
-  assert.ok(version, "Missing userscript version.");
-  return `(() => {
-    if (location.protocol !== "https:" ||
-        !["www.perplexity.ai", "perplexity.ai"].includes(location.hostname)) return;
-    const state = globalThis.__pplxDebug = { armed: false, clipboard: [], native: [], errors: [] };
-    state.decode = ${productionHelper(script, "sessionTurnsFromResults")};
-    globalThis.GM_info = { script: { version: ${JSON.stringify(version)} } };
-    globalThis.GM_setClipboard = text => state.clipboard.push(String(text));
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: {
-      writeText: async () => { throw new Error("Real clipboard access is disabled by the test harness."); }
-    } });
-    const create = URL.createObjectURL.bind(URL);
-    URL.createObjectURL = blob => {
-      if (state.armed && blob instanceof Blob) {
-        blob.text().then(text => {
-          if (text.length > 5000000) throw new Error("Native export exceeds the 5 MB capture limit.");
-          state.native.push(text);
-        }).catch(error => state.errors.push(String(error)));
-      }
-      return create(blob);
-    };
-    ${script}
-  })();`;
-}
-
-async function loadImporter() {
-  const bundle = await build({
-    entryPoints: [path.join(root, "src", "parsers", "perplexity.ts")],
-    bundle: true, write: false, format: "esm", platform: "node",
-  });
-  return (await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString("base64")}`)).parsePerplexityDialog;
-}
-
-function fixtureHtml(native) {
-  const literal = JSON.stringify(native).replace(/</g, "\\u003c");
-  return `<!doctype html><meta charset="utf-8"><main>
-    <button aria-label="Session options">Options</button>
-    <form><div contenteditable="true" role="textbox"></div></form>
-    </main><script>
-    document.querySelector("button").onclick = () => {
-      const menu = document.createElement("div"); menu.setAttribute("role", "menu");
-      const item = document.createElement("button"); item.setAttribute("role", "menuitem");
-      item.textContent = "Export as Markdown";
-      item.onclick = () => {
-        const anchor = document.createElement("a");
-        anchor.download = "replay.md";
-        anchor.href = URL.createObjectURL(new Blob([${literal}], { type: "text/markdown" }));
-        anchor.click(); menu.remove();
-      };
-      menu.append(item); document.body.append(menu);
-    };
-    </script>`;
-}
-
-async function exercise(context, url, script, parseDialog, directory, replay) {
-  const page = await context.newPage();
-  page.setDefaultTimeout(20000);
-  const evidence = { schema: 1, url, scriptSha256: createHash("sha256").update(script).digest("hex"), pages: [], native: null };
-  const diagnostics = { console: [], pageErrors: [], failedRequests: [], downloads: [], captureErrors: [] };
-  const pending = [];
-  const threadPath = "/rest/thread/" + new URL(url).pathname.split("/")[2];
-  let armed = false;
-  page.on("console", message => {
-    if (message.text().includes("[PPLX") && diagnostics.console.length < 100) {
-      diagnostics.console.push({ level: message.type(), text: message.text().slice(0, 12000) });
-    }
-  });
-  page.on("pageerror", error => {
-    if (diagnostics.pageErrors.length < 30) diagnostics.pageErrors.push(error.message.slice(0, 1000));
-  });
-  page.on("requestfailed", request => {
-    if (diagnostics.failedRequests.length < 30) {
-      const target = new URL(request.url());
-      diagnostics.failedRequests.push({ url: target.origin + target.pathname, error: request.failure()?.errorText });
-    }
-  });
-  page.on("download", download => {
-    diagnostics.downloads.push(download.suggestedFilename());
-    pending.push(download.cancel().catch(error => diagnostics.captureErrors.push(String(error))));
-  });
-  page.on("response", response => {
-    const target = new URL(response.url());
-    if (armed && target.origin === new URL(url).origin && target.pathname === threadPath &&
-        target.searchParams.get("from_first") === "true") {
-      const record = { cursor: target.searchParams.get("cursor"), status: response.status() };
-      evidence.pages.push(record);
-      pending.push((async () => {
-        if (response.ok()) record.body = captureThread(await response.json());
-      })().catch(error => diagnostics.captureErrors.push(String(error))));
-    }
-  });
-  if (replay) {
-    await page.route("**/*", async route => {
-      const target = new URL(route.request().url());
-      if (target.href === url) {
-        await route.fulfill({ contentType: "text/html", body: fixtureHtml(replay.native) });
-      } else if (target.origin === new URL(url).origin && target.pathname === threadPath) {
-        const saved = replay.pages.find(item => item.cursor === target.searchParams.get("cursor"));
-        if (!saved) {
-          diagnostics.captureErrors.push("Replay has no response for this pagination cursor.");
-          await route.abort("blockedbyclient");
-          return;
-        }
-        await route.fulfill({ status: saved.status, contentType: "application/json", body: JSON.stringify(saved.body ?? {}) });
-      } else {
-        await route.abort("blockedbyclient");
-      }
-    });
-  }
-  await page.addInitScript({ content: captureScript(script) });
-  let result;
+/**
+ * @param {Pick<import("playwright").Route, "fetch" | "fulfill" | "request">} route
+ * @param {(reason: string) => Promise<void>} block
+ */
+export async function forwardWithoutRedirects(route, block) {
+  // Playwright routes only the first request in a redirect chain.
+  let response;
   try {
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-    if (new URL(page.url()).pathname !== new URL(url).pathname ||
-        /just a moment|verify you are human/i.test(await page.title())) {
-      throw new Error("Session unavailable: use the login command to sign in or handle browser verification manually.");
-    }
-    // The injected button can appear before Perplexity's client-side app has loaded.
-    await page.locator('main button[aria-label="Session options"], main button[aria-label="Thread options"]')
-      .waitFor({ state: "visible", timeout: 45000 });
-    const button = page.locator("#pplx-obsidian-export-btn");
-    await button.waitFor({ state: "visible" });
-    await page.evaluate(() => { globalThis.__pplxDebug.armed = true; });
-    armed = true;
-    await button.click();
-    await page.waitForFunction(() => {
-      const state = globalThis.__pplxDebug;
-      const toast = document.querySelector("#pplx-clip-toast");
-      return state.clipboard.length || (toast && /unchanged|failed|timed out|saving.*file|could not/i.test(toast.textContent));
-    }, null, { timeout: 75000 });
-    await Promise.all(pending);
-    const captured = await page.evaluate(() => ({
-      clipboard: globalThis.__pplxDebug.clipboard,
-      native: globalThis.__pplxDebug.native,
-      errors: globalThis.__pplxDebug.errors,
-      toast: document.querySelector("#pplx-clip-toast")?.textContent,
-    }));
-    evidence.native = captured.native.at(-1) ?? null;
-    assert.deepEqual(captured.errors, [], "Native export capture failed.");
-    assert.deepEqual(diagnostics.captureErrors, [], "Thread response capture failed.");
-    assert.equal(captured.clipboard.length, 1,
-      `Export did not produce exactly one captured clipboard write. ${captured.toast ?? ""}`);
-    assert.equal(diagnostics.downloads.length, 0, "Export fell back to an unexpected download.");
-    assert.ok(evidence.pages.length, "No structured thread response was captured.");
-    assert.ok(evidence.native, "No native Markdown was captured.");
-    const entries = evidence.pages.flatMap(record => record.body?.entries ?? []);
-    const expected = await page.evaluate(data => globalThis.__pplxDebug.decode(data), entries);
-    const summary = validateImport(captured.clipboard[0], expected, parseDialog);
-    await writeFile(path.join(directory, "clipboard.md"), captured.clipboard[0]);
-    result = { success: true, ...summary };
-  } catch (error) {
-    result = { success: false, error: String(error) };
-    // Error evidence is local and private; never include cookies or request headers.
-    await Promise.all(pending);
-    const captured = await page.evaluate(() => ({
-      native: globalThis.__pplxDebug?.native ?? [],
-      clipboard: globalThis.__pplxDebug?.clipboard ?? [],
-      toast: document.querySelector("#pplx-clip-toast")?.textContent,
-    })).catch(captureError => ({ native: [], clipboard: [], captureError: String(captureError) }));
-    evidence.native = captured.native.at(-1) ?? null;
-    diagnostics.pageState = {
-      url: page.url(), toast: captured.toast, clipboardWrites: captured.clipboard.length,
-      captureError: captured.captureError,
-    };
-    if (captured.clipboard.length) await writeFile(path.join(directory, "clipboard.md"), captured.clipboard.at(-1));
-    await page.screenshot({ path: path.join(directory, "failure.png") }).catch(
-      captureError => diagnostics.captureErrors.push(String(captureError)),
-    );
-  } finally {
-    await writeFile(path.join(directory, "replay.json"), JSON.stringify(evidence, null, 2));
-    await writeFile(path.join(directory, "result.json"), JSON.stringify({ ...result, diagnostics }, null, 2));
-    await page.close();
+    response = await route.fetch({ maxRedirects: 0, timeout: 15_000 });
+  } catch {
+    await block("upstream");
+    return;
   }
-  return result;
-}
-
-export async function runCases(urls, replay, headed = false) {
-  const script = await readFile(scriptPath, "utf8");
-  const parseDialog = await loadImporter();
-  const runs = path.join(privateDir, "runs");
-  await mkdir(runs, { recursive: true });
-  const runDir = await mkdtemp(path.join(runs, new Date().toISOString().replace(/[:.]/g, "-") + "-"));
-  const browser = replay ? await chromium.launch({ channel: "chrome", headless: !headed }) : null;
-  const context = replay
-    ? await browser.newContext({ acceptDownloads: true, serviceWorkers: "block" })
-    : await chromium.launchPersistentContext(path.join(privateDir, "profile"), {
-      channel: "chrome", headless: !headed, acceptDownloads: true, serviceWorkers: "block",
-    });
-  const results = [];
   try {
-    for (const [i, url] of urls.entries()) {
-      const directory = path.join(runDir, String(i + 1));
-      await mkdir(directory);
-      const result = await exercise(context, url, script, parseDialog, directory, replay);
-      results.push({ url, ...result });
-      console.log(`${result.success ? "PASS" : "FAIL"} ${i + 1}/${urls.length}: ${
-        result.success ? `${result.turns} turns; sources ${result.sources.join("/")}` : result.error
-      }`);
-    }
-    await writeFile(path.join(runDir, "summary.json"), JSON.stringify(results, null, 2));
-    console.log(`Private evidence: ${runDir}`);
-  } finally {
-    await context.close();
-    if (browser) await browser.close();
-  }
-  return results;
-}
-
-async function main() {
-  const [command, ...args] = process.argv.slice(2);
-  if (command === "init") {
-    const file = path.join(privateDir, "corpus.json");
-    await mkdir(privateDir, { recursive: true });
-    let existing = [];
-    try { existing = JSON.parse(await readFile(file, "utf8")); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    assert.ok(Array.isArray(existing), "Corpus must be an array of session URLs.");
-    const urls = [...new Set([...existing, ...args].map(sessionUrl))];
-    await writeFile(file, JSON.stringify(urls, null, 2) + "\n");
-    console.log(`Private corpus: ${file} (${urls.length} dialogs)`);
-  } else if (command === "login") {
-    await mkdir(privateDir, { recursive: true });
-    const context = await chromium.launchPersistentContext(path.join(privateDir, "profile"), {
-      channel: "chrome", headless: false,
-      args: ["--window-position=80,80", "--window-size=1280,900"],
-    });
-    try {
-      const page = context.pages()[0] ?? await context.newPage();
-      await page.goto("https://www.perplexity.ai/", { waitUntil: "domcontentloaded" });
-      await page.bringToFront();
-      console.log("Sign into Perplexity in this dedicated browser, then close that browser window. Login window expires after 10 minutes.");
-      const deadline = Date.now() + 600000;
-      while (context.pages().length) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new Error("Login window timed out after ten minutes.");
-        await Promise.race(context.pages().map(tab => tab.waitForEvent("close", { timeout: remaining })));
-      }
-    } finally { await context.close(); }
-  } else if (command === "run" || command === "replay") {
-    const headed = args.includes("--headed");
-    const values = args.filter(value => value !== "--headed");
-    let replay;
-    let urls;
-    if (command === "replay") {
-      assert.equal(values.length, 1, "Usage: replay <private replay.json> [--headed]");
-      replay = JSON.parse(await readFile(path.resolve(values[0]), "utf8"));
-      assert.equal(replay.schema, 1, "Unsupported replay schema.");
-      assert.ok(typeof replay.native === "string" && Array.isArray(replay.pages) && replay.pages.length,
-        "Replay needs captured native Markdown and thread responses; inspect result.json for capture errors.");
-      urls = [sessionUrl(replay.url)];
+    const status = response.status();
+    if (status >= 300 && status < 400 && status !== 304) {
+      await block("redirect");
+    } else if (route.request().isNavigationRequest() && response.headers()["cf-mitigated"] === "challenge") {
+      await block("challenge");
     } else {
-      urls = values.length ? values.map(sessionUrl) : JSON.parse(await readFile(path.join(privateDir, "corpus.json"), "utf8"));
-      assert.ok(Array.isArray(urls) && urls.length, "Initialize a nonempty private corpus first.");
-      urls = urls.map(sessionUrl);
+      await route.fulfill({ response });
     }
-    const results = await runCases(urls, replay, headed);
-    if (results.some(result => !result.success)) process.exitCode = 1;
-  } else {
-    console.log("Usage: npm run debug:perplexity -- init [session URLs...]\n" +
-      "       npm run debug:perplexity -- login\n" +
-      "       npm run debug:perplexity -- run [session URLs...] [--headed]\n" +
-      "       npm run debug:perplexity -- replay <private replay.json> [--headed]");
-    if (command && command !== "--help") process.exitCode = 1;
+  } finally {
+    await response.dispose();
   }
+}
+
+export function installClipboardSink() {
+  const sink = { writes: 0, text: "" };
+  const writeText = text => {
+    sink.text = String(text);
+    sink.writes++;
+  };
+  Object.defineProperty(globalThis, "__perplexityDebugClipboard", { value: sink });
+  Object.defineProperty(globalThis, "GM_setClipboard", { value: writeText });
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText: async text => writeText(text) },
+  });
+}
+
+export async function runDebug({ url: input, scenario, offline = false }) {
+  const thread = validateThreadUrl(input);
+  if (offline && thread.href !== smokeUrl) throw new DebugRunError("Offline mode only serves the synthetic smoke fixture.");
+  const source = await readFile(userscriptPath, "utf8");
+  const report = {
+    mode: offline ? "offline-smoke" : "anonymous",
+    userscriptSha256: createHash("sha256").update(source).digest("hex"),
+    consoleCounts: {},
+    pageErrors: 0,
+    blockedRequests: {},
+    canceledDownloads: 0,
+    closedPopups: 0,
+    clipboard: { writes: 0, characters: 0 },
+  };
+  const browser = await chromium.launch({ headless: true, chromiumSandbox: true, timeout: 15_000 });
+  let deadline;
+  try {
+    const work = async () => {
+      const context = await browser.newContext({
+        acceptDownloads: false,
+        offline,
+        serviceWorkers: "block",
+        permissions: [],
+      });
+      let blockedThreadReason;
+      await context.route("**/*", async route => {
+        const request = route.request();
+        const navigation = request.isNavigationRequest();
+        const block = async reason => {
+          report.blockedRequests[reason] = (report.blockedRequests[reason] || 0) + 1;
+          if (navigation && request.url() === thread.href) blockedThreadReason = reason;
+          await route.abort("blockedbyclient");
+        };
+        const reason = requestDecision(request.url(), request.method(), navigation, thread);
+        if (reason) {
+          await block(reason);
+        } else if (offline) {
+          if (navigation) {
+            await route.fulfill({ contentType: "text/html", body: smokeHtml });
+          } else {
+            await route.abort("blockedbyclient");
+          }
+        } else {
+          await forwardWithoutRedirects(route, block);
+        }
+      });
+      await context.routeWebSocket("**/*", socket => {
+        report.blockedRequests.websocket = (report.blockedRequests.websocket || 0) + 1;
+        socket.close();
+      });
+      await context.addInitScript(installClipboardSink);
+      const page = await context.newPage();
+      const pendingActions = [];
+      let actionFailed = false;
+      const trackAction = promise => pendingActions.push(promise.catch(() => { actionFailed = true; }));
+      context.on("page", popup => {
+        report.closedPopups++;
+        trackAction(popup.close());
+      });
+      page.on("download", download => {
+        report.canceledDownloads++;
+        trackAction(download.cancel());
+      });
+      page.on("console", message => {
+        const level = message.type();
+        report.consoleCounts[level] = (report.consoleCounts[level] || 0) + 1;
+      });
+      page.on("pageerror", () => { report.pageErrors++; });
+      page.setDefaultTimeout(10_000);
+      page.setDefaultNavigationTimeout(30_000);
+      const response = await page.goto(thread.href, { waitUntil: "domcontentloaded" }).catch(error => {
+        if (blockedThreadReason === "redirect") {
+          throw new DebugRunError("A redirect was blocked. Use the approved final thread URL directly, or stop if sign-in is required.");
+        }
+        if (blockedThreadReason === "challenge") {
+          throw new DebugRunError("Perplexity returned a browser challenge; stopping without attempting to bypass it.");
+        }
+        if (blockedThreadReason === "upstream") throw new DebugRunError("The approved thread request failed or timed out.");
+        throw error;
+      });
+      if (!response?.ok()) throw new DebugRunError("Thread did not load successfully; stop for authentication, challenge, or HTTP failure.");
+      if (requestDecision(page.url(), "GET", true, thread)) {
+        throw new DebugRunError("The page left the approved thread before userscript injection.");
+      }
+      await page.evaluate(source);
+      if (scenario) await scenario({ page });
+      report.clipboard = await page.evaluate(() => ({
+        writes: globalThis.__perplexityDebugClipboard.writes,
+        characters: globalThis.__perplexityDebugClipboard.text.length,
+      }));
+      await Promise.all(pendingActions);
+      if (actionFailed) throw new DebugRunError("Could not close a popup or cancel a download; the browser has been closed.");
+      return report;
+    };
+    return await Promise.race([
+      work(),
+      new Promise((_, reject) => {
+        deadline = setTimeout(() => reject(new DebugRunError("Debug run exceeded its 60-second deadline.")), 60_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(deadline);
+    await browser.close();
+  }
+}
+
+async function main(args) {
+  if (args.length === 1 && args[0] === "--self-test") {
+    const report = await runDebug({
+      url: smokeUrl,
+      offline: true,
+      scenario: async ({ page }) => {
+        await page.locator("#export").click();
+        await page.waitForFunction(() => globalThis.__perplexityDebugClipboard.writes > 0);
+        const correct = await page.evaluate(() => {
+          const text = globalThis.__perplexityDebugClipboard.text;
+          const expected = [
+            "<!-- PPLX-TURN 1 -->\n<!-- PPLX-ROLE: prompt -->\n# Synthetic question\n\nSecond prompt paragraph.",
+            "<!-- PPLX-ROLE: ai -->\nSynthetic answer with citation.[^1]\n\nAnother answer paragraph.",
+            "<!-- PPLX-ROLE: sources -->\n[^1]: https://example.invalid/source",
+            "<!-- PPLX-TURN 2 -->\n<!-- PPLX-ROLE: prompt -->\n# Synthetic follow-up",
+            "<!-- PPLX-ROLE: ai -->\nSecond answer.",
+            "<!-- PPLX-ROLE: sources -->\n(none)",
+          ].join("\n\n");
+          const headerEnd = text.indexOf("\n\n---\n\n");
+          return text.startsWith(`[Perplexity](${location.href})`) &&
+            headerEnd !== -1 && text.slice(headerEnd + 7) === expected;
+        });
+        if (!correct) throw new DebugRunError("Synthetic export content was not preserved.");
+        const blocked = await page.evaluate(async () => {
+          const attempts = [
+            fetch("https://outside.invalid/blocked", { mode: "no-cors" }),
+            fetch("/api/debug-smoke", { method: "POST" }),
+          ];
+          const results = await Promise.allSettled(attempts);
+          return results.every(result => result.status === "rejected");
+        });
+        if (!blocked) throw new DebugRunError("Synthetic network restrictions did not reject both requests.");
+      },
+    });
+    if (report.blockedRequests.host !== 1 || report.blockedRequests.method !== 1 ||
+        report.pageErrors || report.clipboard.writes !== 1 || report.canceledDownloads) {
+      throw new DebugRunError("Smoke test did not verify route enforcement without page errors.");
+    }
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  if (!args.length || args[0] === "--help") {
+    console.log("Usage: node scripts/perplexity-debug.mjs <approved-thread-url> [trusted-scenario.mjs]\n       node scripts/perplexity-debug.mjs --self-test");
+    return;
+  }
+  if (args.length > 2) throw new DebugRunError("Expected a thread URL and optional trusted local scenario.");
+  validateThreadUrl(args[0]);
+  let scenario;
+  if (args[1]) {
+    const scenarioPath = path.resolve(args[1]);
+    if (path.extname(scenarioPath) !== ".mjs") throw new DebugRunError("Scenario must be a trusted local .mjs file.");
+    scenario = (await import(pathToFileURL(scenarioPath).href)).default;
+    if (typeof scenario !== "function") throw new DebugRunError("Scenario must export a default async function.");
+  }
+  console.log(JSON.stringify(await runDebug({ url: args[0], scenario }), null, 2));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => { console.error(String(error)); process.exitCode = 1; });
+  main(process.argv.slice(2)).catch(error => {
+    const message = error instanceof DebugRunError ? error.message
+      : error instanceof Error && /Executable doesn't exist/.test(error.message) ? "Chromium is missing; run npx playwright install chromium."
+      : "Browser or scenario failed. Raw errors are withheld because they may contain private content; use a minimal local reproduction.";
+    console.error(`Debug run failed: ${message}`);
+    process.exitCode = 1;
+  });
 }
