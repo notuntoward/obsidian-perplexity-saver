@@ -2,6 +2,34 @@ import { describe, it, expect } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 
+describe("Userscript React traversal host-object exclusions", () => {
+  class HostNode {
+    messages = [{ query: "not thread state" }];
+  }
+  const hostWindow = { messages: [{ query: "not thread state" }] };
+  const source = fs.readFileSync(
+    path.join(__dirname, "../../browser-userscript/perplexity-obsidian-exporter-direct.user.js"), "utf8",
+  );
+  const start = source.indexOf("    function isMessagesArray(");
+  const end = source.indexOf("\n    // ===", source.indexOf("    function deepSearch("));
+  if (start < 0 || end < 0) throw new Error("Could not locate userscript deepSearch");
+  const deepSearch: (value: object, depth: number, visited: Set<object>) => unknown =
+    new Function("window", "Node", source.slice(start, end) + "\nreturn deepSearch;")(hostWindow, HostNode);
+
+  it("does not mistake DOM-node properties or the window for thread state", () => {
+    expect(deepSearch(new HostNode(), 0, new Set())).toBeNull();
+    expect(deepSearch(hostWindow, 0, new Set())).toBeNull();
+  });
+
+  it("still finds ordinary nested messages and terminates on cycles", () => {
+    const messages = [{ query: "actual prompt" }];
+    expect(deepSearch({ nested: { messages } }, 0, new Set())).toBe(messages);
+    const cycle: { self?: object } = {};
+    cycle.self = cycle;
+    expect(deepSearch(cycle, 0, new Set())).toBeNull();
+  });
+});
+
 // Let's implement the core userscript matching functions locally for testing
 const TURN_DIVIDER_RE = /\n[ \t]*---[ \t]*\n+(?=(?:```.*\n)?#\s)/g;
 

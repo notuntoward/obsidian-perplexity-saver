@@ -514,6 +514,37 @@ Once built, you need to manually copy the required distribution files into your 
 
 # Troubleshooting & Edge Cases
 
+### Automated userscript debugging
+
+For recurring Perplexity UI/React changes, use the shared `perplexity-debugging`
+skill, managed by [kilo-dotfiles](https://github.com/notuntoward/kilo-dotfiles) and
+installed by chezmoi at `~/.agents/skills/perplexity-debugging/SKILL.md`.
+The repository's `AGENTS.md` directs agents to read it even without native skill
+discovery or GitHub Copilot. Agents escalate from focused local checks to a fresh
+anonymous browser, without asking you to paste repeated console probes or reuse
+a personal login.
+
+Run the network-free harness smoke test with:
+
+```bash
+node scripts/perplexity-debug.mjs --self-test
+```
+
+The smoke test checks prompt/response boundaries, paragraph and citation
+preservation, and request blocking without contacting Perplexity. If Chromium
+is missing, run `npx playwright install chromium` first.
+
+For a live check, pass an approved public `/search/` or `/page/` thread URL
+without query parameters or a fragment. A second argument can be a trusted
+local `.mjs` scenario; without one, the harness does not click Export. Use the
+final thread URL directly: HTTP redirects are not followed. If sign-in or a
+browser challenge is required, stop rather than reusing a Chrome profile.
+
+The harness uses fresh Chromium, keeps clipboard output in browser memory,
+and saves no profiles or captures. It simulates the userscript clipboard grant;
+it is not an OS sandbox or a substitute for real Tampermonkey validation.
+Private captures and authenticated profiles must stay outside the checkout.
+
 ### Multi-Paragraph Prompts and Boundary Detection
 Perplexity's markdown exporter fundamentally lacks boundaries between user prompts and AI responses (they are just separated by blank lines). To reliably parse threads, the UserScript must identify the true prompt text by reading Perplexity's internal React state tree or falling back to a DOM sibling scan.
 

@@ -376,6 +376,7 @@
     // --- Helper: recursively search a plain JS object tree for a messages array ---
     function deepSearch(obj, depth, visited) {
       if (depth > 12 || !obj || typeof obj !== "object" || visited.has(obj)) return null;
+      if (obj === window || obj instanceof Node) return null;
       visited.add(obj);
       if (isMessagesArray(obj)) return obj;
       if (!Array.isArray(obj)) {

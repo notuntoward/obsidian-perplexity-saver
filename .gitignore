@@ -29,5 +29,3 @@ data.json
 # Scratch files
 scratch*.json
 scratch/
-.venv-whisperx/
-__pycache__/
