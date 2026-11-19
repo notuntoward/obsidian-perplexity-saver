@@ -111,7 +111,7 @@ describe("notifyNoTranscript", () => {
 		await notifyNoTranscript(app, app.vault.getMarkdownFiles()[0], "Subtitles");
 		const notice = createdNotices.find((n) => n.messageEl.querySelector("button"))!;
 		const buttons = Array.from(notice.messageEl.querySelectorAll("button"));
-		expect(notice.messageEl.textContent).toContain('No timestamped transcript under a "Subtitles" heading');
+		expect(notice.message).toContain('No timestamped transcript under a "Subtitles" heading');
 		expect(createdNotices[0].hidden).toBe(true);
 		expect(buttons.map((b) => b.textContent)).toEqual(['Rename "First" to "Subtitles"', 'Rename "Second" to "Subtitles"']);
 		buttons[1].click();
@@ -125,5 +125,17 @@ describe("notifyNoTranscript", () => {
 		await notifyNoTranscript(app, app.vault.getMarkdownFiles()[0], "Subtitles");
 		expect(createdNotices.at(-1)?.message).toBe('No timestamped transcript under a "Subtitles" heading in n.');
 		expect(createdNotices.some((n) => n.hidden)).toBe(false);
+	});
+
+	it("offers to create a transcript when no heading exists", async () => {
+		const { app } = vaultWith({ "n.md": "# Notes\nhttps://youtu.be/abcdefghijk\n" });
+		const create = vi.fn();
+		await notifyNoTranscript(app, app.vault.getMarkdownFiles()[0], "Subtitles", create);
+		const notice = createdNotices.find((n) => n.messageEl.querySelector("button"))!;
+		const button = notice.messageEl.querySelector("button")!;
+		expect(button.textContent).toBe("Create from YouTube");
+		(button as HTMLButtonElement).click();
+		expect(create).toHaveBeenCalledOnce();
+		expect(notice.hidden).toBe(true);
 	});
 });

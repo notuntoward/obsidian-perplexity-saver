@@ -2,6 +2,7 @@ import { Notice, type App, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
 import {
 	findTranscriptCandidates,
+	headingsFromText,
 	normalizeTranscriptHeading,
 	sameTranscriptHeading,
 } from "./transcriptSection";
@@ -110,23 +111,33 @@ const BUTTON_LIMIT = 3;
  * Explain a failed transcript lookup. When the note has several sections that look like a transcript, offer to
  * rename one to the configured heading, since picking between them silently could show the wrong text.
  */
-export async function notifyNoTranscript(app: App, file: TFile, headingName: string): Promise<void> {
+export async function notifyNoTranscript(
+	app: App,
+	file: TFile,
+	headingName: string,
+	createFromYoutube?: () => void | Promise<void>
+): Promise<void> {
 	const wanted = normalizeTranscriptHeading(headingName);
 	const message = `No timestamped transcript under a "${wanted}" heading in ${file.basename}.`;
 	const plain = new Notice(message);
 	let choices: ReturnType<typeof findTranscriptCandidates> = [];
 	try {
-		const headings = app.metadataCache.getFileCache(file)?.headings;
-		const candidates = headings?.length ? findTranscriptCandidates(await app.vault.cachedRead(file), headings) : [];
+		const content = await app.vault.cachedRead(file);
+		const cached = app.metadataCache.getFileCache(file)?.headings;
+		const headings = cached?.every((heading) =>
+			!!heading.position?.start && Number.isFinite(heading.position.start.offset) &&
+			!!heading.position?.end && Number.isFinite(heading.position.end.offset))
+			? cached : headingsFromText(content);
+		const candidates = headings.length ? findTranscriptCandidates(content, headings) : [];
 		choices = candidates.filter(({ heading }) => !sameTranscriptHeading(heading.heading, wanted)).slice(0, BUTTON_LIMIT);
 	} catch (error) {
 		console.error("Perplexity Saver: could not look for other transcript headings", error);
 	}
-	if (!choices.length) return;
+	if (!choices.length && !createFromYoutube) return;
 	plain.hide();
-	const notice = new Notice("", 15000);
+	const notice = new Notice(message, 15000);
 	const el = notice.messageEl;
-	el.createDiv({ text: `${message} These headings look like transcripts:` });
+	if (choices.length) el.createDiv({ text: "These headings also look like transcripts:" });
 	for (const { heading, cueLines } of choices) {
 		const item: StrandedTranscript = { file, heading: heading.heading, line: heading.position.start.line, cueLines };
 		el.createEl("button", { text: `Rename "${heading.heading}" to "${wanted}"` }).addEventListener("click", () => {
@@ -136,6 +147,15 @@ export async function notifyNoTranscript(app: App, file: TFile, headingName: str
 			}).catch((error: unknown) => {
 				console.error("Perplexity Saver: could not rename the transcript heading", error);
 				new Notice("Could not rename the transcript heading.");
+			});
+		});
+	}
+	if (createFromYoutube) {
+		el.createEl("button", { text: "Create from YouTube", cls: "mod-cta" }).addEventListener("click", () => {
+			notice.hide();
+			void Promise.resolve(createFromYoutube()).catch((error: unknown) => {
+				console.error(`Perplexity Saver: could not create a transcript for ${file.path}`, error);
+				new Notice("Could not create the transcript.");
 			});
 		});
 	}

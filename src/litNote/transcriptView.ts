@@ -1727,11 +1727,12 @@ export async function showTranscriptPanel(
 	headingName: string,
 	placement?: TranscriptPlacement | null,
 	replaceLeaf?: WorkspaceLeaf | null,
-	associatedOnly = false
+	associatedOnly = false,
+	createFromYoutube?: () => void | Promise<void>
 ): Promise<WorkspaceLeaf | null> {
 	const lines = await loadTranscriptLines(app, file, headingName);
 	if (!lines?.length) {
-		void notifyNoTranscript(app, file, headingName);
+		void notifyNoTranscript(app, file, headingName, createFromYoutube);
 		return null;
 	}
 	let leaf: WorkspaceLeaf;

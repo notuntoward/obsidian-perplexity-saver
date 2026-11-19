@@ -43,6 +43,7 @@ import { notifyNoTranscript, renameStrandedTranscriptHeadings } from "./litNote/
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { registerTranscriptProtection } from "./litNote/transcriptProtection";
 import { registerCaptionTimingRepair, runCaptionTiming } from "./litNote/captionTiming";
+import { createOrUpdateTranscript } from "./litNote/transcriptCreation";
 import {
 	TRANSCRIPT_VIEW_TYPE,
 	TranscriptView,
@@ -85,7 +86,7 @@ import {
 } from "./video/noteInsertion";
 import { formatFlashDuration, formatFlashSize, LINE_FLASH_DURATION, LINE_FLASH_MODE_LABELS, LINE_FLASH_SIZE, type LineFlashMode } from "commons/flash";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
-import { findNoteVideoId, parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
+import { findNoteVideoId, linkUrlAt, parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
 import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, isSavedVideoWorkspace, type SavedVideoWorkspace, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";
@@ -284,6 +285,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	private readonly hiddenTranscriptUnits = new Map<string, "sentence" | "caption" | "pending">();
 
 	private framePendingBody: HTMLElement | null = null;
+	private foldOpenedTranscript: (file: TFile) => void = () => {};
 
 	// Obsidian assigns the top-corner tab group classes only once the layout is ready, after views have rendered.
 	private markFramePending(): void {
@@ -304,7 +306,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		registerTranscriptProtection(this, () => this.settings.transcriptHeading);
 		this.refreshInsertionTargetMarker = registerInsertionTargetMarker(this, () => this.settings);
 		registerFootnoteNavigation(this);
-		const foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
+		this.foldOpenedTranscript = registerTranscriptFolding(this, () => this.settings);
 		registerCaptionTimingRepair(this, () => this.settings.transcriptHeading, (file) => this.timeTranscriptFromCaptions(file));
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
@@ -362,7 +364,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			authorDropVon: this.settings.authorDropVon,
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 			transcriptHeading: this.settings.transcriptHeading,
-			onNoteOpened: foldOpenedTranscript,
+			onNoteOpened: this.foldOpenedTranscript,
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
 
@@ -789,7 +791,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 				return false;
 			}
 			if (wantsTranscript && !leaves.transcript && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
-				void notifyNoTranscript(this.app, file, this.settings.transcriptHeading);
+				void notifyNoTranscript(
+					this.app,
+					file,
+					this.settings.transcriptHeading,
+					() => this.createOrUpdateTranscriptFromYoutube(file)
+				);
 				return false;
 			}
 			const needsNote = openNote || wantsVideo || wantsTranscript;
@@ -962,6 +969,19 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	private registerTranscriptCommands(): void {
 		this.addCommand({
+			id: "transcript-create-or-update-youtube",
+			name: "Transcript: create or update from YouTube",
+			checkCallback: (checking: boolean) => {
+				const file = this.activePart().file;
+				if (!file || file.extension !== "md") return false;
+				if (!checking) void this.createOrUpdateTranscriptFromYoutube(file).catch((error: unknown) => {
+					console.error("Perplexity Saver: could not create or update transcript", error);
+					new Notice("Could not create or update the transcript.");
+				});
+				return true;
+			},
+		});
+		this.addCommand({
 			id: "whisperx-align-transcript",
 			name: "Transcript: time sentences from YouTube captions",
 			checkCallback: (checking: boolean) => {
@@ -1062,6 +1082,30 @@ export default class PerplexitySaverPlugin extends Plugin {
 				await leaf.view.reload({ showWordTimedSentences: timings !== null });
 			}
 		}
+	}
+
+	private preferredTranscriptVideoId(file: TFile): string | null {
+		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view;
+		if (active instanceof MarkdownView && active.file === file && active.getMode() === "source") {
+			const cursor = active.editor.getCursor();
+			const url = linkUrlAt(active.editor.getLine(cursor.line), cursor.ch);
+			const cursorVideoId = url ? parseYouTubeUrl(url)?.videoId : null;
+			if (cursorVideoId) return cursorVideoId;
+		}
+		const player = this.partLeaves(file).video?.view;
+		return player instanceof VideoView ? player.getVideoId() : null;
+	}
+
+	private async createOrUpdateTranscriptFromYoutube(file: TFile): Promise<void> {
+		const active = getActiveLeafInFocusedWindow(this.app, { includeSidebars: true })?.view;
+		const noteText = active instanceof MarkdownView && active.file === file
+			? active.editor.getValue()
+			: undefined;
+		const result = await createOrUpdateTranscript(this.app, file, this.settings.transcriptHeading, {
+			preferredVideoId: this.preferredTranscriptVideoId(file),
+			noteText,
+		});
+		if (result) this.foldOpenedTranscript(file);
 	}
 
 	onunload(): void {
@@ -1744,7 +1788,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 			placement = { nextTo: viewer, direction: "vertical" };
 		} else if (selected !== "sidebar") {
 			if (!viewer && !workspaceOnly && !(await loadTranscriptLines(this.app, file, this.settings.transcriptHeading))?.length) {
-				void notifyNoTranscript(this.app, file, this.settings.transcriptHeading);
+				void notifyNoTranscript(
+					this.app,
+					file,
+					this.settings.transcriptHeading,
+					() => this.createOrUpdateTranscriptFromYoutube(file)
+				);
 				return;
 			}
 			const nextTo = viewer ?? (workspaceOnly ? this.partLeaves(file).note : await this.openViewerForNote(file, false));
@@ -1752,7 +1801,15 @@ export default class PerplexitySaverPlugin extends Plugin {
 			placement = { nextTo, direction: selected === "viewer" ? "horizontal" : "vertical" };
 		}
 		const replaceLeaf = location ? this.partLeaves(file).transcript : null;
-		const leaf = await showTranscriptPanel(this.app, file, this.settings.transcriptHeading, placement, replaceLeaf, workspaceOnly);
+		const leaf = await showTranscriptPanel(
+			this.app,
+			file,
+			this.settings.transcriptHeading,
+			placement,
+			replaceLeaf,
+			workspaceOnly,
+			() => this.createOrUpdateTranscriptFromYoutube(file)
+		);
 		if (leaf) {
 			if (location) this.transcriptLocations.set(file.path, location);
 			if (focus) await this.activatePartLeaf(leaf, viewer ?? placement?.nextTo ?? null);

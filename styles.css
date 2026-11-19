@@ -876,3 +876,9 @@
 .saver-transcript-lock.is-unlocked .saver-transcript-lock-button {
 	color: var(--text-warning);
 }
+.perplexity-saver-transcript-source-warning {
+	border-inline-start: 3px solid var(--text-warning);
+	padding: var(--size-4-1) var(--size-4-2);
+	background: var(--background-secondary);
+	overflow-wrap: anywhere;
+}

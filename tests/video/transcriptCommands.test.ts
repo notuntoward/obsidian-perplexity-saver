@@ -16,6 +16,7 @@ import * as workspaceApi from "commons/workspace";
 import * as windowsApi from "commons/windows";
 import { registerInsertionTargetMarker } from "../../src/video/insertionMarker";
 import { runCaptionTiming } from "../../src/litNote/captionTiming";
+import { createOrUpdateTranscript } from "../../src/litNote/transcriptCreation";
 import * as goToTime from "../../src/video/goToTime";
 
 const markerWindowSetup = vi.hoisted(() => vi.fn<typeof import("commons/windows").forEachWindow>());
@@ -47,6 +48,10 @@ vi.mock("commons/windows", async (original) => ({
 }));
 vi.mock("../../src/video/focusIndicator", () => ({ registerVideoNoteFocusIndicator: () => () => {} }));
 vi.mock("../../src/litNote/transcriptFolding", () => ({ registerTranscriptFolding: () => () => {} }));
+vi.mock("../../src/litNote/transcriptCreation", async (original) => ({
+	...await original<Record<string, unknown>>(),
+	createOrUpdateTranscript: vi.fn(),
+}));
 vi.mock("../../src/litNote/litNoteServer", () => ({ startLitNoteServer: () => null, stopLitNoteServer: () => {} }));
 vi.mock("../../src/litNote/captionTiming", async (original) => ({
 	...await original<Record<string, unknown>>(), runCaptionTiming: vi.fn(),
@@ -201,6 +206,41 @@ describe("transcript playback state", () => {
 		h.plugin["registerTranscriptCommands"]();
 		const command = commands.find((item) => item.id === "whisperx-align-transcript")!;
 		expect(command.checkCallback?.(true)).toBe(true);
+	});
+
+	it("registers a create or update command for the active note", async () => {
+		const h = await harness();
+		addNote(h);
+		const commands: import("obsidian").Command[] = [];
+		vi.spyOn(h.plugin, "addCommand").mockImplementation((command) => { commands.push(command); return command; });
+		const transcriptPlugin = h.plugin as unknown as {
+			createOrUpdateTranscriptFromYoutube(file: TFile): Promise<void>;
+		};
+		const create = vi.spyOn(transcriptPlugin, "createOrUpdateTranscriptFromYoutube").mockResolvedValue(undefined);
+		h.plugin["registerTranscriptCommands"]();
+		const command = commands.find((item) => item.id === "transcript-create-or-update-youtube")!;
+		expect(command.checkCallback?.(true)).toBe(true);
+		command.checkCallback?.(false);
+		expect(create).toHaveBeenCalledWith(h.file);
+	});
+
+	it("signals transcript folding after a successful create or update", async () => {
+		const h = await harness();
+		const fold = vi.fn();
+		const plugin = h.plugin as unknown as {
+			foldOpenedTranscript(file: TFile): void;
+			preferredTranscriptVideoId(file: TFile): string | null;
+			createOrUpdateTranscriptFromYoutube(file: TFile): Promise<void>;
+		};
+		plugin.foldOpenedTranscript = fold;
+		vi.spyOn(plugin, "preferredTranscriptVideoId").mockReturnValue(null);
+		vi.mocked(createOrUpdateTranscript).mockResolvedValueOnce({
+			action: "created", videoId: "HhqYWTW4AtE", cueCount: 48,
+		});
+
+		await plugin.createOrUpdateTranscriptFromYoutube(h.file as TFile);
+
+		expect(fold).toHaveBeenCalledWith(h.file);
 	});
 
 	it("tracks toolbar, commands, transcript rows and background updates without moving focus", async () => {
@@ -751,7 +791,7 @@ describe("transcript activation commands", () => {
 		h.app.workspace.activeLeaf = h.viewerLeaf;
 		h.plugin["registerTranscriptCommands"]();
 		expect(commands.map((c) => c.id)).toEqual([
-			"whisperx-align-transcript", "whisperx-cancel-alignment", "transcript-rename-headings",
+			"transcript-create-or-update-youtube", "whisperx-align-transcript", "whisperx-cancel-alignment", "transcript-rename-headings",
 			"show-youtube-transcript", "search-youtube-transcript",
 			"transcript-search-forward", "transcript-search-backward", "transcript-toggle-orientation",
 		]);
