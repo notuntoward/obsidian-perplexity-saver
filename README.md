@@ -433,6 +433,9 @@ URLs, including `\&`, `\$`, `\_` and `\(`, while keeping changed URL values and
 percent-encoded reserved characters distinct. The output retains the structured
 URL without Markdown backslashes and decodes HTML entities such as `&amp;`
 in API source URLs before verification and output.
+Use version 8.26 or later to verify filename-only footnotes for uploaded attachments
+against the session's source list and restores their URLs in the copied
+Markdown. It does not download or embed the attached files.
 Version 8.14 also repairs named citation labels that native export incorrectly
 wraps in multiline `$$` math delimiters. It restores the original bracketed
 label only when confirmed by the structured answer and followed by a native

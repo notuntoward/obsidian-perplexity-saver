@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Perplexity → Obsidian Markdown Exporter (Direct & Robust)
 // @namespace    scott-otterson-obsidian-export-direct
-// @version      8.24
+// @version      8.26
 // @description  One-click Perplexity Markdown capture for Obsidian, with full session prompts and verified responses/sources. No Complexity extension required.
 // @match        https://www.perplexity.ai/*
 // @match        https://perplexity.ai/*
@@ -1315,14 +1315,11 @@
       if (/^ {0,3}---[ \t]*$/.test(line)) {
         separators.push({ start: match.index, end: match.index + match[0].length });
       }
-      // The URL is not `\S+`: Perplexity sources can contain a literal space
-      // in the path (e.g. ".../2025-03/84 0013_April25.pdf"), and requiring a
-      // space-free URL silently dropped that definition, failing verification
-      // for the whole turn. Definitions are one per line, so take the rest.
-      const definition = line.match(/^\[\^(\d+)_(\d+)\]:[ \t]+(https?:\/\/.+?)[ \t]*$/);
+      // URLs and attachment filenames can both contain literal spaces.
+      const definition = line.match(/^\[\^(\d+)_(\d+)\]:[ \t]+(\S.*)$/);
       if (definition) definitions.push({
         start: match.index, end: match.index + match[0].length,
-        turn: Number(definition[1]), number: Number(definition[2]), url: definition[3],
+        turn: Number(definition[1]), number: Number(definition[2]), value: definition[3],
       });
     }
     return { separators, definitions };
@@ -1346,6 +1343,24 @@
     return String(url || "").trim().replace(/ /g, "%20");
   }
 
+  function sessionSourceMatches(value, url) {
+    // Unescape native Markdown, not API URLs or percent-encoded reserved characters.
+    const native = value.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+    if (/^https?:\/\//i.test(native)) return normalizeSourceUrl(native) === normalizeSourceUrl(url);
+
+    // Native export uses only the basename for prompt attachments. The caller
+    // verifies footnote order so identical filenames keep their distinct URLs.
+    const attachment = URL.parse(url);
+    if (!attachment || attachment.origin !== "https://ppl-ai-file-upload.s3.amazonaws.com" ||
+        !attachment.pathname.startsWith("/web/direct-files/attachments/")) return false;
+    try {
+      return native === decodeURIComponent(attachment.pathname.split("/").at(-1));
+    } catch (error) {
+      if (!(error instanceof URIError)) throw error;
+      return false;
+    }
+  }
+
   function matchSessionChunk(chunk, turn, number, reasons = null) {
     const fail = (reason, details = {}) => {
       if (reasons) reasons.push({ reason, ...details });
@@ -1356,15 +1371,13 @@
       return fail("source-count", {
         nativeSources: definitions.length,
         reactSources: turn.sources.length,
-        nativeUrls: definitions.slice(0, 6).map((d) => d.url.slice(0, 100)),
+        nativeUrls: definitions.slice(0, 6).map((d) => d.value.slice(0, 100)),
         reactUrls: turn.sources.slice(0, 6).map((s) => String(s.url).slice(0, 100)),
       });
     }
-    // CommonMark backslash escapes apply to ASCII punctuation in native URLs,
-    // not to the structured URLs or percent-encoded reserved characters.
     const firstBad = definitions.findIndex((d, i) =>
       d.turn !== number || d.number !== i + 1 ||
-      normalizeSourceUrl(d.url.replace(/\\([!-/:-@[-`{-~])/g, "$1")) !== normalizeSourceUrl(turn.sources[i].url)
+      !sessionSourceMatches(d.value, turn.sources[i].url)
     );
     if (firstBad !== -1) {
       const native = definitions[firstBad];
@@ -1372,7 +1385,7 @@
         at: firstBad,
         nativeTurn: native.turn,
         nativeNumber: native.number,
-        nativeUrl: native.url.slice(0, 120),
+        nativeUrl: native.value.slice(0, 120),
         reactUrl: String(turn.sources[firstBad].url).slice(0, 120),
       });
     }

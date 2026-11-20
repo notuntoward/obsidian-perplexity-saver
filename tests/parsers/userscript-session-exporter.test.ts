@@ -28,7 +28,7 @@ function load(fetcher = vi.fn()) {
   const names = [
     "buildComparableWithMap", "sessionComparable", "sessionMarkdownMarkers",
     "sessionTurnsFromResults", "readSessionTurns", "normalizeSourceUrl",
-    "displaySourceUrl", "matchSessionChunk", "cleanSessionCitationLabels",
+    "displaySourceUrl", "sessionSourceMatches", "matchSessionChunk", "cleanSessionCitationLabels",
     "annotateSessionConversation",
   ];
   const api: {
@@ -94,6 +94,26 @@ function nativeExport(data = turns()) {
     const sources = t.sources.map((s, j) => `[^${i + 1}_${j + 1}]: ${s.url}`).join("\n\n");
     return prompt + answer + '\n\n<span style="display:none"></span>\n\n<div align="center">⁂</div>\n\n' + sources;
   }).join("\n\n---\n\n");
+}
+
+function attachmentExport() {
+  const upload = "https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments";
+  const data = [{
+    ...turns()[0],
+    response: "## Suggested edits\n\nUse the first image.[1] Follow the guide.[2]\n\nCompare the final image.[3]",
+    sources: [
+      { url: `${upload}/images/123/first/preview.jpg` },
+      { url: `${upload}/123/second/style%20guide.md?download=1` },
+      { url: `${upload}/images/123/third/preview.jpg` },
+      { url: "https://example.com/web-source" },
+    ],
+  }];
+  const native = nativeExport(data)
+    .replace('<span style="display:none"></span>', '<span style="display:none">[^1_1][^1_2][^1_3][^1_4]</span>')
+    .replace(data[0].sources[0].url, "preview.jpg")
+    .replace(data[0].sources[1].url, "style guide.md")
+    .replace(data[0].sources[2].url, "preview.jpg");
+  return { data, native };
 }
 
 describe("native session exports", () => {
@@ -226,6 +246,33 @@ describe("native session exports", () => {
     expect(output.warnings).toEqual([]);
     expect(output.text).toContain("[^1_1]: https://example.com/reports/84%200013_April25.pdf");
     expect(output.text).not.toContain("84 0013_April25.pdf");
+  });
+
+  it.each([false, true])("restores distinct URLs for repeated attachment filenames (includes web source: %s)", (withWebSource) => {
+    const { data, native } = attachmentExport();
+    const text = withWebSource ? native : native
+      .replace("[^1_4]</span>", "</span>")
+      .replace("\n\n[^1_4]: https://example.com/web-source", "");
+    if (!withWebSource) data[0].sources.pop();
+    const api = load();
+    const output = api.annotateSessionConversation(text, api.sessionTurnsFromResults(apiEntries(data)));
+    const dialog = parsePerplexityDialog(output.text);
+    expect(output.warnings).toEqual([]);
+    expect(dialog.turns.map(t => t.role)).toEqual(["prompt", "ai"]);
+    expect(dialog.turns[0].rawText).toBe(data[0].prompt);
+    expect(output.text).toContain("Use the first image.[^1_1] Follow the guide.[^1_2]\n\nCompare the final image.[^1_3]");
+    expect(dialog.turns[1].citations.map(c => c.url)).toEqual(data[0].sources.map(s => s.url));
+    expect(output.text).not.toContain('display:none');
+  });
+
+  it.each([
+    ["wrong filename", "[^1_2]: style guide.md", "[^1_2]: other guide.md"],
+    ["wrong footnote number", "[^1_2]: style guide.md", "[^1_3]: style guide.md"],
+    ["missing definition", "[^1_2]: style guide.md", ""],
+    ["web URL replaced by its basename", "[^1_4]: https://example.com/web-source", "[^1_4]: web-source"],
+  ])("rejects a mixed attachment export with %s", (_label, original, changed) => {
+    const { data, native } = attachmentExport();
+    expect(() => load().annotateSessionConversation(native.replace(original, changed), data)).toThrow(/verify/i);
   });
 
   it("verifies Markdown-escaped source query separators and emits the structured URL", () => {
