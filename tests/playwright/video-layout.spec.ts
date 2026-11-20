@@ -84,7 +84,8 @@ test("video hides only its lower navigation row and retains a non-interactive fo
 	await page.setContent(`
 		<style>
 			body { margin: 0; }
-			:root { --header-height: 40px; --interactive-accent: rgb(100, 80, 220); }
+			:root { --header-height: 40px; --interactive-accent: oklch(0.52 0.2 285); --background-primary: white; }
+			.theme-dark { --interactive-accent: oklch(0.75 0.15 285); --background-primary: rgb(30, 30, 30); }
 			.workspace-tab-header-container { height: 30px; }
 			.view-header { height: 40px; }
 			.workspace-leaf-content { display: flex; flex-direction: column; }
@@ -112,12 +113,60 @@ test("video hides only its lower navigation row and retains a non-interactive fo
 	await page.locator("#video").evaluate((el) => el.classList.add("perplexity-saver-focused-pane"));
 	const accent = await page.locator("#video .workspace-leaf-content").evaluate((el) => {
 		const css = getComputedStyle(el, "::after");
-		return { top: css.top, height: css.height, content: css.content, pointerEvents: css.pointerEvents, color: css.backgroundColor };
+		return { left: css.left, width: css.width, height: css.height, content: css.content, pointerEvents: css.pointerEvents,
+			opacity: css.opacity, color: css.backgroundColor, edge: css.boxShadow };
 	});
-	expect(accent).toEqual({ top: "0px", height: "2px", content: '""', pointerEvents: "none", color: "rgb(100, 80, 220)" });
+	expect(accent).toEqual({ left: "3px", width: "4px", height: "48px", content: '""', pointerEvents: "none",
+		opacity: "1", color: "oklch(0.56 0.18 285)", edge: "rgb(255, 255, 255) 0px 0px 0px 1px" });
+	await page.locator("body").evaluate((el) => el.classList.add("theme-dark"));
+	expect(await page.locator("#video .workspace-leaf-content").evaluate((el) => {
+		const css = getComputedStyle(el, "::after");
+		return { color: css.backgroundColor, edge: css.boxShadow };
+	})).toEqual({ color: "oklch(0.79 0.135 285)", edge: "rgb(30, 30, 30) 0px 0px 0px 1px" });
 	expect(await page.locator("#video .view-content").boundingBox()).toEqual(before);
 	await page.locator("#video").evaluate((el) => el.classList.remove("perplexity-saver-focused-pane"));
 	expect(await page.locator("#video .workspace-leaf-content").evaluate((el) => getComputedStyle(el, "::after").content)).toBe("none");
+});
+
+test("the player–transcript split strengthens the native divider only while both panes are visible", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			:root { --divider-width: 1px; --divider-color: rgb(224, 224, 224);
+				--background-modifier-border: rgb(224, 224, 224); --text-muted: rgb(96, 96, 96); }
+			.workspace-leaf-resize-handle { border: 0 solid var(--divider-color); }
+			.mod-horizontal > * > .workspace-leaf-resize-handle { border-bottom-width: var(--divider-width); }
+			.mod-vertical > * > .workspace-leaf-resize-handle { border-inline-end-width: var(--divider-width); }
+		</style>
+		<div class="workspace-split mod-horizontal">
+			<div class="workspace-tabs" id="player"><div class="workspace-tab-container">
+				<div class="workspace-leaf"><div class="workspace-leaf-content">
+					<div class="perplexity-saver-video-view has-video"></div>
+				</div></div>
+			</div><hr class="workspace-leaf-resize-handle"></div>
+			<div class="workspace-tabs" id="transcript"><div class="workspace-tab-container">
+				<div class="workspace-leaf"><div class="workspace-leaf-content">
+					<div class="perplexity-saver-transcript-view"></div>
+				</div></div>
+			</div><hr class="workspace-leaf-resize-handle"></div>
+			<div class="workspace-tabs" id="note"></div>
+		</div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const divider = page.locator("#player > .workspace-leaf-resize-handle");
+	const content = page.locator("#player > .workspace-tab-container");
+	await expect(divider).toHaveCSS("border-bottom-width", "2px");
+	await expect(divider).not.toHaveCSS("border-bottom-color", "rgb(224, 224, 224)");
+	await expect(content).toHaveCSS("padding-bottom", "4px");
+	await expect(page.locator("#transcript > .workspace-leaf-resize-handle")).toHaveCSS("border-bottom-width", "1px");
+
+	await page.locator(".workspace-split").evaluate((el) => el.classList.replace("mod-horizontal", "mod-vertical"));
+	await expect(divider).toHaveCSS("border-right-width", "2px");
+	await expect(content).toHaveCSS("padding-right", "4px");
+	await expect(content).toHaveCSS("padding-bottom", "0px");
+
+	await page.locator("#transcript .workspace-leaf").evaluate((el) => { (el as HTMLElement).style.display = "none"; });
+	await expect(divider).toHaveCSS("border-right-width", "1px");
+	await expect(content).toHaveCSS("padding-right", "0px");
 });
 
 test("singleton transcript chrome collapses, restores for another tab, and preserves top-window controls", async ({ page }) => {
@@ -155,7 +204,7 @@ test("singleton transcript chrome collapses, restores for another tab, and prese
 	await expect(page.locator(".workspace-leaf-resize-handle")).toBeVisible();
 	const compactTop = await page.locator(".perplexity-saver-transcript-header").boundingBox();
 	expect(compactTop!.y).toBe(4);
-	expect(await page.locator(".workspace-leaf-content").evaluate((el) => getComputedStyle(el, "::after").top)).toBe("0px");
+	expect(await page.locator(".workspace-leaf-content").evaluate((el) => getComputedStyle(el, "::after").top)).toBe("6px");
 	await page.locator(".workspace-tab-container").evaluate((el) => {
 		const other = document.createElement("div"); other.className = "workspace-leaf"; other.id = "other"; el.appendChild(other);
 	});
@@ -257,11 +306,11 @@ test("a tall pane keeps a 16:9 capture stage with controls immediately below it"
 	expect(geometry.gap).toBe(4);
 });
 
-test("focus lines are 2px accent underlines without changing header size; playback shading has no stripe", async ({ page }) => {
+test("note focus marks the left edge below the header; playback shading has no stripe", async ({ page }) => {
 	await page.setContent(`
 		<style>
-			:root { --interactive-accent: rgb(100, 80, 220); --interactive-accent-hsl: 249, 67%, 59%; }
-			.view-header, .perplexity-saver-transcript-header { height: 40px; }
+			:root { --header-height: 40px; --interactive-accent: oklch(0.52 0.2 285); --interactive-accent-hsl: 249, 67%, 59%; }
+			.view-header, .perplexity-saver-transcript-header { height: var(--header-height); }
 		</style>
 		<div class="workspace-leaf" id="note"><div class="workspace-leaf-content">
 			<div class="view-header">Note</div><div class="view-content markdown-source-view"></div>
@@ -280,26 +329,33 @@ test("focus lines are 2px accent underlines without changing header size; playba
 		</div>
 	`);
 	await page.addStyleTag({ path: path.resolve("styles.css") });
-	for (const selector of ["#note .view-header"]) {
-		const header = page.locator(selector);
-		const before = await header.boundingBox();
-		await header.evaluate((el) => el.closest(".workspace-leaf")!.classList.add("perplexity-saver-focused-pane"));
-		expect(await header.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("rgb(100, 80, 220) 0px -2px 0px 0px inset");
-		expect(await header.boundingBox()).toEqual(before);
-		await header.evaluate((el) => el.closest(".workspace-leaf")!.classList.remove("perplexity-saver-focused-pane"));
-		expect(await header.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("none");
-	}
+	const note = page.locator("#note");
+	const header = note.locator(".view-header");
+	const before = await header.boundingBox();
+	await note.evaluate((el) => el.classList.add("perplexity-saver-focused-pane"));
+	await expect(header).toHaveCSS("box-shadow", "none");
+	const area = note.locator(".workspace-leaf-content");
+	expect(await area.evaluate((el) => {
+		const marker = getComputedStyle(el, "::after");
+		return { top: el.getBoundingClientRect().top + parseFloat(marker.top),
+			left: marker.left, width: marker.width, height: marker.height,
+			color: marker.backgroundColor, hitTest: marker.pointerEvents };
+	})).toEqual({ top: before!.y + before!.height + 6, left: "3px", width: "4px", height: "48px",
+		color: "oklch(0.56 0.18 285)", hitTest: "none" });
+	expect(await header.boundingBox()).toEqual(before);
+	await note.evaluate((el) => el.classList.remove("perplexity-saver-focused-pane"));
+	expect(await area.evaluate((el) => getComputedStyle(el, "::after").content)).toBe("none");
 	const playing = page.locator(".is-playing");
 	expect(await playing.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("none");
 	expect(await playing.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
 });
 
-test("transcript accent aligns with native pane headers regardless of sidebar, hints, scrolling or theme header height", async ({ page }) => {
+test("the short transcript accent stays on the left through sidebar, scroll and header changes", async ({ page }) => {
 		await page.setViewportSize({ width: 1152, height: 768 });
 		await page.setContent(`
 			<style>
 				:root {
-					--header-height: 40px; --interactive-accent: rgb(100, 80, 220);
+					--header-height: 40px; --interactive-accent: oklch(0.52 0.2 285);
 					--size-4-2: 8px; --size-4-3: 12px;
 				}
 				body { margin: 0; display: flex; }
@@ -341,16 +397,18 @@ test("transcript accent aligns with native pane headers regardless of sidebar, h
 						const css = getComputedStyle(el, "::after");
 						return {
 							content: css.content, y: el.getBoundingClientRect().top + parseFloat(css.top),
-							height: css.height, background: css.backgroundColor, pointerEvents: css.pointerEvents,
+							left: css.left, width: css.width, height: css.height, background: css.backgroundColor, pointerEvents: css.pointerEvents,
 						};
 					});
 					expect(accent.content).toBe('""');
 					for (const id of ["note"]) {
 						const header = await page.locator(`#${id} .view-header`).boundingBox();
-						expect(accent.y).toBe(header!.y + header!.height - 2);
+						expect(accent.y).toBe(header!.y + header!.height + 6);
 					}
-					expect(accent.height).toBe("2px");
-					expect(accent.background).toBe("rgb(100, 80, 220)");
+					expect(accent.left).toBe("3px");
+					expect(accent.width).toBe("4px");
+					expect(accent.height).toBe("48px");
+					expect(accent.background).toBe("oklch(0.56 0.18 285)");
 					expect(accent.pointerEvents).toBe("none");
 					await page.locator(".perplexity-saver-transcript-view").evaluate((el) => { el.scrollTop = 120; });
 					const scrolledY = await page.locator("#transcript > .workspace-leaf-content").evaluate((el) => el.getBoundingClientRect().top + parseFloat(getComputedStyle(el, "::after").top));
@@ -365,7 +423,7 @@ test("transcript accent aligns with native pane headers regardless of sidebar, h
 		}
 });
 
-test("the focus header follows real note, embedded-player and transcript clicks and can be disabled", async ({ page }) => {
+test("the side marker follows real note, embedded-player and transcript clicks and can be disabled", async ({ page }) => {
 	const bundled = await build({
 		entryPoints: [path.resolve("src/video/focusIndicator.ts")],
 		bundle: true,
@@ -384,7 +442,7 @@ test("the focus header follows real note, embedded-player and transcript clicks 
 	});
 	await page.setContent(`
 		<style>
-			:root { --interactive-accent: rgb(100, 80, 220); }
+			:root { --interactive-accent: oklch(0.52 0.2 285); }
 			.workspace-leaf { width: 350px; }
 			.view-header { height: 40px; }
 		</style>
@@ -434,16 +492,11 @@ test("the focus header follows real note, embedded-player and transcript clicks 
 		if (target === "video") await page.frameLocator("iframe").locator("button").click();
 		else await page.locator(`#${target} ${target === "note" ? "textarea" : "input"}`).click();
 		await expect(page.locator(".perplexity-saver-focused-pane")).toHaveAttribute("id", target);
-		if (target === "transcript" || target === "video") {
-			expect(await page.locator(`#${target} > .workspace-leaf-content`).evaluate((el) => getComputedStyle(el, "::after").backgroundColor)).toBe("rgb(100, 80, 220)");
-		} else {
-			const header = page.locator(`#${target} .view-header`);
-			expect(await header.evaluate((el) => getComputedStyle(el).boxShadow)).toBe("rgb(100, 80, 220) 0px -2px 0px 0px inset");
-		}
+		expect(await page.locator(`#${target} > .workspace-leaf-content`).evaluate((el) => getComputedStyle(el, "::after").backgroundColor)).toBe("oklch(0.56 0.18 285)");
 	}
 	await page.locator("#unrelated textarea").click();
 	await expect(page.locator(".perplexity-saver-focused-pane")).toHaveCount(0);
-	expect(await page.locator("#unrelated .view-header").evaluate(el => getComputedStyle(el).boxShadow)).toBe("none");
+	expect(await page.locator("#unrelated > .workspace-leaf-content").evaluate(el => getComputedStyle(el, "::after").content)).toBe("none");
 	await page.locator("#note textarea").click();
 	await page.evaluate(() => {
 		for (const id of ["video", "transcript"]) document.getElementById(id)!.style.display = "none";

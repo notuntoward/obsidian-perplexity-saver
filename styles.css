@@ -587,6 +587,30 @@
 	display: none;
 }
 
+/* Strengthen the native resize divider only between adjacent player and transcript tabs.
+   Obsidian hides inactive leaves with inline display: none in unstacked groups. */
+.workspace-split:is(.mod-horizontal, .mod-vertical) > .workspace-tabs:not(.mod-stacked):is(
+	:has(> .workspace-tab-container > .workspace-leaf:not([style*="display: none"]) > .workspace-leaf-content > .perplexity-saver-video-view.has-video):has(+ .workspace-tabs:not(.mod-stacked) > .workspace-tab-container > .workspace-leaf:not([style*="display: none"]) > .workspace-leaf-content > .perplexity-saver-transcript-view),
+	:has(> .workspace-tab-container > .workspace-leaf:not([style*="display: none"]) > .workspace-leaf-content > .perplexity-saver-transcript-view):has(+ .workspace-tabs:not(.mod-stacked) > .workspace-tab-container > .workspace-leaf:not([style*="display: none"]) > .workspace-leaf-content > .perplexity-saver-video-view.has-video)
+) {
+	> .workspace-leaf-resize-handle {
+		--divider-width: max(2px, var(--perplexity-saver-native-divider-width));
+		--divider-color: color-mix(in srgb, var(--background-modifier-border) 65%, var(--text-muted));
+	}
+
+	.mod-horizontal > & > .workspace-tab-container {
+		padding-block-end: 4px;
+	}
+
+	.mod-vertical > & > .workspace-tab-container {
+		padding-inline-end: 4px;
+	}
+}
+
+.workspace-split:is(.mod-horizontal, .mod-vertical) > .workspace-tabs {
+	--perplexity-saver-native-divider-width: var(--divider-width, 1px);
+}
+
 /* The native window buttons overlay the top-right corner at a fixed height. Reserve that height with a grid row
    so the tab bar keeps whatever height the theme or snippets give it and the video starts below the buttons.
    Until the layout is ready Obsidian has not yet marked the corner group, so reserve it for every video group. */
@@ -601,29 +625,26 @@
 	align-self: start;
 }
 
-.workspace-leaf.perplexity-saver-focused-pane:not(:has(.perplexity-saver-transcript-view, .perplexity-saver-video-view)) > .workspace-leaf-content > .view-header {
-	box-shadow: inset 0 -2px 0 var(--interactive-accent);
-}
-
-.workspace-leaf-content:has(> .perplexity-saver-transcript-view, > .perplexity-saver-video-view) {
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content {
 	position: relative;
 }
 
-.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-transcript-view)::after,
-.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-video-view)::after {
+.workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content::after {
 	content: "";
 	position: absolute;
-	top: var(--perplexity-saver-transcript-focus-top, calc(var(--header-height) - 2px));
-	left: 0;
-	right: 0;
-	height: 2px;
-	background-color: var(--interactive-accent);
+	top: calc(var(--perplexity-saver-transcript-focus-top, var(--header-height)) + 6px);
+	left: 3px;
+	width: 4px;
+	height: 48px;
+	border-radius: 2px;
+	background-color: oklch(from var(--interactive-accent) calc(l + 0.04) calc(c * 0.9) h);
+	box-shadow: 0 0 0 1px var(--background-primary);
 	pointer-events: none;
 	z-index: 2;
 }
 
 .workspace-leaf.perplexity-saver-focused-pane > .workspace-leaf-content:has(> .perplexity-saver-video-view)::after {
-	top: 0;
+	top: 6px;
 }
 
 .perplexity-saver-video-controls button:focus-visible,
