@@ -1,6 +1,6 @@
 import { Notice, type App } from "obsidian";
 import { writeClipboardIn } from "commons/windows";
-import { PLAYBACK_RATES, type VideoView } from "./videoView";
+import { PLAYBACK_RATES, type TimestampInsertionTime, type VideoView } from "./videoView";
 import { YouTubeEmbed } from "./youtubePlayer";
 import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "./youtubeLinks";
 import { insertionMessage, insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
@@ -13,6 +13,8 @@ export type NotePlayback = Pick<VideoView,
 interface BackgroundPlaybackHost {
 	getTimestampCopyFormat(): TimestampCopyFormat;
 	getTimestampListStyle?(): TimestampListStyle;
+	getPausePlaybackOnMediaActions?(): boolean;
+	getTimestampInsertionTime?(playback: BackgroundPlayback): TimestampInsertionTime;
 	onPlayback(videoId: string, filePath: string, seconds: number, stateChanged?: boolean): void;
 	remember(videoId: string, filePath: string, seconds: number): void;
 	focusNote(target: NoteInsertionTarget): Promise<void>;
@@ -76,18 +78,24 @@ export class BackgroundPlayback implements NotePlayback {
 	}
 	async copyTimestampLink(): Promise<void> {
 		const win = this.container.ownerDocument.defaultView;
-		const seconds = this.getPlaybackSeconds();
-		this.pausePlayback();
-		const text = timestampClipboardText(this.videoId, seconds, this.host.getTimestampCopyFormat());
+		const time = this.host.getTimestampInsertionTime?.(this) ?? { seconds: this.getPlaybackSeconds(), selected: false };
+		if ("error" in time) {
+			new Notice(time.error);
+			return;
+		}
+		if (this.host.getPausePlaybackOnMediaActions?.() ?? true) this.pausePlayback();
+		const text = timestampClipboardText(this.videoId, time.seconds, this.host.getTimestampCopyFormat());
 		const copied = win ? await writeClipboardIn(win, text).catch(() => false) : false;
-		new Notice(copied ? `Copied ${formatClock(seconds)} link.` : "Could not write to the clipboard.");
+		new Notice(copied ? `Copied ${formatClock(time.seconds)} timestamp.` : "Could not write to the clipboard.");
 	}
 	openInBrowser(): void {
 		this.pausePlayback();
 		this.container.ownerDocument.defaultView?.open(watchUrl(this.videoId, Math.floor(this.getPlaybackSeconds())), "_blank");
 	}
 	async insertTimestampBullet(target: NoteInsertionTarget, seconds = this.getPlaybackSeconds()): Promise<boolean> {
-		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match");
+		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => {
+			if (this.host.getPausePlaybackOnMediaActions?.() ?? true) this.pausePlayback();
+		}, this.host.getTimestampListStyle?.() ?? "match");
 		if (insertion) {
 			const message = insertionMessage("Timestamp", insertion);
 			try {

@@ -26,7 +26,7 @@ describe("video timestamp copy", () => {
 		function viewer(doc = document) {
 			const rememberPlayback = vi.fn();
 			const view = new VideoView({ app: { vault: { getFileByPath: () => null } } } as unknown as WorkspaceLeaf, {
-				getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+				getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "unordered",
 				getShowYoutubeCaptions: () => false, getToolbarCaptureAction: () => "insert",
 				insertTimestamp: async () => {}, insertScreenshot: async () => {},
 				isTranscriptShown: () => false, toggleTranscript: async () => {},
@@ -95,7 +95,7 @@ describe("video timestamp copy", () => {
 
 	it.each([1, 2])("exposes exact playback time independently of playing/paused state (%s)", (playerState) => {
 		const view = new VideoView({} as WorkspaceLeaf, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "unordered",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => {}, jumpToTranscriptTimestamp: () => {}, onPlayback: () => {}, focusNote: async () => {},
@@ -111,7 +111,7 @@ describe("video timestamp copy", () => {
 		const rememberPlayback = vi.fn();
 		const destroy = vi.fn();
 		const view = new VideoView({} as WorkspaceLeaf, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "unordered",
 			getShowYoutubeCaptions: () => false, getToolbarCaptureAction: () => "insert",
 			insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => {},
@@ -129,7 +129,7 @@ describe("video timestamp copy", () => {
 		const log = vi.spyOn(console, "error").mockImplementation(() => {});
 		const app = { vault: { getFileByPath: () => null } };
 		const view = new VideoView({ app } as unknown as WorkspaceLeaf, {
-			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+			getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "unordered",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false, toggleTranscript: async () => { throw error; }, jumpToTranscriptTimestamp: () => {}, onPlayback: () => {}, focusNote: async () => {},
@@ -140,11 +140,17 @@ describe("video timestamp copy", () => {
 		log.mockRestore();
 	});
 
-	it.each(["list", "link"] as const)("copies the live setting's exact %s format from the owning window", async (initial) => {
+	it.each([
+		["link", (link: string) => link],
+		["unordered", (link: string) => `- ${link}: `],
+		["ordered", (link: string) => `1. ${link}: `],
+		["task", (link: string) => `- [ ] ${link}: `],
+	] as const)("copies the selected timestamp in the live %s format from the owning window", async (initial, render) => {
 		let format: TimestampCopyFormat = initial;
 		const host: VideoViewHost = {
 			getTranscriptHeading: () => "Transcript",
 			getTimestampCopyFormat: () => format,
+			getTimestampInsertionTime: () => ({ seconds: 17, selected: true }),
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
@@ -157,12 +163,12 @@ describe("video timestamp copy", () => {
 		view.contentEl = document.createElement("div");
 		const pause = vi.fn();
 		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65.9 }, pause } });
-		const link = timestampLink("VID", 65.9);
+		const link = timestampLink("VID", 17);
 		await view.copyTimestampLink();
-		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, format === "list" ? `- ${link}: ` : link);
-		format = initial === "list" ? "link" : "list";
+		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, render(link));
+		format = "ordered";
 		await view.copyTimestampLink();
-		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, format === "list" ? `- ${link}: ` : link);
+		expect(writeClipboard).toHaveBeenLastCalledWith(document.defaultView, `1. ${link}: `);
 		expect(pause).toHaveBeenCalledTimes(2);
 	});
 
@@ -170,7 +176,7 @@ describe("video timestamp copy", () => {
 		writeClipboard.mockRejectedValue(new Error("Clipboard denied"));
 		const view = new VideoView({} as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript",
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
@@ -183,5 +189,50 @@ describe("video timestamp copy", () => {
 		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65 }, pause: vi.fn() } });
 		await view.copyTimestampLink();
 		expect(createdNotices.map((notice) => notice.message)).toEqual(["Could not write to the clipboard."]);
+	});
+
+	it("reports a timestamp resolution conflict without pausing or writing to the clipboard", async () => {
+		const pause = vi.fn();
+		const view = new VideoView({} as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript",
+			getTimestampCopyFormat: () => "link",
+			getTimestampInsertionTime: () => ({ error: "Conflicting transcript selections." }),
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
+			isTranscriptShown: () => false,
+			toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
+			onPlayback: () => {},
+			focusNote: async () => {},
+		});
+		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65 }, pause } });
+		await view.copyTimestampLink();
+		expect(pause).not.toHaveBeenCalled();
+		expect(writeClipboard).not.toHaveBeenCalled();
+		expect(createdNotices.at(-1)?.message).toBe("Conflicting transcript selections.");
+	});
+
+	it("copies a timestamp without pausing when the pause setting is off", async () => {
+		const pause = vi.fn();
+		const view = new VideoView({} as WorkspaceLeaf, {
+			getTranscriptHeading: () => "Transcript",
+			getTimestampCopyFormat: () => "link",
+			getPausePlaybackOnMediaActions: () => false,
+			getShowYoutubeCaptions: () => false,
+			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
+			isTranscriptShown: () => false,
+			toggleTranscript: async () => {},
+			jumpToTranscriptTimestamp: () => {},
+			onPlayback: () => {},
+			focusNote: async () => {},
+		});
+		view.contentEl = document.createElement("div");
+		Object.assign(view, { videoId: "VID", player: { info: { currentTime: 65 }, pause } });
+		await view.copyTimestampLink();
+		expect(pause).not.toHaveBeenCalled();
+		expect(writeClipboard).toHaveBeenCalledWith(
+			document.defaultView,
+			"[1:05](https://www.youtube.com/watch?v=VID&t=65)"
+		);
 	});
 });

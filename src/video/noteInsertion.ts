@@ -5,7 +5,7 @@ import { flashEditorLine, type LineFlashMode } from "commons/flash";
 import { getActiveLeafInFocusedWindow, getEditorLeafLocations } from "commons/workspace";
 import { writeClipboardIn } from "commons/windows";
 import { getFrontMatterInfo, MarkdownView, Notice, type App, type WorkspaceLeaf } from "obsidian";
-import { timestampLink } from "./youtubeLinks";
+import { timestampClipboardText, timestampLink } from "./youtubeLinks";
 import { isTranscriptCapturePosition, transcriptStart } from "../litNote/transcriptProtection";
 
 interface InsertionAnchors {
@@ -99,8 +99,10 @@ export async function copyInsertionFallback(win: Window | null, text: string, su
 	return false;
 }
 
-/** Which list form the timestamp insertion creates. */
-export type TimestampListStyle = "match" | "unordered" | "ordered" | "task";
+/** Which form the timestamp insertion creates. */
+export type TimestampListStyle = "match" | "unordered" | "ordered" | "task" | "link";
+
+type ExplicitListStyle = Exclude<TimestampListStyle, "match" | "link">;
 
 /** A list item's content: the first line after its marker, plus any indented block lines below it. */
 export interface ListItemBlock {
@@ -154,7 +156,7 @@ export function parseListPrefix(text: string): ParsedListPrefix | null {
 }
 
 /** Choose the marker for the new item, continuing the current list when asked to match it. */
-function chooseMark(parsed: ListMark | null, style: TimestampListStyle): ListMark {
+function chooseMark(parsed: ListMark | null, style: "match" | ExplicitListStyle): ListMark {
 	const indent = parsed?.indent ?? "";
 	const spacing = parsed?.spacing || " ";
 	if (style === "match") {
@@ -179,7 +181,7 @@ function chooseMark(parsed: ListMark | null, style: TimestampListStyle): ListMar
 }
 
 /** An empty item is reused, so the selected form keeps its current number when it is already ordered. */
-function chooseReuseMark(current: ListMark, style: TimestampListStyle): ListMark {
+function chooseReuseMark(current: ListMark, style: "match" | ExplicitListStyle): ListMark {
 	if (style === "match") return current;
 	const ordered = isOrdered(current.marker);
 	return {
@@ -203,6 +205,18 @@ function renderBlock(mark: ListMark, block: ListItemBlock): string {
 	const continuation = listContinuation(mark);
 	return listPrefix(mark) + block.content +
 		(block.tail ?? []).map((line) => `\n${continuation}${line}`).join("");
+}
+
+function renderPlainBlock(block: ListItemBlock): string {
+	return [block.content, ...(block.tail ?? [])].join("\n");
+}
+
+function renderStyleBlock(mark: ListMark | null, block: ListItemBlock, style: TimestampListStyle): string {
+	return style === "link" ? renderPlainBlock(block) : renderBlock(chooseMark(mark, style), block);
+}
+
+function renderReuseStyleBlock(mark: ListMark, block: ListItemBlock, style: TimestampListStyle): string {
+	return style === "link" ? renderPlainBlock(block) : renderBlock(chooseReuseMark(mark, style), block);
 }
 
 /** Content inserted after an existing marker that is being reused unchanged. */
@@ -305,14 +319,14 @@ function siblingAfter(structure: NoteStructure, item: SyntaxNode, block: ListIte
 	const doc = structure.doc;
 	const mark = parseListPrefix(doc.lineAt(structure.from(item)).text)?.mark ?? null;
 	const end = lastContentLine(doc, structure.to(item));
-	const text = `\n${renderBlock(chooseMark(mark, style), block)}`;
+	const text = `${style === "link" ? "\n\n" : "\n"}${renderStyleBlock(mark, block, style)}`;
 	return at(end.to, text, text.length, moved);
 }
 
 /** A new block after `node`, separated from the text on both sides. */
 function blockAfter(structure: NoteStructure, node: SyntaxNode, block: ListItemBlock, style: TimestampListStyle, moved?: string): PlacedInsertion {
 	const end = lastContentLine(structure.doc, structure.to(node));
-	const rendered = renderBlock(chooseMark(null, style), block);
+	const rendered = renderStyleBlock(null, block, style);
 	const text = `\n\n${rendered}${structure.lineKind(end.number + 1) === "paragraph" ? "\n" : ""}`;
 	return at(end.to, text, 2 + rendered.length, moved);
 }
@@ -324,11 +338,11 @@ function underHeading(structure: NoteStructure, heading: SyntaxNode, block: List
 	if (next && isList(next)) {
 		const first = doc.lineAt(structure.from(next));
 		const mark = parseListPrefix(first.text)?.mark;
-		const rendered = renderBlock(mark ? chooseReuseMark(mark, style) : chooseMark(null, style), block);
-		return at(first.from, `${rendered}\n`, rendered.length, moved);
+		const rendered = mark ? renderReuseStyleBlock(mark, block, style) : renderStyleBlock(null, block, style);
+		return at(first.from, `${rendered}${style === "link" ? "\n\n" : "\n"}`, rendered.length, moved);
 	}
 	const end = lastContentLine(doc, structure.to(heading));
-	const rendered = renderBlock(chooseMark(null, style), block);
+	const rendered = renderStyleBlock(null, block, style);
 	const text = `\n${rendered}${structure.lineKind(end.number + 1) === "paragraph" ? "\n" : ""}`;
 	return at(end.to, text, 1 + rendered.length, moved);
 }
@@ -382,7 +396,7 @@ function inInitialNotesArea(structure: NoteStructure, area: ReturnType<typeof in
 	if (before && !isHeading(before)) return outsideBlock(structure, before, notesEnd, block, style, moved);
 	if (first && !isHeading(first)) return outsideBlock(structure, first, notesEnd, block, style, moved);
 	if (before) return underHeading(structure, before, block, style, moved);
-	const rendered = renderBlock(chooseMark(null, style), block);
+	const rendered = renderStyleBlock(null, block, style);
 	const following = structure.doc.sliceString(structure.bodyStart).trim() ? "\n\n" : "";
 	return at(structure.bodyStart, rendered + following, rendered.length, moved);
 }
@@ -390,6 +404,10 @@ function inInitialNotesArea(structure: NoteStructure, area: ReturnType<typeof in
 function reuseEmptyItem(line: ReturnType<Text["line"]>, block: ListItemBlock, style: TimestampListStyle): PlacedInsertion | null {
 	const parsed = parseListPrefix(line.text);
 	if (!parsed || line.text.slice(parsed.length).trim()) return null;
+	if (style === "link") {
+		const text = renderPlainBlock(block);
+		return { text, cursorOffset: text.length, replace: { from: line.from, to: line.to } };
+	}
 	const mark = chooseReuseMark(parsed.mark, style);
 	if (style === "match" || line.text.slice(0, parsed.length) === listPrefix(mark)) {
 		const text = renderContent(mark, block);
@@ -441,9 +459,11 @@ export function blockInsertion(
 	if (empty) return empty;
 
 	if (!line.text.trim()) {
-		const rendered = renderBlock(chooseMark(null, style), block);
+		const rendered = renderStyleBlock(null, block, style);
 		const suffix = structure.lineKind(line.number + 1) === "paragraph" ? "\n" : "";
-		return at(position, rendered + suffix, rendered.length);
+		return style === "link" && line.text
+			? { text: rendered + suffix, cursorOffset: rendered.length, replace: { from: line.from, to: line.to } }
+			: at(position, rendered + suffix, rendered.length);
 	}
 
 	const item = ancestor(node, (n) => n.name === "ListItem");
@@ -456,7 +476,7 @@ export function blockInsertion(
 	let top = node;
 	while (top?.parent?.parent) top = top.parent;
 	if (!top || top.name === "Document") {
-		const rendered = renderBlock(chooseMark(null, style), block);
+		const rendered = renderStyleBlock(null, block, style);
 		return at(line.to, `\n\n${rendered}`, 2 + rendered.length, "on a new line");
 	}
 	return blockAfter(structure, top, block, style, top.name === "Paragraph" ? "after the paragraph" : "below the divider");
@@ -471,18 +491,24 @@ export interface InsertionFlashSettings {
 	mode: LineFlashMode | "off";
 	durationMs: number;
 	sizeChars: number;
+	useThemeColors: boolean;
+	lightColor: string;
+	darkColor: string;
 }
 
 /** Briefly highlight the line at the editor's cursor, after CodeMirror has scrolled it into view. */
 export function flashInsertedLine(view: EditorView, flash: InsertionFlashSettings): void {
 	const mode = flash.mode;
 	if (mode === "off") return;
+	const color = flash.useThemeColors
+		? "var(--interactive-accent)"
+		: view.dom.ownerDocument.body.classList.contains("theme-dark") ? flash.darkColor : flash.lightColor;
 	view.requestMeasure({
 		read: () => view.dom.isConnected ? view.coordsAtPos(view.state.selection.main.head, -1) : null,
 		write: (coords) => {
 			if (coords) flashEditorLine(view, coords, {
 				mode,
-				color: "var(--interactive-accent)",
+				color,
 				opacity: 0.8,
 				sizeChars: flash.sizeChars,
 				durationMs: flash.durationMs,
@@ -528,7 +554,7 @@ export function insertPlaybackTimestamp(
 		new Notice("The note insertion point is no longer available.");
 		return null;
 	}
-	const insertion = insertBlockAtNoteInsertionAnchor(target.anchor, timestampListItemBlock(videoId, seconds), style, target.literatureNote);
+	const insertion = insertBlockAtNoteInsertionAnchor(target.anchor, timestampListItemBlock(videoId, seconds, style), style, target.literatureNote);
 	if (!insertion) new Notice("Could not insert a timestamp into the note.");
 	return insertion;
 }
@@ -577,13 +603,14 @@ export function insertAtNoteInsertionAnchor(
 	return inserted;
 }
 
-/** First-line content and any indented block lines for a timestamped list item. */
-export function timestampListItemBlock(videoId: string, seconds: number): ListItemBlock {
-	return { content: `${timestampLink(videoId, seconds)}: ` };
+/** First-line content and any indented block lines for a timestamp insertion. */
+export function timestampListItemBlock(videoId: string, seconds: number, style: TimestampListStyle = "match"): ListItemBlock {
+	const link = timestampLink(videoId, seconds);
+	return { content: style === "link" ? link : `${link}: ` };
 }
 
 export function timestampInsertionClipboardText(videoId: string, seconds: number, style: TimestampListStyle): string {
-	return renderBlock(chooseMark(null, style), timestampListItemBlock(videoId, seconds));
+	return timestampClipboardText(videoId, seconds, style === "match" ? "unordered" : style);
 }
 
 /** First-line content and indented embed for a timestamped screenshot list item. */
@@ -599,5 +626,5 @@ export function timestampListItemInsertion(
 	seconds: number,
 	style: TimestampListStyle = "match"
 ): PlacedInsertion {
-	return blockInsertion(doc, position, timestampListItemBlock(videoId, seconds), style);
+	return blockInsertion(doc, position, timestampListItemBlock(videoId, seconds, style), style);
 }

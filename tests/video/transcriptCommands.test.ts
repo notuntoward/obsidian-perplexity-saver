@@ -116,7 +116,13 @@ async function harness() {
 	vi.spyOn(transcript, "getFilePath").mockReturnValue(file.path);
 	vi.spyOn(transcript, "focusLines").mockImplementation(() => {});
 	const viewer = new VideoView({ app } as unknown as WorkspaceLeaf, {
-		getTranscriptHeading: () => "Transcript", getTimestampCopyFormat: () => "list",
+		getTranscriptHeading: () => "Transcript",
+		getTimestampCopyFormat: () => plugin.settings.timestampCopyFormat,
+		getTimestampListStyle: () => plugin.settings.timestampListStyle,
+		getPausePlaybackOnMediaActions: () => plugin.settings.pausePlaybackOnMediaActions,
+		getTimestampInsertionTime: (view) => plugin["timestampInsertionTime"](
+			view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds()
+		),
 		getShowYoutubeCaptions: () => false,
 		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false, toggleTranscript: (f, l) => plugin.toggleTranscript(f, l),
@@ -142,7 +148,7 @@ function addNote(h: Awaited<ReturnType<typeof harness>>) {
 	return leaf;
 }
 
-async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = document) {
+async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = document, copyHotkey = "") {
 	const events = new Map<string, () => void>();
 	Object.assign(h.app.workspace, {
 		on: (name: string, callback: () => void) => { events.set(name, callback); return {}; },
@@ -151,7 +157,10 @@ async function playbackPanel(h: Awaited<ReturnType<typeof harness>>, doc = docum
 	});
 	Object.assign(h.app.vault, { on: vi.fn() });
 	Object.assign(h.app.metadataCache, { on: vi.fn() });
-	Object.assign(h.app, { hotkeyManager: { printHotkeyForCommand: () => "" } });
+	Object.assign(h.app, { hotkeyManager: {
+		printHotkeyForCommand: (id: string) =>
+			id === "perplexity-saver:video-viewer-copy-timestamp" ? copyHotkey : "",
+	} });
 	vi.spyOn(h.plugin, "loadSettings").mockResolvedValue();
 	Object.assign(h.plugin, { registerView: vi.fn() });
 	const register = vi.mocked(h.plugin.registerView);
@@ -746,9 +755,12 @@ describe("transcript activation commands", () => {
 			"video-viewer-zoom-in",
 			"video-viewer-zoom-out",
 			"video-viewer-zoom-reset",
+			"video-viewer-insert-current-timestamp",
 		];
 		for (const id of removedCommandIds) expect(ids).not.toContain(id);
 		expect(ids).toContain("video-viewer-insert-timestamp");
+		expect(commands.find((command) => command.id === "video-viewer-insert-timestamp")?.name).toBe("Video: insert timestamp");
+		expect(commands.find((command) => command.id === "video-viewer-copy-timestamp")?.name).toBe("Video: copy timestamp");
 		h.app.workspace.activeLeaf = h.viewerLeaf;
 		expect(commands.find((c) => c.id === "video-viewer-play-pause")!.checkCallback!(true)).toBe(true);
 		expect(commands.find((c) => c.id === "video-viewer-screenshot")!.checkCallback!(true)).toBe(false);
@@ -1950,7 +1962,7 @@ describe("transcript activation commands", () => {
 		} as unknown as WorkspaceLeaf;
 		const other = new VideoView(h.viewerLeaf as WorkspaceLeaf, {
 			getTranscriptHeading: () => "Transcript",
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			getShowYoutubeCaptions: () => false,
 			getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 			isTranscriptShown: () => false,
@@ -2191,11 +2203,62 @@ describe("transcript activation commands", () => {
 				expect(editor.state.doc.toString().match(/&t=763/g)).toHaveLength(3);
 				expect(editor.state.doc.toString()).not.toContain("&t=705");
 				expect(registered["host"].getTimestampInsertionTime?.(video)).toEqual({ seconds: 763, selected: true });
-				commands.find((command) => command.id === "video-viewer-insert-current-timestamp")!.checkCallback!(false);
-				await vi.waitFor(() => expect(editor.state.doc.toString()).toContain("&t=705"));
+				const pause = video["player"]!.pause as ReturnType<typeof vi.fn>;
+				pause.mockClear();
+				h.plugin.settings.pausePlaybackOnMediaActions = false;
+				commands.find((command) => command.id === "video-viewer-insert-timestamp")!.checkCallback!(false);
+				await vi.waitFor(() => expect(editor.state.doc.toString().match(/&t=763/g)).toHaveLength(4));
+				expect(pause).not.toHaveBeenCalled();
+				h.plugin.settings.timestampCopyFormat = "ordered";
+				const beforeCopy = editor.state.doc.toString();
+				const activeBeforeCopy = h.app.workspace.activeLeaf;
+				const clipboard = vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+				commands.find((command) => command.id === "video-viewer-copy-timestamp")!.checkCallback!(false);
+				await vi.waitFor(() => expect(clipboard).toHaveBeenLastCalledWith(
+					expect.anything(),
+					"1. [12:43](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=763): "
+				));
+				expect(editor.state.doc.toString()).toBe(beforeCopy);
+				expect(h.app.workspace.activeLeaf).toBe(activeBeforeCopy);
 			} finally {
 				editor.destroy();
 			}
+		});
+
+		it("uses the assigned copy command hotkey for row hints and command dispatch, not hard-coded Ctrl+C", async () => {
+			const h = await harness();
+			h.app.vault.cachedRead = vi.fn(async () =>
+				"# Transcript\n[0:00](https://youtu.be/dQw4w9WgXcQ?t=0) start\n[0:25](https://youtu.be/dQw4w9WgXcQ?t=25) current\n");
+			Object.assign(h.viewerLeaf.view, { videoId: "dQw4w9WgXcQ" });
+			const { panel, commands } = await playbackPanel(h, document, "Alt + T");
+			h.plugin.settings.timestampCopyFormat = "task";
+			expect(panel.contentEl.querySelector(".is-rows")?.textContent).toContain("Alt + T copy timestamp");
+			const row = panel.contentEl.querySelectorAll<HTMLElement>(".perplexity-saver-transcript-row")[1];
+			row.click();
+			h.app.workspace.activeLeaf = h.transcriptLeaf;
+			const clipboard = vi.spyOn(windowsApi, "writeClipboardIn").mockResolvedValue(true);
+			const pause = (h.viewerLeaf.view as VideoView)["player"]!.pause as ReturnType<typeof vi.fn>;
+			panel.contentEl.querySelector<HTMLButtonElement>('[aria-label="Copy selected timestamp"]')!.click();
+			await vi.waitFor(() => expect(clipboard).toHaveBeenLastCalledWith(
+				window,
+				"- [ ] [0:25](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=25): "
+			));
+			expect(pause).toHaveBeenCalledOnce();
+			clipboard.mockClear();
+			pause.mockClear();
+			h.plugin.settings.pausePlaybackOnMediaActions = false;
+			panel.contentEl.querySelector<HTMLButtonElement>('[aria-label="Copy selected timestamp"]')!.click();
+			await vi.waitFor(() => expect(clipboard).toHaveBeenCalledOnce());
+			expect(pause).not.toHaveBeenCalled();
+			clipboard.mockClear();
+			row.focus();
+			row.dispatchEvent(new KeyboardEvent("keydown", { key: "c", ctrlKey: true, bubbles: true }));
+			expect(clipboard).not.toHaveBeenCalled();
+			commands.find((command) => command.id === "video-viewer-copy-timestamp")!.checkCallback!(false);
+			await vi.waitFor(() => expect(clipboard).toHaveBeenCalledWith(
+				window,
+				"- [ ] [0:25](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=25): "
+			));
 		});
 
 		it("rejects conflicting selections, ignores a different video's selection and uses playback with none", async () => {

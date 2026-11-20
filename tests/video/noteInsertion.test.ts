@@ -1,10 +1,15 @@
 // @vitest-environment jsdom
 import { EditorState, Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const flashEditorLine = vi.hoisted(() => vi.fn());
+vi.mock("commons/flash", () => ({ flashEditorLine }));
+
 import {
 	blockInsertion,
 	createNoteInsertionAnchor,
+	flashInsertedLine,
 	getNoteInsertionPosition,
 	insertAtNoteInsertionAnchor,
 	insertionMessage,
@@ -12,6 +17,7 @@ import {
 	timestampListItemBlock,
 	timestampListItemInsertion,
 	timestampedScreenshotItem,
+	type InsertionFlashSettings,
 } from "../../src/video/noteInsertion";
 import { timestampLink } from "../../src/video/youtubeLinks";
 
@@ -21,6 +27,7 @@ describe("video note insertion", () => {
 	afterEach(() => {
 		view?.destroy();
 		view = null;
+		flashEditorLine.mockClear();
 		document.body.replaceChildren();
 	});
 
@@ -99,6 +106,20 @@ describe("video note insertion", () => {
 		expect(insertion.text).toBe(`${prefix}${timestampLink("VID", 65)}: `);
 	});
 
+	it("inserts a plain timestamp without a list marker or description suffix", () => {
+		const link = timestampLink("VID", 65);
+		expect(timestampListItemInsertion(Text.of([""]), 0, "VID", 65, "link")).toMatchObject({
+			text: link,
+			cursorOffset: link.length,
+		});
+		expect(timestampListItemInsertion(Text.of(["- existing"]), 10, "VID", 65, "link").text)
+			.toBe(`\n\n${link}`);
+		expect(timestampListItemInsertion(Text.of(["- "]), 2, "VID", 65, "link")).toMatchObject({
+			text: link,
+			replace: { from: 0, to: 2 },
+		});
+	});
+
 	it("reuses an empty ordered item without advancing its number", () => {
 		const insertion = timestampListItemInsertion(Text.of(["  2. "]), 5, "VID", 65);
 		expect(insertion.text).toBe(`${timestampLink("VID", 65)}: `);
@@ -147,6 +168,68 @@ describe("video note insertion", () => {
 			.toBe(`\n  8) ${timestampLink("VID", 65)}: `);
 		expect(timestampListItemInsertion(Text.of([line]), line.length, "VID", 65, "ordered").text)
 			.toBe(`\n  8) ${timestampLink("VID", 65)}: `);
+	});
+});
+
+describe("inserted line flash colors", () => {
+	beforeEach(() => {
+		flashEditorLine.mockClear();
+		document.body.classList.remove("theme-light", "theme-dark");
+	});
+
+	const settings: InsertionFlashSettings = {
+		mode: "left",
+		durationMs: 1000,
+		sizeChars: 15,
+		useThemeColors: true,
+		lightColor: "#f0a000",
+		darkColor: "#00a0f0",
+	};
+
+	function renderFlash(ownerDocument: Document, overrides: Partial<InsertionFlashSettings> = {}): void {
+		const coords = { top: 10, bottom: 30, left: 5, right: 6 };
+		const fakeView = {
+			dom: { isConnected: true, ownerDocument },
+			state: { selection: { main: { head: 0 } } },
+			coordsAtPos: () => coords,
+			requestMeasure: (request: {
+				read: (target: EditorView) => typeof coords;
+				write?: (measure: typeof coords, target: EditorView) => void;
+			}) => {
+				const target = fakeView as unknown as EditorView;
+				request.write?.(request.read(target), target);
+			},
+		} as unknown as EditorView;
+		flashInsertedLine(fakeView, { ...settings, ...overrides });
+	}
+
+	it("uses the theme accent without resolving a custom color", () => {
+		renderFlash(document);
+		expect(flashEditorLine).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ color: "var(--interactive-accent)", opacity: 0.8 })
+		);
+	});
+
+	it.each([
+		["theme-light", "#f0a000"],
+		["theme-dark", "#00a0f0"],
+	] as const)("uses the owning document's %s custom color", (themeClass, color) => {
+		const popout = document.implementation.createHTMLDocument();
+		popout.body.classList.add(themeClass);
+		document.body.classList.add(themeClass === "theme-dark" ? "theme-light" : "theme-dark");
+		renderFlash(popout, { useThemeColors: false });
+		expect(flashEditorLine).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ color })
+		);
+	});
+
+	it("does not schedule a flash when highlighting is off", () => {
+		renderFlash(document, { mode: "off" });
+		expect(flashEditorLine).not.toHaveBeenCalled();
 	});
 });
 

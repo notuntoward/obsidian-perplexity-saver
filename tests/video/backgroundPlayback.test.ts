@@ -59,7 +59,7 @@ describe("transcript background playback", () => {
 		const parent = document.body.createDiv();
 		const onPlayback = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTimestampCopyFormat: () => "list", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
+			getTimestampCopyFormat: () => "unordered", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
 		});
 		const player = embeds.instances[0];
 		player.emit(1, 2);
@@ -80,7 +80,7 @@ describe("transcript background playback", () => {
 		const next = document.body.createDiv();
 		const onPlayback = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTimestampCopyFormat: () => "list", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
+			getTimestampCopyFormat: () => "unordered", onPlayback, remember: vi.fn(), focusNote: vi.fn(),
 		});
 		embeds.instances[0].emit(1, 1);
 		const moved = playback.transferTo(next);
@@ -93,7 +93,8 @@ describe("transcript background playback", () => {
 	it("pauses background playback when copying the current timestamp", async () => {
 		const parent = document.body.createDiv();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
-			getTimestampCopyFormat: () => "link",
+			getTimestampCopyFormat: () => "task",
+			getTimestampInsertionTime: () => ({ seconds: 17, selected: true }),
 			onPlayback: vi.fn(),
 			remember: vi.fn(),
 			focusNote: vi.fn(),
@@ -102,7 +103,29 @@ describe("transcript background playback", () => {
 		playback.play();
 		await playback.copyTimestampLink();
 		expect(player.pause).toHaveBeenCalledOnce();
-		expect(writeClipboard).toHaveBeenLastCalledWith(expect.anything(), `[0:42](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42)`);
+		expect(writeClipboard).toHaveBeenLastCalledWith(
+			expect.anything(),
+			"- [ ] [0:17](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=17): "
+		);
+		playback.destroy();
+	});
+
+	it("continues background playback when timestamp actions are configured not to pause", async () => {
+		const parent = document.body.createDiv();
+		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
+			getTimestampCopyFormat: () => "link",
+			getPausePlaybackOnMediaActions: () => false,
+			onPlayback: vi.fn(),
+			remember: vi.fn(),
+			focusNote: vi.fn(),
+		});
+		const player = embeds.instances[0];
+		await playback.copyTimestampLink();
+		expect(player.pause).not.toHaveBeenCalled();
+		expect(writeClipboard).toHaveBeenLastCalledWith(
+			expect.anything(),
+			"[0:42](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42)"
+		);
 		playback.destroy();
 	});
 
@@ -110,7 +133,7 @@ describe("transcript background playback", () => {
 		const parent = document.body.createDiv();
 		const remember = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 42, {
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			onPlayback: vi.fn(),
 			remember,
 			focusNote: vi.fn(),
@@ -136,7 +159,7 @@ describe("transcript background playback", () => {
 		const other = document.implementation.createHTMLDocument();
 		const parent = other.body.createDiv();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			onPlayback: vi.fn(), remember: vi.fn(), focusNote: vi.fn(),
 		});
 		expect(parent.querySelector("iframe")?.ownerDocument).toBe(other);
@@ -149,7 +172,7 @@ describe("transcript background playback", () => {
 		const next = document.body.createDiv();
 		const remember = vi.fn();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 31, {
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			onPlayback: vi.fn(), remember, focusNote: vi.fn(),
 		});
 		playback.play();
@@ -167,7 +190,7 @@ describe("transcript background playback", () => {
 	it("releases the embed even if position persistence throws", () => {
 		const parent = document.body.createDiv();
 		const playback = new BackgroundPlayback({} as App, parent, "note.md", "dQw4w9WgXcQ", 0, {
-			getTimestampCopyFormat: () => "list",
+			getTimestampCopyFormat: () => "unordered",
 			onPlayback: vi.fn(), remember: () => { throw new Error("Cannot save"); }, focusNote: vi.fn(),
 		});
 		expect(() => playback.destroy()).toThrow("Cannot save");

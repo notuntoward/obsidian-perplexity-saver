@@ -185,11 +185,15 @@ export interface PerplexitySaverSettings {
 	videoViewerLocation: VideoViewerLocation;
 	timestampCopyFormat: TimestampCopyFormat;
 	timestampListStyle: TimestampListStyle;
+	pausePlaybackOnMediaActions: boolean;
 	showInsertionTarget: boolean;
 	/** Highlight the line a timestamp or screenshot was inserted on. */
 	insertFlashMode: LineFlashMode | "off";
 	insertFlashDuration: number;
 	insertFlashSize: number;
+	insertFlashUseThemeColors: boolean;
+	insertFlashColorLight: string;
+	insertFlashColorDark: string;
 	videoToolbarCaptureAction: VideoToolbarCaptureAction;
 	showYoutubeCaptions: boolean;
 	videoNoteFocusIndicator: boolean;
@@ -234,10 +238,14 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	videoViewerLocation: "split",
 	timestampCopyFormat: "link",
 	timestampListStyle: "match",
+	pausePlaybackOnMediaActions: true,
 	showInsertionTarget: true,
 	insertFlashMode: "left",
 	insertFlashDuration: LINE_FLASH_DURATION.default,
 	insertFlashSize: LINE_FLASH_SIZE.default,
+	insertFlashUseThemeColors: true,
+	insertFlashColorLight: "#6496ff",
+	insertFlashColorDark: "#6496ff",
 	videoToolbarCaptureAction: "insert",
 	showYoutubeCaptions: false,
 	videoNoteFocusIndicator: true,
@@ -372,6 +380,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 			(leaf) =>
 				new TranscriptView(leaf, {
 					getHeadingName: () => this.settings.transcriptHeading,
+					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
+					getPausePlaybackOnMediaActions: () => this.settings.pausePlaybackOnMediaActions,
+					pausePlaybackForMediaAction: (filePath) => this.pausePlaybackForNote(filePath),
+					getTimestampInsertionTime: (filePath, videoId, seconds) =>
+						this.timestampInsertionTime(filePath, videoId, seconds),
 					paragraphWarnings: this.paragraphWarnings,
 					insertTimestampAt: (filePath, url, seconds) => this.insertTranscriptTimestamp(filePath, url, seconds),
 					onSelectionChanged: (filePath) => {
@@ -464,6 +477,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 					getTranscriptHeading: () => this.settings.transcriptHeading,
 					getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
 					getTimestampListStyle: () => this.settings.timestampListStyle,
+					getPausePlaybackOnMediaActions: () => this.settings.pausePlaybackOnMediaActions,
 					getTimestampInsertionTime: (view) => this.timestampInsertionTime(view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds()),
 					getToolbarCaptureAction: () => this.settings.videoToolbarCaptureAction,
 					getShowYoutubeCaptions: () => this.settings.showYoutubeCaptions,
@@ -577,9 +591,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 			["video-viewer-normal-speed", "Video viewer: normal speed", (v) => v.setRate(1)],
 			["video-viewer-next-note-timestamp", "Video: next transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, 1)],
 			["video-viewer-previous-note-timestamp", "Video: previous transcript timestamp", (v) => this.jumpToTranscriptTimestamp(v, -1)],
-			["video-viewer-copy-timestamp", "Video: copy current timestamp", (v) => v.copyTimestampLink()],
-			["video-viewer-insert-timestamp", "Video: insert timestamp list item", (v) => this.insertTimestampIntoNote(v)],
-			["video-viewer-insert-current-timestamp", "Video: insert current playback timestamp", (v) => this.insertTimestampIntoNote(v, true)],
+			["video-viewer-copy-timestamp", "Video: copy timestamp", (v) => v.copyTimestampLink()],
+			["video-viewer-insert-timestamp", "Video: insert timestamp", (v) => this.insertTimestampIntoNote(v)],
 			["video-viewer-open-in-browser", "Video viewer: open in browser at the current time", (v) => v.openInBrowser()],
 		];
 		const backgroundCommands = new Map(audioCommands.map(([id, , run]) => [id, run]));
@@ -1567,6 +1580,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 			request?.seconds ?? (saved?.videoId === videoId ? saved.seconds : 0), {
 				getTimestampCopyFormat: () => this.settings.timestampCopyFormat,
 				getTimestampListStyle: () => this.settings.timestampListStyle,
+				getPausePlaybackOnMediaActions: () => this.settings.pausePlaybackOnMediaActions,
+				getTimestampInsertionTime: (playback) => this.timestampInsertionTime(
+					playback.getFilePath(), playback.getVideoId(), playback.getPlaybackSeconds()
+				),
 				onPlayback: (id, path, seconds, stateChanged) => this.showPlayback(id, path, seconds, stateChanged),
 				remember: (id, path, seconds) => {
 					this.settings.videoPlayback[path] = { videoId: id, seconds };
@@ -1629,10 +1646,14 @@ export default class PerplexitySaverPlugin extends Plugin {
 		return (active ? getWindowForLeaf(active) : getMainWindow(this.app)) ?? null;
 	}
 
-	private async insertTimestampIntoNote(view: NotePlayback, currentPlaybackOnly = false): Promise<void> {
-		const time = currentPlaybackOnly
-			? { seconds: view.getPlaybackSeconds(), selected: false }
-			: this.timestampInsertionTime(view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds());
+	private pausePlaybackForNote(filePath: string): void {
+		const file = this.app.vault.getFileByPath(filePath);
+		const playback = (file ? playerForNote(this.app, file)?.view : null) ?? this.existingBackgroundPlayback(filePath);
+		playback?.pausePlayback();
+	}
+
+	private async insertTimestampIntoNote(view: NotePlayback): Promise<void> {
+		const time = this.timestampInsertionTime(view.getFilePath(), view.getVideoId(), view.getPlaybackSeconds());
 		if ("error" in time) {
 			new Notice(time.error);
 			return;
@@ -1643,7 +1664,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			return;
 		}
 		const fallback = async (reason: string): Promise<void> => {
-			view.pausePlayback();
+			if (this.settings.pausePlaybackOnMediaActions) view.pausePlayback();
 			await copyInsertionFallback(this.insertionClipboardWindow(),
 				timestampInsertionClipboardText(videoId, time.seconds, this.settings.timestampListStyle), "Timestamp", reason);
 		};
@@ -1676,7 +1697,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 		const target = this.createNoteInsertionTarget({ getFilePath: () => filePath });
 		const playback = (file ? playerForNote(this.app, file)?.view : null) ?? this.existingBackgroundPlayback(filePath);
 		const fallback = async (reason: string): Promise<void> => {
-			playback?.pausePlayback();
+			if (this.settings.pausePlaybackOnMediaActions) playback?.pausePlayback();
 			await copyInsertionFallback(this.insertionClipboardWindow(),
 				timestampInsertionClipboardText(videoId, time.seconds, this.settings.timestampListStyle), "Timestamp", reason);
 		};
@@ -1688,7 +1709,11 @@ export default class PerplexitySaverPlugin extends Plugin {
 		try {
 			let insertion: PlacedInsertion | null;
 			try {
-				insertion = insertPlaybackTimestamp(target, videoId, time.seconds, () => playback?.pausePlayback(), this.settings.timestampListStyle);
+				insertion = insertPlaybackTimestamp(target, videoId, time.seconds,
+					() => {
+						if (this.settings.pausePlaybackOnMediaActions) playback?.pausePlayback();
+					},
+					this.settings.timestampListStyle);
 			} catch (error) {
 				console.error("Perplexity Saver: could not insert transcript timestamp", error);
 				if (target.anchor.view.state.doc !== before) new Notice("The note changed while completing timestamp insertion. Check it before retrying; nothing was copied.");
@@ -1729,6 +1754,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 					mode: this.settings.insertFlashMode,
 					durationMs: this.settings.insertFlashDuration,
 					sizeChars: this.settings.insertFlashSize,
+					useThemeColors: this.settings.insertFlashUseThemeColors,
+					lightColor: this.settings.insertFlashColorLight,
+					darkColor: this.settings.insertFlashColorDark,
 				});
 			},
 		});
@@ -1945,12 +1973,27 @@ export default class PerplexitySaverPlugin extends Plugin {
 
 	async loadSettings(): Promise<void> {
 		const loaded: unknown = await this.loadData();
-		const stored: Partial<PerplexitySaverSettings> & { captionWordTiming?: boolean; whisperxEnabled?: boolean; whisperxPythonPath?: string } =
+		const stored: Omit<Partial<PerplexitySaverSettings>, "timestampCopyFormat"> & {
+			timestampCopyFormat?: TimestampCopyFormat | "list";
+			captionWordTiming?: boolean;
+			whisperxEnabled?: boolean;
+			whisperxPythonPath?: string;
+		} =
 			loaded && typeof loaded === "object"
 				? loaded
 				: {};
-		const { captionWordTiming: _timing, whisperxEnabled: _whisperx, whisperxPythonPath: _pythonPath, ...current } = stored;
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, current);
+		const {
+			captionWordTiming: _timing,
+			whisperxEnabled: _whisperx,
+			whisperxPythonPath: _pythonPath,
+			timestampCopyFormat,
+			...current
+		} = stored;
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, current, {
+			timestampCopyFormat: timestampCopyFormat === "list"
+				? "unordered"
+				: timestampCopyFormat ?? DEFAULT_SETTINGS.timestampCopyFormat,
+		});
 		this.settings.videoPlayback = { ...this.settings.videoPlayback };
 		this.settings.videoWorkspaces = {};
 		for (const [path, saved] of Object.entries(current.videoWorkspaces ?? {})) {
@@ -2624,8 +2667,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						control: { type: "toggle", key: "showYoutubeCaptions" },
 					},
 					{
-						name: "Timestamp list item style",
-						desc: "List form used by timestamp insertion commands and buttons. Match current list keeps the marker and follows ordered numbering; unordered, ordered, and task start that form. Inserts never split text or steal sub-items. Unsafe blocks continue an adjacent list or get a new list immediately below, without crossing a heading. Properties, the transcript and the opening source area use the initial notes area. Ordinary Markdown notes do not require a callout or quote.",
+						name: "Insert timestamp format",
+						desc: "Format used by timestamp insertion commands and buttons. Match current list keeps the marker and follows ordered numbering. Unordered, ordered, and task start that list form; plain timestamp inserts only the link with no list marker or description suffix. Inserts never split text or steal sub-items. Unsafe blocks continue an adjacent list or get a new item immediately below, without crossing a heading. Properties, the transcript and the opening source area use the initial notes area. Ordinary Markdown notes do not require a callout or quote.",
 						control: {
 							type: "dropdown",
 							key: "timestampListStyle",
@@ -2634,8 +2677,42 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 								unordered: "Unordered list (-)",
 								ordered: "Ordered list (1.)",
 								task: "Task list (- [ ])",
+								link: "Plain timestamp only",
 							},
 						},
+					},
+					{
+						name: "Copy timestamp format",
+						desc: "Format for timestamp copy commands and buttons, including transcript-row copy. Copy writes Markdown to the clipboard only; it does not insert into the note or move focus. The copied time is resolved like timestamp insertion: a selected transcript time when available, otherwise current playback. Link-only, unordered, ordered and task formats are available. List items end with a trailing space for a description. This setting does not affect insertion or screenshot copying.",
+						control: {
+							type: "dropdown",
+							key: "timestampCopyFormat",
+							options: {
+								link: "Timestamp link only (default)",
+								unordered: "Unordered list (-)",
+								ordered: "Ordered list (1.)",
+								task: "Task list (- [ ])",
+							},
+						},
+					},
+					{
+						name: "Pause playback for timestamp and screenshot actions",
+						desc: "On by default. Pause playback when a timestamp or screenshot is copied or inserted, and while selecting or capturing any screenshot. Turn off to let playback continue through these actions.",
+						control: {
+							type: "toggle",
+							key: "pausePlaybackOnMediaActions",
+						},
+					},
+				],
+			},
+			{
+				type: "group",
+				heading: "Insertion marking",
+				items: [
+					{
+						name: "Show insertion target",
+						desc: "Mark the safe insertion location while the associated note editor is unfocused. The marker does not change note text or move the cursor.",
+						control: { type: "toggle", key: "showInsertionTarget" },
 					},
 					{
 						name: "Highlight inserted line",
@@ -2645,11 +2722,6 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							key: "insertFlashMode",
 							options: { off: "Off", ...LINE_FLASH_MODE_LABELS },
 						},
-					},
-					{
-						name: "Show insertion target",
-						desc: "Mark the safe insertion location while the associated note editor is unfocused. The marker does not change note text or move the cursor.",
-						control: { type: "toggle", key: "showInsertionTarget" },
 					},
 					{
 						name: "Inserted line highlight duration",
@@ -2676,15 +2748,32 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						},
 					},
 					{
-						name: "Copy current timestamp format",
-						desc: "Format for Video: copy current timestamp and the toolbar's copy action. Timestamp link only copies [m:ss](URL). List item copies - [m:ss](URL): with a trailing space for typing a description. This setting does not affect inserting timestamps, transcript-row copies, or screenshot copies.",
+						name: "Use theme colors",
+						desc: "Use the Obsidian accent color for insertion highlights. Turn off to choose separate colors for light and dark themes.",
 						control: {
-							type: "dropdown",
-							key: "timestampCopyFormat",
-							options: {
-								link: "Timestamp link only (default)",
-								list: "List item: - <timestamp link>: ",
-							},
+							type: "toggle",
+							key: "insertFlashUseThemeColors",
+							disabled: () => this.plugin.settings.insertFlashMode === "off",
+						},
+					},
+					{
+						name: "Light theme color",
+						desc: "Insertion highlight color in a light theme.",
+						control: {
+							type: "color",
+							key: "insertFlashColorLight",
+							disabled: () => this.plugin.settings.insertFlashMode === "off" ||
+								this.plugin.settings.insertFlashUseThemeColors,
+						},
+					},
+					{
+						name: "Dark theme color",
+						desc: "Insertion highlight color in a dark theme.",
+						control: {
+							type: "color",
+							key: "insertFlashColorDark",
+							disabled: () => this.plugin.settings.insertFlashMode === "off" ||
+								this.plugin.settings.insertFlashUseThemeColors,
 						},
 					},
 				],

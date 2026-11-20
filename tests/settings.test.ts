@@ -49,7 +49,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
-	it("defaults copies to link only while retaining an explicit list-item choice", async () => {
+	it("defaults copies to link only and migrates the previous list-item value", async () => {
 		const plugin = new PerplexitySaverPlugin({} as App, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
 			minAppVersion: "1.14.0", author: "", description: "",
@@ -59,7 +59,33 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.settings.timestampCopyFormat).toBe("link");
 		vi.mocked(plugin.loadData).mockResolvedValue({ timestampCopyFormat: "list" });
 		await plugin.loadSettings();
-		expect(plugin.settings.timestampCopyFormat).toBe("list");
+		expect(plugin.settings.timestampCopyFormat).toBe("unordered");
+	});
+
+	it("defaults playback pause on for timestamp and screenshot actions and places it beside their settings", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.pausePlaybackOnMediaActions).toBe(true);
+		vi.mocked(plugin.loadData).mockResolvedValue({ pausePlaybackOnMediaActions: false });
+		await plugin.loadSettings();
+		expect(plugin.settings.pausePlaybackOnMediaActions).toBe(false);
+
+		const group = new PerplexitySaverSettingTab({} as App, plugin)
+			.getSettingDefinitions()
+			.find((item): item is SettingDefinitionGroup =>
+				"type" in item && item.type === "group" && item.heading === "Video viewer");
+		expect(group?.items).toBeDefined();
+		const items = group!.items!;
+		const copyIndex = items.findIndex((item) => item.name === "Copy timestamp format");
+		const pause = items[copyIndex + 1];
+		expect(pause).toMatchObject({
+			name: "Pause playback for timestamp and screenshot actions",
+			control: { type: "toggle", key: "pausePlaybackOnMediaActions" },
+		});
 	});
 
 	it("defaults toolbar captures to insertion and preserves and saves an explicit copy choice", async () => {
@@ -115,7 +141,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
-	it("defaults inserted timestamp list items to the current list and offers every list form", async () => {
+	it("defaults inserted timestamps to the current list and offers every insertion form", async () => {
 		const plugin = new PerplexitySaverPlugin({} as App, {
 			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
 			minAppVersion: "1.14.0", author: "", description: "",
@@ -130,7 +156,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
 			"type" in item && item.type === "group" && item.heading === "Video viewer");
 		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Timestamp list item style",
+			name: "Insert timestamp format",
 			control: {
 				type: "dropdown", key: "timestampListStyle",
 				options: {
@@ -138,6 +164,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 					unordered: "Unordered list (-)",
 					ordered: "Ordered list (1.)",
 					task: "Task list (- [ ])",
+					link: "Plain timestamp only",
 				},
 			},
 		}));
@@ -148,10 +175,69 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.saveSettings).toHaveBeenCalledOnce();
 	});
 
+	it("puts insertion marking last with dependent flash controls disabled when highlighting is off", async () => {
+		const plugin = new PerplexitySaverPlugin({} as App, {
+			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
+			minAppVersion: "1.14.0", author: "", description: "",
+		});
+		vi.spyOn(plugin, "loadData").mockResolvedValue({});
+		await plugin.loadSettings();
+		expect(plugin.settings.insertFlashUseThemeColors).toBe(true);
+		expect(plugin.settings.insertFlashColorLight).toBe("#6496ff");
+		expect(plugin.settings.insertFlashColorDark).toBe("#6496ff");
+
+		const tab = new PerplexitySaverSettingTab({} as App, plugin);
+		const definitions = tab.getSettingDefinitions();
+		const group = definitions.at(-1);
+		expect(group && "type" in group && group.type === "group" && group.heading).toBe("Insertion marking");
+		if (!group || !("type" in group) || group.type !== "group" || !group.items) {
+			throw new Error("Missing insertion marking settings");
+		}
+		expect(group.items.map((item) => item.name)).toEqual([
+			"Show insertion target",
+			"Highlight inserted line",
+			"Inserted line highlight duration",
+			"Inserted line highlight width",
+			"Use theme colors",
+			"Light theme color",
+			"Dark theme color",
+		]);
+
+		const controls = Object.fromEntries(group.items.map((item) => [
+			item.name,
+			"control" in item ? item.control : undefined,
+		])) as Record<string, { disabled?: () => boolean }>;
+		expect(controls["Light theme color"]).toMatchObject({ type: "color", key: "insertFlashColorLight" });
+		expect(controls["Dark theme color"]).toMatchObject({ type: "color", key: "insertFlashColorDark" });
+		const disabled = (name: string): boolean => controls[name].disabled?.() ?? false;
+
+		plugin.settings.insertFlashMode = "off";
+		for (const name of [
+			"Inserted line highlight duration",
+			"Inserted line highlight width",
+			"Use theme colors",
+			"Light theme color",
+			"Dark theme color",
+		]) expect(disabled(name)).toBe(true);
+
+		plugin.settings.insertFlashMode = "left";
+		plugin.settings.insertFlashUseThemeColors = true;
+		expect(disabled("Inserted line highlight duration")).toBe(false);
+		expect(disabled("Inserted line highlight width")).toBe(false);
+		expect(disabled("Use theme colors")).toBe(false);
+		expect(disabled("Light theme color")).toBe(true);
+		expect(disabled("Dark theme color")).toBe(true);
+
+		plugin.settings.insertFlashUseThemeColors = false;
+		expect(disabled("Light theme color")).toBe(false);
+		expect(disabled("Dark theme color")).toBe(false);
+	});
+
 	const createMockPlugin = () => ({
 		settings: {
 			timestampCopyFormat: "link",
 			timestampListStyle: "match",
+			pausePlaybackOnMediaActions: true,
 			searchesFolder: "ai-searches",
 			generatedTag: "ai-generated",
 			collapseBlankLines: true,
@@ -171,6 +257,13 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			downloadYoutubeTranscripts: true,
 			preferredVideoWorkspace: "video",
 			videoNoteFocusIndicator: true,
+			insertFlashMode: "left",
+			insertFlashDuration: 1000,
+			insertFlashSize: 15,
+			insertFlashUseThemeColors: true,
+			insertFlashColorLight: "#6496ff",
+			insertFlashColorDark: "#6496ff",
+			showInsertionTarget: true,
 		},
 		zoteroClient: {
 			clearCache: vi.fn(),
@@ -272,20 +365,28 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("offers and saves both timestamp copy formats in the video viewer settings", async () => {
+	it("offers and saves every timestamp copy format in the video viewer settings", async () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
 			"type" in item && item.type === "group" && item.heading === "Video viewer");
 		expect(group?.type).toBe("group");
 		if (!group?.items) throw new Error("Missing Video viewer settings");
-		const format = group.items.find((item) => "name" in item && item.name === "Copy current timestamp format");
+		const format = group.items.find((item) => "name" in item && item.name === "Copy timestamp format");
 		expect(format && "control" in format ? format.control : undefined).toMatchObject({
 			type: "dropdown", key: "timestampCopyFormat",
-			options: { list: expect.any(String), link: expect.any(String) },
+			options: {
+				link: "Timestamp link only (default)",
+				unordered: "Unordered list (-)",
+				ordered: "Ordered list (1.)",
+				task: "Task list (- [ ])",
+			},
 		});
-		await tab.setControlValue("timestampCopyFormat", "link");
-		expect(plugin.settings.timestampCopyFormat).toBe("link");
+		const insertIndex = group.items.findIndex((item) => "name" in item && item.name === "Insert timestamp format");
+		const copyIndex = group.items.findIndex((item) => item === format);
+		expect(copyIndex).toBe(insertIndex + 1);
+		await tab.setControlValue("timestampCopyFormat", "task");
+		expect(plugin.settings.timestampCopyFormat).toBe("task");
 		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
 	});
 

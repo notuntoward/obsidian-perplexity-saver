@@ -147,12 +147,18 @@ export function timestampLink(videoId: string, seconds: number): string {
 	return `[${formatClock(seconds)}](${watchUrl(videoId, seconds)})`;
 }
 
-export type TimestampCopyFormat = "list" | "link";
+export type TimestampCopyFormat = "link" | "unordered" | "ordered" | "task";
 
 /** Keep the description suffix outside the Markdown link and preserve its trailing space. */
-export function timestampClipboardText(videoId: string, seconds: number, format: TimestampCopyFormat = "link"): string {
+export function timestampClipboardText(
+	videoId: string,
+	seconds: number,
+	format: TimestampCopyFormat | "list" = "link"
+): string {
 	const link = timestampLink(videoId, seconds);
-	return format === "link" ? link : `- ${link}: `;
+	if (format === "link") return link;
+	const prefix = format === "ordered" ? "1. " : format === "task" ? "- [ ] " : "- ";
+	return `${prefix}${link}: `;
 }
 
 /** Longest note-name part of a screenshot file name, before the date and time. */

@@ -521,8 +521,7 @@ async function restorePreviousLeaf(
 		const leafWin = getWindowForLeaf(leaf) ??
 			getMainWindow(app) ??
 			(typeof activeWindow !== "undefined" ? activeWindow : null);
-		if (!leafWin) return;
-		await new Promise<void>((resolve) => setTimeoutIn(leafWin, resolve, 10));
+		if (leafWin) await new Promise<void>((resolve) => setTimeoutIn(leafWin, resolve, 10));
 
 		const attached = isLeafAttached(leaf);
 		let target: WorkspaceLeaf | null = attached ? leaf : null;

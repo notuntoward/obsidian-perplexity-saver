@@ -31,7 +31,7 @@ async function toolbar(doc = document) {
 	};
 	const view = new VideoView({ app } as unknown as WorkspaceLeaf, {
 		getTranscriptHeading: () => "Transcript",
-		getTimestampCopyFormat: () => "list",
+		getTimestampCopyFormat: () => "unordered",
 		getToolbarCaptureAction: () => action,
 		getShowYoutubeCaptions: () => false,
 		getTranscriptUnit: () => unit,
@@ -94,7 +94,7 @@ describe("video toolbar capture destinations", () => {
 		const el = h.view.contentEl;
 		expect(el.querySelector('[aria-label="Timestamp alternatives"]')).toBeNull();
 		h.timestamp.click();
-		el.querySelector<HTMLButtonElement>('[aria-label="Copy current timestamp link"]')!.click();
+		el.querySelector<HTMLButtonElement>('[data-icon="copy"]')!.click();
 		expect(h.insertTimestamp).toHaveBeenCalledWith(h.view);
 		expect(h.copy).toHaveBeenCalledOnce();
 		const help = el.querySelector<HTMLElement>(".perplexity-saver-video-help")!;
@@ -240,7 +240,7 @@ describe("video toolbar capture destinations", () => {
 		const h = await toolbar();
 		h.setAction(action);
 		h.timestamp.click();
-		h.view.contentEl.querySelector<HTMLButtonElement>('[aria-label="Copy current timestamp link"]')!.click();
+		h.view.contentEl.querySelector<HTMLButtonElement>('[data-icon="copy"]')!.click();
 		expect(MockMenu.last).toBeNull();
 		expect(h.insertTimestamp).toHaveBeenCalledWith(h.view);
 		expect(h.copy).toHaveBeenCalledOnce();
@@ -261,11 +261,11 @@ describe("video toolbar capture destinations", () => {
 
 	it("updates existing toolbar labels without rebuilding the player", async () => {
 		const h = await toolbar();
-		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current playback timestamp 0:00 into note");
+		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert timestamp 0:00 from current playback into note");
 		expect(h.camera.getAttribute("aria-label")).toContain("Insert screenshot into note");
 		h.setAction("copy");
 		h.view.updateToolbarCaptureLabels();
-		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert current playback timestamp 0:00 into note");
+		expect(h.timestamp.getAttribute("aria-label")).toBe("Insert timestamp 0:00 from current playback into note");
 		expect(h.camera.getAttribute("aria-label")).toContain("Copy screenshot");
 		expect(h.camera.getAttribute("aria-label")).toContain("alternatives button");
 		expect(h.camera.getAttribute("aria-label")).toContain("Shift-click");
@@ -279,16 +279,20 @@ describe("video toolbar capture destinations", () => {
 
 	it.each([false, true])("shows the resolved selected or playback time without depending on focus (popout=%s)", async (popout) => {
 		const h = await toolbar(popout ? document.implementation.createHTMLDocument() : document);
+		const copy = h.view.contentEl.querySelector<HTMLButtonElement>('[data-icon="copy"]')!;
 		h.setInsertionTime({ seconds: 763.25, selected: true });
 		h.view.refreshTranscriptControls();
 		expect(h.timestamp.textContent).toBe("Insert 12:43");
-		expect(h.timestamp.getAttribute("aria-label")).toContain("selected transcript timestamp 12:43");
+		expect(h.timestamp.getAttribute("aria-label")).toContain("timestamp 12:43 from selected transcript");
+		expect(copy.getAttribute("aria-label")).toContain("selected transcript timestamp 12:43");
 		h.setInsertionTime({ seconds: 705.5, selected: false });
 		h.view.refreshTranscriptControls();
 		expect(h.timestamp.textContent).toBe("Insert 11:45");
+		expect(copy.getAttribute("aria-label")).toContain("current playback timestamp 11:45");
 		h.setInsertionTime({ error: "Conflicting transcript selections." });
 		h.view.refreshTranscriptControls();
 		expect(h.timestamp.getAttribute("aria-label")).toBe("Conflicting transcript selections.");
+		expect(copy.getAttribute("aria-label")).toBe("Conflicting transcript selections.");
 		expect(h.timestamp.textContent).toBe("Insert time");
 	});
 

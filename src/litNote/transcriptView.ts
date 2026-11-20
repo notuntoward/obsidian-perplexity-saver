@@ -37,7 +37,8 @@ import { formatShortTimestamp } from "./youtubeTranscript";
 import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
 import { readInlineTimings } from "./transcriptTimingStorage";
 import { needsCaptionTimingRepair } from "./captionTiming";
-import { formatClock, parseYouTubeUrl, timestampLink } from "../video/youtubeLinks";
+import { formatClock, parseYouTubeUrl, timestampClipboardText, type TimestampCopyFormat } from "../video/youtubeLinks";
+import type { TimestampInsertionTime } from "../video/videoView";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
 
 export const TRANSCRIPT_VIEW_TYPE = "perplexity-saver-transcript";
@@ -185,6 +186,10 @@ export function hiddenTranscriptNavigationRows(app: App, file: TFile, lines: Sto
 export interface TranscriptViewHost {
 	getHeadingName(): string;
 	getSearchSettings(): TranscriptSearchSettings;
+	getTimestampCopyFormat?(): TimestampCopyFormat;
+	getPausePlaybackOnMediaActions?(): boolean;
+	pausePlaybackForMediaAction?(filePath: string): void;
+	getTimestampInsertionTime?(filePath: string | null, videoId: string | null, seconds: number): TimestampInsertionTime;
 	paragraphWarnings?: Set<string>;
 	insertTimestampAt?(filePath: string, url: string, seconds: number): Promise<void>;
 	onSelectionChanged?(filePath: string): void;
@@ -273,19 +278,22 @@ function searchHints(behavior: SearchExitBehavior, app: App): KeyHint[][] {
 	];
 }
 
-const ROW_HINTS: KeyHint[][] = [
-	[
-		{ key: "↑↓ / Ctrl+N/P", action: "move" },
-		{ key: "Home/End", action: "first/last timestamp" },
-		{ key: "Enter", action: "play from here" },
-		{ key: "Shift+Enter", action: "go here" },
-	],
-	[
-		{ key: "Ctrl+C", action: "copy timestamp link" },
-		{ key: "Esc", action: "clear selection & follow" },
-		{ key: "Ctrl+F", action: "search" },
-	],
-];
+function rowHints(app: App): KeyHint[][] {
+	const copyKey = getCommandHotkeyLabel(app, "perplexity-saver:video-viewer-copy-timestamp");
+	return [
+		[
+			{ key: "↑↓ / Ctrl+N/P", action: "move" },
+			{ key: "Home/End", action: "first/last timestamp" },
+			{ key: "Enter", action: "play from here" },
+			{ key: "Shift+Enter", action: "go here" },
+		],
+		[
+			{ key: copyKey || "Unassigned", action: "copy timestamp", disabled: !copyKey },
+			{ key: "Esc", action: "clear selection & follow" },
+			{ key: "Ctrl+F", action: "search" },
+		],
+	];
+}
 
 interface RenderedRow {
 	row: TranscriptRow;
@@ -353,6 +361,7 @@ export class TranscriptView extends ItemView {
 	private searchNavigationCleanup: (() => void) | null = null;
 	private paneKeysCleanup: (() => void) | null = null;
 	private searchHintsEl: HTMLElement | null = null;
+	private rowHintsEl: HTMLElement | null = null;
 	private previousMatchBtn: HTMLElement | null = null;
 	private nextMatchBtn: HTMLElement | null = null;
 	/** Show only the rows matching the search. */
@@ -1023,7 +1032,8 @@ export class TranscriptView extends ItemView {
 		const hints = header.createDiv({ cls: "perplexity-saver-transcript-hints" });
 		this.searchHintsEl = hints.createDiv({ cls: "is-search" });
 		this.updateSearchHints();
-		renderKeyHints(hints.createDiv({ cls: "is-rows" }), ROW_HINTS, "perplexity-saver");
+		this.rowHintsEl = hints.createDiv({ cls: "is-rows" });
+		this.updateRowHints();
 		this.selectionBar = header.createDiv({ cls: "perplexity-saver-transcript-selection" });
 
 		const list = el.createDiv({
@@ -1036,6 +1046,7 @@ export class TranscriptView extends ItemView {
 		list.addEventListener("keydown", (evt) => this.onListKey(evt));
 		this.bindPaneKeys();
 		list.addEventListener("focusin", (evt) => {
+			this.updateRowHints();
 			const idx = this.rendered.findIndex((r) => r.el === evt.target);
 			if (idx >= 0) this.setFocusRow(idx);
 		});
@@ -1265,10 +1276,15 @@ export class TranscriptView extends ItemView {
 		if (this.searchHintsEl) {
 			renderKeyHints(this.searchHintsEl, hints, "perplexity-saver");
 		}
+
 		const next = behavior === "obsidian" ? "Enter" : hints[0][0].key;
 		const previous = behavior === "obsidian" ? "Shift+Enter" : hints[0][1].key;
 		this.nextMatchBtn?.setAttribute("aria-label", `Next match (${next})`);
 		this.previousMatchBtn?.setAttribute("aria-label", `Previous match (${previous})`);
+	}
+
+	private updateRowHints(): void {
+		if (this.rowHintsEl) renderKeyHints(this.rowHintsEl, rowHints(this.app), "perplexity-saver");
 	}
 
 	async onClose(): Promise<void> {
@@ -1495,7 +1511,7 @@ export class TranscriptView extends ItemView {
 				});
 			}).appendText(`Insert ${stamp}`);
 		}
-		this.iconButton(bar, "copy", "Copy selected timestamp link", () => void this.copyRowLink(index));
+		this.iconButton(bar, "copy", "Copy selected timestamp", () => void this.copyRowLink(index));
 	}
 
 	private moveFocusedRow(delta: 1 | -1, evt: KeyboardEvent): boolean {
@@ -1610,7 +1626,6 @@ export class TranscriptView extends ItemView {
 		else if (evt.key === "End" && !mod && !evt.shiftKey && !evt.altKey) handled = edge(true);
 		else if (evt.key === "Enter") this.playRow(index, mod || !evt.shiftKey);
 		else if (evt.key === "Escape") this.resumeFollowing();
-		else if (mod && evt.key.toLowerCase() === "c" && !this.hasTextSelection()) void this.copyRowLink(index);
 		else handled = false;
 		if (!handled) return;
 		evt.preventDefault();
@@ -1623,7 +1638,7 @@ export class TranscriptView extends ItemView {
 		return !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
 	}
 
-	/** Copy a markdown timestamp link to row `index`, for pasting into a note. */
+	/** Copy the row's formatted timestamp to the clipboard; never mutate the note. */
 	private async copyRowLink(index: number): Promise<void> {
 		const r = this.rendered[index];
 		const url = r?.row.url || this.lines?.find((l) => l.url)?.url || "";
@@ -1633,8 +1648,18 @@ export class TranscriptView extends ItemView {
 			new Notice("No YouTube link for this transcript.");
 			return;
 		}
-		const ok = await writeClipboardIn(win, timestampLink(videoId, r.row.startSec)).catch(() => false);
-		new Notice(ok ? `Copied ${formatClock(r.row.startSec)} link.` : "Could not write to the clipboard.");
+		const time = this.host.getTimestampInsertionTime?.(this.filePath, videoId, r.row.startSec)
+			?? { seconds: r.row.startSec, selected: true };
+		if ("error" in time) {
+			new Notice(time.error);
+			return;
+		}
+		if (this.filePath && (this.host.getPausePlaybackOnMediaActions?.() ?? true)) {
+			this.host.pausePlaybackForMediaAction?.(this.filePath);
+		}
+		const text = timestampClipboardText(videoId, time.seconds, this.host.getTimestampCopyFormat?.() ?? "link");
+		const ok = await writeClipboardIn(win, text).catch(() => false);
+		new Notice(ok ? `Copied ${formatClock(time.seconds)} timestamp.` : "Could not write to the clipboard.");
 	}
 
 	private updateMatchCount(): void {

@@ -68,6 +68,7 @@ export interface VideoViewHost {
 	getTranscriptHeading(): string;
 	getTimestampCopyFormat(): TimestampCopyFormat;
 	getTimestampListStyle?(): TimestampListStyle;
+	getPausePlaybackOnMediaActions?(): boolean;
 	getTimestampInsertionTime?(view: VideoView): TimestampInsertionTime;
 	getToolbarCaptureAction(): VideoToolbarCaptureAction;
 	getShowYoutubeCaptions(): boolean;
@@ -116,6 +117,7 @@ export class VideoView extends ItemView {
 	private nextTranscriptBtn!: HTMLElement;
 	private insertTimeBtn!: HTMLElement;
 	private insertTimeLabel!: HTMLElement;
+	private copyTimeBtn!: HTMLElement;
 	private transcriptUnitLabel!: HTMLElement;
 	private screenshotBtn?: HTMLElement;
 	private helpEl!: HTMLElement;
@@ -356,7 +358,7 @@ export class VideoView extends ItemView {
 		this.insertTimeBtn = this.button(capture, "file-plus-2", "Insert timestamp into note", () => void this.host.insertTimestamp(this));
 		this.insertTimeBtn.addClass("perplexity-saver-video-insert-timestamp");
 		this.insertTimeLabel = this.insertTimeBtn.createSpan({ text: "Insert time" });
-		this.button(capture, "copy", "Copy current timestamp link", () => void this.copyTimestampLink());
+		this.copyTimeBtn = this.button(capture, "copy", "Copy timestamp", () => void this.copyTimestampLink());
 		if (Platform.isDesktopApp) {
 			this.screenshotBtn = this.button(capture, "camera", "", (evt) => {
 				if (this.host.getToolbarCaptureAction() === "insert") void this.host.insertScreenshot(this, evt.shiftKey);
@@ -493,14 +495,19 @@ export class VideoView extends ItemView {
 		this.player?.pause();
 	}
 
-	/** Insert a paused timestamp list item into the note's tracked editor position. */
+	private pauseForMediaAction(): void {
+		if (this.host.getPausePlaybackOnMediaActions?.() ?? true) this.pausePlayback();
+	}
+
+	/** Insert a timestamp item into the note's tracked editor position. */
 	async insertTimestampBullet(target: NoteInsertionTarget, seconds = this.getPlaybackSeconds()): Promise<boolean> {
-		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => this.pausePlayback(), this.host.getTimestampListStyle?.() ?? "match");
+		const insertion = insertPlaybackTimestamp(target, this.videoId, seconds, () => this.pauseForMediaAction(),
+			this.host.getTimestampListStyle?.() ?? "match");
 		if (insertion) await this.focusNoteAfterInsertion(target, insertionMessage("Timestamp", insertion));
 		return !!insertion;
 	}
 
-	/** Capture a paused frame and insert it into the note; `whole` skips region selection. */
+	/** Capture a frame and insert it into the note; `whole` skips region selection. */
 	async insertScreenshotForNote(target?: NoteInsertionTarget, whole = false, fallbackReason?: string): Promise<void> {
 		if (!this.player || !this.videoId) {
 			if (target) releaseNoteInsertionAnchor(target.anchor);
@@ -512,12 +519,14 @@ export class VideoView extends ItemView {
 			if (target) releaseNoteInsertionAnchor(target.anchor);
 			return;
 		}
-		this.player.pause();
+		const pausePlayback = this.host.getPausePlaybackOnMediaActions?.() ?? true;
+		const resumeOnCancel = pausePlayback && this.player.playing;
+		if (pausePlayback) this.player.pause();
 		if (whole) {
 			await this.captureAndSave(undefined, target, fallbackReason);
 			return;
 		}
-		this.beginSnip(false, target, fallbackReason);
+		this.beginSnip(resumeOnCancel, target, fallbackReason);
 	}
 
 	/** Pause here and open the video at the current time in the system browser. */
@@ -555,9 +564,12 @@ export class VideoView extends ItemView {
 		if ("error" in time) {
 			this.insertTimeLabel.setText("Insert time");
 			this.insertTimeBtn.setAttribute("aria-label", time.error);
+			this.copyTimeBtn.setAttribute("aria-label", time.error);
 		} else {
 			this.insertTimeLabel.setText(`Insert ${formatClock(time.seconds)}`);
-			this.insertTimeBtn.setAttribute("aria-label", `Insert ${time.selected ? "selected transcript" : "current playback"} timestamp ${formatClock(time.seconds)} into note`);
+			const source = time.selected ? "selected transcript" : "current playback";
+			this.insertTimeBtn.setAttribute("aria-label", `Insert timestamp ${formatClock(time.seconds)} from ${source} into note`);
+			this.copyTimeBtn.setAttribute("aria-label", `Copy ${time.selected ? "selected transcript" : "current playback"} timestamp ${formatClock(time.seconds)}`);
 		}
 	}
 
@@ -863,24 +875,27 @@ export class VideoView extends ItemView {
 		return this.contentEl.ownerDocument.defaultView;
 	}
 
-	/** Copy the current position using the configured plain-text Markdown format. */
+	/** Copy the resolved timestamp to the clipboard; never mutate the note. */
 	async copyTimestampLink(): Promise<void> {
 		if (!this.player || !this.videoId) return;
+		const time = this.host.getTimestampInsertionTime?.(this) ?? { seconds: this.getPlaybackSeconds(), selected: false };
+		if ("error" in time) {
+			new Notice(time.error);
+			return;
+		}
 		const win = this.ownerWin;
-		const seconds = this.player.info.currentTime;
-		this.pausePlayback();
-		const text = timestampClipboardText(this.videoId, seconds, this.host.getTimestampCopyFormat());
+		this.pauseForMediaAction();
+		const text = timestampClipboardText(this.videoId, time.seconds, this.host.getTimestampCopyFormat());
 		if (win && (await writeClipboardIn(win, text).catch(() => false))) {
-			new Notice(`Copied ${formatClock(seconds)} link.`);
+			new Notice(`Copied ${formatClock(time.seconds)} timestamp.`);
 		} else {
 			new Notice("Could not write to the clipboard.");
 		}
 	}
 
 	/**
-	 * Camera button: pause and let the user drag a rectangle over the picture
-	 * (a click or Enter takes the whole picture, Esc cancels). With `whole`,
-	 * capture the whole picture at once.
+	 * Camera button: let the user drag a rectangle over the picture (a click or
+	 * Enter takes the whole picture, Esc cancels). With `whole`, capture immediately.
 	 */
 	async screenshot(whole = false): Promise<void> {
 		if (!this.player || !this.videoId) return;
@@ -888,23 +903,25 @@ export class VideoView extends ItemView {
 			this.endSnip(null, true);
 			return;
 		}
+		const pausePlayback = this.host.getPausePlaybackOnMediaActions?.() ?? true;
 		if (whole) {
+			if (pausePlayback) this.pausePlayback();
 			await this.captureAndSave(undefined);
 			return;
 		}
-		const resume = this.player.playing;
-		if (resume) this.player.pause();
-		this.beginSnip(resume);
+		const resumeOnCancel = pausePlayback && this.player.playing;
+		if (pausePlayback) this.player.pause();
+		this.beginSnip(resumeOnCancel);
 	}
 
-	private beginSnip(resume: boolean, target?: NoteInsertionTarget, fallbackReason?: string): void {
+	private beginSnip(resumeOnCancel: boolean, target?: NoteInsertionTarget, fallbackReason?: string): void {
 		const layer = this.stageEl.createDiv({ cls: "perplexity-saver-video-snip" });
 		const box = layer.createDiv({ cls: "perplexity-saver-video-snip-box" });
 		layer.createDiv({
 			cls: "perplexity-saver-video-snip-hint",
 			text: "Drag to select an area. Click or press Enter for the whole picture. Esc cancels.",
 		});
-		this.snip = { layer, resume, target, fallbackReason };
+		this.snip = { layer, resumeOnCancel, target, fallbackReason };
 		this.contentEl.focus();
 
 		let start: { x: number; y: number } | null = null;
@@ -951,15 +968,12 @@ export class VideoView extends ItemView {
 		if (!snip) return;
 		this.snip = null;
 		snip.layer.remove();
-		const done = (): void => {
-			if (snip.resume) this.player?.play();
-		};
 		if (cancelled || region === null) {
 			if (snip.target) releaseNoteInsertionAnchor(snip.target.anchor);
-			done();
+			if (snip.resumeOnCancel) this.player?.play();
 			return;
 		}
-		void this.captureAndSave(region, snip.target, snip.fallbackReason).finally(done);
+		void this.captureAndSave(region, snip.target, snip.fallbackReason);
 	}
 
 	/** Capture the visible picture, save it beside the linked note, then insert or copy its Markdown. */
@@ -1049,8 +1063,8 @@ export class VideoView extends ItemView {
 
 interface SnipSession {
 	layer: HTMLElement;
-	/** Resume playback when the snip ends (the video was playing when it started). */
-	resume: boolean;
+	/** Restore playing state only if a paused screenshot selection is cancelled. */
+	resumeOnCancel: boolean;
 	target?: NoteInsertionTarget;
 	fallbackReason?: string;
 }

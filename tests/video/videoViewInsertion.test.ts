@@ -48,7 +48,7 @@ function insertionTarget(doc: string): NoteInsertionTarget {
 	};
 }
 
-function videoView(listStyle: TimestampListStyle = "match") {
+function videoView(listStyle: TimestampListStyle = "match", pausePlaybackOnMediaActions = true) {
 	const file = { path: "Lit.md", basename: "Lit" };
 	const image = { path: "Attachments/capture.png" };
 	const focusNote = vi.fn().mockResolvedValue(undefined);
@@ -64,8 +64,9 @@ function videoView(listStyle: TimestampListStyle = "match") {
 	};
 	const host: VideoViewHost = {
 		getTranscriptHeading: () => "Transcript",
-		getTimestampCopyFormat: () => "list",
+		getTimestampCopyFormat: () => "unordered",
 		getTimestampListStyle: () => listStyle,
+		getPausePlaybackOnMediaActions: () => pausePlaybackOnMediaActions,
 		getShowYoutubeCaptions: () => false,
 		getToolbarCaptureAction: () => "insert", insertTimestamp: async () => {}, insertScreenshot: async () => {},
 		isTranscriptShown: () => false,
@@ -113,6 +114,14 @@ describe("video capture insertion", () => {
 		expect(createdNotices.at(-1)?.message).toBe("Timestamp inserted.");
 	});
 
+	it("inserts a timestamp without pausing when the setting is off", async () => {
+		const target = insertionTarget("");
+		const { view, player } = videoView("match", false);
+		await view.insertTimestampBullet(target);
+		expect(player.pause).not.toHaveBeenCalled();
+		expect(target.anchor.view.state.doc.toString()).toContain("[1:05]");
+	});
+
 	it("uses the configured list style and advances ordered items", async () => {
 		const target = insertionTarget("3. existing");
 		const { view } = videoView("ordered");
@@ -139,6 +148,56 @@ describe("video capture insertion", () => {
 		expect(writeClipboard).not.toHaveBeenCalled();
 		expect(createdNotices.at(-1)?.message).toBe(`Timestamped screenshot inserted.`);
 		expect(image.path).toBe("Attachments/capture.png");
+	});
+
+	it.each([
+		[true, 1],
+		[false, 0],
+	] as const)("applies the screenshot pause setting for whole-picture capture (pause=%s)", async (pauseSetting, pauseCount) => {
+		const { view, player, app } = videoView("match", pauseSetting);
+		await view.screenshot(true);
+		expect(player.pause).toHaveBeenCalledTimes(pauseCount);
+		expect(app.vault.createBinary).toHaveBeenCalledOnce();
+		expect(writeClipboard).toHaveBeenCalledOnce();
+	});
+
+	it("inserts a whole-frame screenshot without pausing when the setting is off", async () => {
+		const target = insertionTarget("");
+		const { view, player } = videoView("match", false);
+		await view.insertScreenshotForNote(target, true);
+		expect(player.pause).not.toHaveBeenCalled();
+		expect(target.anchor.view.state.doc.toString()).toContain("![[capture.png]]");
+	});
+
+	it("pauses through a successful area-copy screenshot but restores playback on cancellation", async () => {
+		const { view, player } = videoView();
+		const play = vi.fn();
+		Object.assign(player, {
+			playing: true,
+			play,
+			pause: vi.fn(() => { Object.assign(player, { playing: false }); }),
+		});
+
+		await view.screenshot(false);
+		expect(player.pause).toHaveBeenCalledOnce();
+		view["endSnip"](undefined, false);
+		await vi.waitFor(() => expect(writeClipboard).toHaveBeenCalledOnce());
+		expect(play).not.toHaveBeenCalled();
+
+		Object.assign(player, { playing: true });
+		await view.screenshot(false);
+		view["endSnip"](null, true);
+		expect(play).toHaveBeenCalledOnce();
+	});
+
+	it("keeps area-copy playback running when the pause setting is off", async () => {
+		const { view, player } = videoView("match", false);
+		const play = vi.fn();
+		Object.assign(player, { playing: true, play });
+		await view.screenshot(false);
+		view["endSnip"](null, true);
+		expect(player.pause).not.toHaveBeenCalled();
+		expect(play).not.toHaveBeenCalled();
 	});
 
 	it("copies a saved screenshot when its note becomes unavailable during saving", async () => {
@@ -214,6 +273,21 @@ describe("video capture insertion", () => {
 		await view.insertScreenshotForNote(undefined, false, "The note is not editable.");
 		view["endSnip"](null, true);
 		expect(app.vault.createBinary).not.toHaveBeenCalled();
+		expect(writeClipboard).not.toHaveBeenCalled();
+	});
+
+	it("restores previous playback when an area-insert selection is cancelled", async () => {
+		const { view, player } = videoView();
+		const play = vi.fn();
+		Object.assign(player, {
+			playing: true,
+			play,
+			pause: vi.fn(() => { Object.assign(player, { playing: false }); }),
+		});
+		await view.insertScreenshotForNote(undefined, false);
+		expect(player.pause).toHaveBeenCalledOnce();
+		view["endSnip"](null, true);
+		expect(play).toHaveBeenCalledOnce();
 		expect(writeClipboard).not.toHaveBeenCalled();
 	});
 
