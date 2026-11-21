@@ -1,4 +1,5 @@
 import { MarkdownView, Menu, Notice, setIcon, setTooltip, type Plugin, type TFile, type WorkspaceLeaf } from "obsidian";
+import { getEditorLeafLocations } from "commons/workspace";
 import { findNoteVideoId } from "./youtubeLinks";
 import { VIDEO_VIEW_TYPE, VideoView } from "./videoView";
 
@@ -39,8 +40,8 @@ export function registerNoteVideoActions(
 	};
 	let disposed = false;
 	const refresh = (changedView?: MarkdownView): void => {
-		const views = new Set(plugin.app.workspace.getLeavesOfType("markdown")
-			.map((leaf) => leaf.view).filter((view): view is MarkdownView => view instanceof MarkdownView));
+		const views = new Set(getEditorLeafLocations(plugin.app)
+			.map(({ leaf }) => leaf.view).filter((view): view is MarkdownView => view instanceof MarkdownView));
 		for (const [view, action] of actions) {
 			if (!views.has(view)) {
 				remove(action);

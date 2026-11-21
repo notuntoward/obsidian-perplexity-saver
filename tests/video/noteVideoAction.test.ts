@@ -26,6 +26,7 @@ function harness() {
 	const app = {
 		workspace: {
 			getLeavesOfType: (type: string) => type === "markdown" ? notes : videos,
+			iterateAllLeaves: (callback: (leaf: WorkspaceLeaf) => void) => notes.forEach(callback),
 			on: (name: string, callback: (...args: unknown[]) => void) => { events.set(name, callback); return {}; },
 			onLayoutReady: (callback: () => void) => callback(),
 		},
@@ -47,12 +48,15 @@ function harness() {
 		open, close, bringForward, togglePart,
 	};
 	const refresh = registerNoteVideoActions(plugin, host);
-	const note = (doc: Document, content: string, name: string) => {
+	const note = (doc: Document, content: string, name: string, containerEl?: HTMLElement) => {
+		if (!doc.defaultView) Object.defineProperty(doc, "defaultView", { configurable: true, value: window });
 		const view = new MarkdownView({} as WorkspaceLeaf);
 		view.file = { path: `${name}.md`, extension: "md", basename: name } as TFile;
-		view.containerEl = doc.body.appendChild(doc.createElement("div"));
+		view.containerEl = containerEl ?? doc.body.appendChild(doc.createElement("div"));
 		view.editor.getValue = () => content;
-		const leaf = { view } as unknown as WorkspaceLeaf;
+		const parent = { children: [] as WorkspaceLeaf[] };
+		const leaf = { view, parent } as unknown as WorkspaceLeaf;
+		parent.children.push(leaf);
 		notes.push(leaf);
 		return { view, leaf, update: (text: string) => { content = text; } };
 	};
@@ -78,6 +82,25 @@ describe("note video header action", () => {
 		await vi.waitFor(() => expect(note.view.containerEl.querySelectorAll("button")).toHaveLength(2));
 		const toggle = note.view.containerEl.querySelector('[aria-label="Open video workspace"]')!;
 		expect(toggle.nextElementSibling?.getAttribute("aria-label")).toBe("Video tools");
+	});
+
+	it("does not duplicate actions while a moved tab reuses the old header DOM", async () => {
+		const h = harness();
+		const old = h.note(document, `https://youtu.be/${first}`, "moving");
+		h.refresh();
+		const headerActions = () =>
+			old.view.containerEl.querySelectorAll(
+				".perplexity-saver-video-workspace-toggle, .perplexity-saver-video-workspace-menu",
+			);
+		await vi.waitFor(() => expect(headerActions()).toHaveLength(2));
+		(old.leaf.parent as unknown as { children: WorkspaceLeaf[] }).children = [];
+		const moved = h.note(document, `https://youtu.be/${first}`, "moving", old.view.containerEl);
+		const addAction = vi.spyOn(moved.view, "addAction");
+
+		h.refresh();
+
+		await vi.waitFor(() => expect(addAction).toHaveBeenCalledTimes(2));
+		expect(headerActions()).toHaveLength(2);
 	});
 
 	it("opens or closes only the clicked note's workspace, including from a pop-out", async () => {
