@@ -21,18 +21,28 @@ const config = Facet.define<ProtectionConfig, ProtectionConfig>({
 	combine: (values) => values[0],
 });
 const setUnlocked = StateEffect.define<boolean>();
-const approvedUpdates = new WeakMap<TFile, string>();
+const approvedUpdates = new WeakMap<TFile, { content: string; allowFrontmatter: boolean }>();
 const parsedRanges = new WeakMap<Text, { heading: string; ranges: TranscriptRange[] }>();
 
-/** Permit only the exact document produced by Saver's confirmed transcript repair. */
-export function approveTranscriptUpdate(file: TFile, content: string): void {
-	approvedUpdates.set(file, content);
+/** Permit an explicitly requested transcript update, including added frontmatter when specified. */
+export function approveTranscriptUpdate(file: TFile, content: string, allowFrontmatter = false): () => void {
+	const approval = { content, allowFrontmatter };
+	approvedUpdates.set(file, approval);
+	return () => {
+		if (approvedUpdates.get(file) === approval) approvedUpdates.delete(file);
+	};
 }
 
 function isApprovedUpdate(transaction: Transaction): boolean {
 	if (transaction.annotation(Transaction.userEvent) !== undefined) return false;
 	const file = transaction.startState.field(editorInfoField, false)?.file;
-	return !!file && approvedUpdates.get(file) === transaction.newDoc.toString();
+	const approved = file && approvedUpdates.get(file);
+	if (!approved) return false;
+	const content = transaction.newDoc.toString();
+	if (content === approved.content) return true;
+	if (!approved.allowFrontmatter) return false;
+	const frontmatter = getFrontMatterInfo(content);
+	return frontmatter.exists && content.slice(frontmatter.contentStart) === approved.content;
 }
 
 /** Parse the current editor text, not the potentially stale vault heading cache. */

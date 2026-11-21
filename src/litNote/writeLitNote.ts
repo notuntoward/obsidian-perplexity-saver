@@ -6,6 +6,7 @@ import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { findLitNoteFile } from "./litNoteFinder";
 import { downloadYouTubeTranscript, getYouTubeUrlFromItem } from "./youtubeTranscript";
+import { approveTranscriptUpdate } from "./transcriptProtection";
 
 import type { NameStyle } from "./bibtexName";
 
@@ -128,7 +129,13 @@ export async function writeLitNote(
 		}
 
 		if (file) {
-			await app.vault.modify(file, contentOrBody);
+			const revokeApproval = approveTranscriptUpdate(file, contentOrBody, !!frontmatter && Object.keys(frontmatter).length > 0);
+			try {
+				await app.vault.modify(file, contentOrBody);
+			} catch (error: unknown) {
+				revokeApproval();
+				throw error;
+			}
 		} else {
 			file = await app.vault.create(normPath, contentOrBody);
 		}

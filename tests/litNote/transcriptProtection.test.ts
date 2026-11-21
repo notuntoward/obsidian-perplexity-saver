@@ -15,6 +15,7 @@ import {
 	unlockTranscript,
 } from "../../src/litNote/transcriptProtection";
 import { createNoteInsertionAnchor, getNoteInsertionPosition, insertAtNoteInsertionAnchor, noteInsertionAnchors } from "../../src/video/noteInsertion";
+import { writeLitNote } from "../../src/litNote/writeLitNote";
 import { createdNotices, editorInfoField, installEditorDomHelpers, MarkdownView } from "../__mocks__/obsidian";
 
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
@@ -183,6 +184,67 @@ describe("transcript editor protection", () => {
 		expect(initial.update({ changes: { from: captionStart, insert: "fresh " } }).state.doc.toString()).toContain("fresh caption");
 		expect(edit(initial, captionStart, captionStart, "fresh ").doc.toString()).toBe(content);
 		expect(edit(initial, captionStart, captionStart, "different ").doc.toString()).toBe(content);
+	});
+
+	it.each([false, true])("updates a locked editor after a literature note overwrite (frontmatter: %s)", async (withFrontmatter) => {
+		const file = { path: "video.md" } as TFile;
+		const original = "Old bibliography\n\n# Transcript\nOld caption\n";
+		const replacement = "New bibliography\n\n# Transcript\nNew caption\n";
+		const finalContent = withFrontmatter ? `---\ntitle: New\n---\n${replacement}` : replacement;
+		let current = EditorState.create({
+			doc: original,
+			extensions: [
+				editorInfoField.init(() => ({ file })),
+				transcriptProtectionExtension({ heading: () => "Transcript", requestUnlock: async () => {} }),
+			],
+		});
+		const applyUpdate = (text: string) => {
+			current = current.update({
+				changes: { from: 0, to: original.length - 1, insert: text.slice(0, -1) },
+			}).state;
+		};
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: () => file,
+				modify: async (_file: TFile, text: string) => {
+					if (!withFrontmatter) applyUpdate(text);
+				},
+			},
+			fileManager: {
+				processFrontMatter: async (_file: TFile, callback: (fm: Record<string, unknown>) => void) => {
+					callback({});
+					applyUpdate(finalContent);
+				},
+			},
+		} as unknown as App;
+
+		await writeLitNote(app, file.path, replacement, withFrontmatter ? { title: "New" } : undefined, file);
+		expect(current.doc.toString()).toBe(finalContent);
+		expect(current.field(transcriptProtectionState).unlocked).toBe(false);
+		const caption = current.doc.toString().indexOf("New caption");
+		expect(edit(current, caption, caption + 3, "Changed").doc.toString()).toBe(finalContent);
+	});
+
+	it("revokes approval when a literature note overwrite fails", async () => {
+		const file = { path: "video.md" } as TFile;
+		const replacement = content.replace("caption", "new caption");
+		const app = {
+			workspace: { layoutReady: true },
+			vault: {
+				getAbstractFileByPath: () => file,
+				modify: async () => { throw new Error("Write failed"); },
+			},
+		} as unknown as App;
+		await expect(writeLitNote(app, file.path, replacement, undefined, file)).rejects.toThrow("Write failed");
+		const initial = EditorState.create({
+			doc: content,
+			extensions: [
+				editorInfoField.init(() => ({ file })),
+				transcriptProtectionExtension({ heading: () => "Transcript", requestUnlock: async () => {} }),
+			],
+		});
+		expect(initial.update({ changes: { from: captionStart, insert: "new " } }).state.doc.toString()).toBe(content);
 	});
 
 	it.each([false, true])("blocks automatic captures even when unlocked (%s)", (unlocked) => {
