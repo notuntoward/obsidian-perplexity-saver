@@ -4,7 +4,15 @@ import { EditorView } from "@codemirror/view";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const flashEditorLine = vi.hoisted(() => vi.fn());
-vi.mock("commons/flash", () => ({ flashEditorLine }));
+vi.mock("commons/flash", () => ({
+	flashEditorLine,
+	LINE_FLASH_DEFAULT_PROFILE: {
+		mode: "centered",
+		durationMs: 1000,
+		sizeChars: 15,
+		opacity: 0.8,
+	},
+}));
 
 import {
 	blockInsertion,

@@ -182,55 +182,46 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		});
 		vi.spyOn(plugin, "loadData").mockResolvedValue({});
 		await plugin.loadSettings();
+		expect(plugin.settings.insertFlashMode).toBe("centered");
 		expect(plugin.settings.insertFlashUseThemeColors).toBe(true);
 		expect(plugin.settings.insertFlashColorLight).toBe("#6496ff");
 		expect(plugin.settings.insertFlashColorDark).toBe("#6496ff");
 
 		const tab = new PerplexitySaverSettingTab({} as App, plugin);
 		const definitions = tab.getSettingDefinitions();
-		const group = definitions.at(-1);
-		expect(group && "type" in group && group.type === "group" && group.heading).toBe("Insertion marking");
-		if (!group || !("type" in group) || group.type !== "group" || !group.items) {
+		const marking = definitions.at(-2);
+		expect(marking && "type" in marking && marking.type === "group" && marking.heading).toBe("Insertion marking");
+		if (!marking || !("type" in marking) || marking.type !== "group" || !marking.items) {
 			throw new Error("Missing insertion marking settings");
 		}
-		expect(group.items.map((item) => item.name)).toEqual([
-			"Show insertion target",
-			"Highlight inserted line",
-			"Inserted line highlight duration",
-			"Inserted line highlight width",
-			"Use theme colors",
-			"Light theme color",
-			"Dark theme color",
-		]);
+		expect(marking.items.map((item) => item.name)).toEqual(["Show insertion target"]);
 
-		const controls = Object.fromEntries(group.items.map((item) => [
+		const flash = definitions.at(-1);
+		expect(flash && "type" in flash && flash.type === "group" && flash.heading).toBe("Insertion flash");
+		if (!flash || !("type" in flash) || flash.type !== "group" || !flash.items) {
+			throw new Error("Missing insertion flash settings");
+		}
+		expect(flash.items.map((item) => item.name)).toEqual(["Direction", "Duration", "Width", "Colors"]);
+
+		const controls = Object.fromEntries(flash.items.map((item) => [
 			item.name,
 			"control" in item ? item.control : undefined,
-		])) as Record<string, { disabled?: () => boolean }>;
-		expect(controls["Light theme color"]).toMatchObject({ type: "color", key: "insertFlashColorLight" });
-		expect(controls["Dark theme color"]).toMatchObject({ type: "color", key: "insertFlashColorDark" });
-		const disabled = (name: string): boolean => controls[name].disabled?.() ?? false;
+		])) as Record<string, { disabled?: () => boolean } | undefined>;
+		expect(controls.Direction).toMatchObject({ type: "dropdown", key: "insertFlashMode" });
+		expect(flash.items[3]).toMatchObject({ name: "Colors", render: expect.any(Function) });
+		expect(flash.items[0]).toMatchObject({ aliases: expect.arrayContaining(["Highlight inserted line"]) });
+		const disabled = (name: string): boolean => controls[name]?.disabled?.() ?? false;
 
 		plugin.settings.insertFlashMode = "off";
 		for (const name of [
-			"Inserted line highlight duration",
-			"Inserted line highlight width",
-			"Use theme colors",
-			"Light theme color",
-			"Dark theme color",
+			"Duration",
+			"Width",
 		]) expect(disabled(name)).toBe(true);
 
 		plugin.settings.insertFlashMode = "left";
 		plugin.settings.insertFlashUseThemeColors = true;
-		expect(disabled("Inserted line highlight duration")).toBe(false);
-		expect(disabled("Inserted line highlight width")).toBe(false);
-		expect(disabled("Use theme colors")).toBe(false);
-		expect(disabled("Light theme color")).toBe(true);
-		expect(disabled("Dark theme color")).toBe(true);
-
-		plugin.settings.insertFlashUseThemeColors = false;
-		expect(disabled("Light theme color")).toBe(false);
-		expect(disabled("Dark theme color")).toBe(false);
+		expect(disabled("Duration")).toBe(false);
+		expect(disabled("Width")).toBe(false);
 	});
 
 	const createMockPlugin = () => ({

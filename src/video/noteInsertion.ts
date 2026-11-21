@@ -1,7 +1,7 @@
 import { StateEffect, StateField, type EditorState, type Text } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { GFM, parser } from "@lezer/markdown";
-import { flashEditorLine, type LineFlashMode } from "commons/flash";
+import { flashEditorLine, LINE_FLASH_DEFAULT_PROFILE, type LineFlashMode } from "commons/flash";
 import { getActiveLeafInFocusedWindow, getEditorLeafLocations } from "commons/workspace";
 import { writeClipboardIn } from "commons/windows";
 import { getFrontMatterInfo, MarkdownView, Notice, type App, type WorkspaceLeaf } from "obsidian";
@@ -509,7 +509,7 @@ export function flashInsertedLine(view: EditorView, flash: InsertionFlashSetting
 			if (coords) flashEditorLine(view, coords, {
 				mode,
 				color,
-				opacity: 0.8,
+				opacity: LINE_FLASH_DEFAULT_PROFILE.opacity,
 				sizeChars: flash.sizeChars,
 				durationMs: flash.durationMs,
 			});

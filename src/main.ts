@@ -83,7 +83,7 @@ import {
 	type UnavailableInsertionTarget,
 	type TimestampListStyle,
 } from "./video/noteInsertion";
-import { formatFlashDuration, formatFlashSize, LINE_FLASH_DURATION, LINE_FLASH_MODE_LABELS, LINE_FLASH_SIZE, type LineFlashMode } from "commons/flash";
+import { createLineFlashSettingsGroup, LINE_FLASH_DEFAULT_PROFILE, type LineFlashMode } from "commons/flash";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
 import { findNoteVideoId, linkUrlAt, parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
@@ -240,9 +240,9 @@ const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	timestampListStyle: "match",
 	pausePlaybackOnMediaActions: true,
 	showInsertionTarget: true,
-	insertFlashMode: "left",
-	insertFlashDuration: LINE_FLASH_DURATION.default,
-	insertFlashSize: LINE_FLASH_SIZE.default,
+	insertFlashMode: LINE_FLASH_DEFAULT_PROFILE.mode,
+	insertFlashDuration: LINE_FLASH_DEFAULT_PROFILE.durationMs,
+	insertFlashSize: LINE_FLASH_DEFAULT_PROFILE.sizeChars,
 	insertFlashUseThemeColors: true,
 	insertFlashColorLight: "#6496ff",
 	insertFlashColorDark: "#6496ff",
@@ -2321,7 +2321,8 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			}
 		}
 		await this.plugin.saveSettings();
-		this.refreshDomState();
+		if (key === "insertFlashMode") this.update();
+		else this.refreshDomState();
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
@@ -2714,70 +2715,42 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 						desc: "Mark the safe insertion location while the associated note editor is unfocused. The marker does not change note text or move the cursor.",
 						control: { type: "toggle", key: "showInsertionTarget" },
 					},
-					{
-						name: "Highlight inserted line",
-						desc: "Briefly flash the note line where a timestamp or screenshot was inserted, so you can see where it went.",
-						control: {
-							type: "dropdown",
-							key: "insertFlashMode",
-							options: { off: "Off", ...LINE_FLASH_MODE_LABELS },
-						},
-					},
-					{
-						name: "Inserted line highlight duration",
-						control: {
-							type: "slider",
-							key: "insertFlashDuration",
-							min: LINE_FLASH_DURATION.min,
-							max: LINE_FLASH_DURATION.max,
-							step: LINE_FLASH_DURATION.step,
-							displayFormat: formatFlashDuration,
-							disabled: () => this.plugin.settings.insertFlashMode === "off",
-						},
-					},
-					{
-						name: "Inserted line highlight width",
-						control: {
-							type: "slider",
-							key: "insertFlashSize",
-							min: LINE_FLASH_SIZE.min,
-							max: LINE_FLASH_SIZE.max,
-							step: LINE_FLASH_SIZE.step,
-							displayFormat: formatFlashSize,
-							disabled: () => this.plugin.settings.insertFlashMode === "off",
-						},
-					},
-					{
-						name: "Use theme colors",
-						desc: "Use the Obsidian accent color for insertion highlights. Turn off to choose separate colors for light and dark themes.",
-						control: {
-							type: "toggle",
-							key: "insertFlashUseThemeColors",
-							disabled: () => this.plugin.settings.insertFlashMode === "off",
-						},
-					},
-					{
-						name: "Light theme color",
-						desc: "Insertion highlight color in a light theme.",
-						control: {
-							type: "color",
-							key: "insertFlashColorLight",
-							disabled: () => this.plugin.settings.insertFlashMode === "off" ||
-								this.plugin.settings.insertFlashUseThemeColors,
-						},
-					},
-					{
-						name: "Dark theme color",
-						desc: "Insertion highlight color in a dark theme.",
-						control: {
-							type: "color",
-							key: "insertFlashColorDark",
-							disabled: () => this.plugin.settings.insertFlashMode === "off" ||
-								this.plugin.settings.insertFlashUseThemeColors,
-						},
-					},
 				],
 			},
+			createLineFlashSettingsGroup({
+				heading: "Insertion flash",
+				mode: {
+					key: "insertFlashMode",
+					aliases: ["Highlight inserted line", "Insertion flash direction"],
+					desc: "Briefly highlight the note line where a timestamp or screenshot was inserted, so you can see where it went.",
+				},
+				duration: {
+					key: "insertFlashDuration",
+					aliases: ["Inserted line highlight duration"],
+					disabled: () => this.plugin.settings.insertFlashMode === "off",
+				},
+				size: {
+					key: "insertFlashSize",
+					aliases: ["Inserted line highlight width", "Inserted line highlight size"],
+					disabled: () => this.plugin.settings.insertFlashMode === "off",
+				},
+				colors: {
+					desc: "Use Obsidian's accent color, or choose separate insertion-flash colors for light and dark themes.",
+					disabled: () => this.plugin.settings.insertFlashMode === "off",
+					useTheme: {
+						get: () => this.plugin.settings.insertFlashUseThemeColors,
+						set: (value) => this.setControlValue("insertFlashUseThemeColors", value),
+					},
+					light: {
+						get: () => this.plugin.settings.insertFlashColorLight,
+						set: (value) => this.setControlValue("insertFlashColorLight", value),
+					},
+					dark: {
+						get: () => this.plugin.settings.insertFlashColorDark,
+						set: (value) => this.setControlValue("insertFlashColorDark", value),
+					},
+				},
+			}, this.containerEl?.ownerDocument),
 		];
 	}
 

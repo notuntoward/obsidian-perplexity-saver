@@ -355,9 +355,12 @@ Clicking a YouTube link that has a time (`&t=83`, `?t=1m23s`, `#t=83`) plays at 
 
 ### Insertion Marking
 - **Show insertion target** (default: on): Mark the adjusted insertion location while the associated note editor is unfocused, without moving its cursor or changing Markdown. Off-screen/folded targets are not scrolled into view or unfolded merely to show the marker.
-- **Highlight inserted line** (default: left to right): Briefly flashes the note line where a timestamp or screenshot was inserted. Choose *Off*, *Centered around cursor*, *Left to right*, or *Right to left*.
-- **Inserted line highlight duration** (200-1500 ms, default 1000 ms) and **width** (4-30 characters, default 15) tune the shared `commons/flash` renderer also used by Visible Cursor.
-- **Use theme colors** (default: on): Use Obsidian's accent color for the flash. Turn it off to set separate **Light theme color** and **Dark theme color** values. While *Highlight inserted line* is *Off*, the duration, width and color controls are dimmed.
+- **Insertion flash**: A compact **Direction / Duration / Width / Colors** group highlights the note line where a timestamp or screenshot was inserted. Descriptions appear on hover or keyboard focus to keep the rows short.
+- **Direction** (default: centered around the cursor): Choose *Off*, *Centered around cursor*, *Left to right*, or *Right to left*. Saver uses the same centered visual defaults as Visible Cursor, while retaining its own saved setting.
+- **Duration** (200-1500 ms, default 1000 ms) and **Width** (4-30 characters, default 15) tune the shared `commons/flash` renderer also used by Visible Cursor.
+- **Colors**: The theme toggle and light/dark swatches share one row. Use Obsidian's accent color by default, or turn the toggle off for separate light- and dark-theme colors. The swatches stay visible but dimmed while theme colors are active, so the available override is discoverable without looking active. Direction set to *Off* dims the duration, width and color controls.
+- Flash controls share one left edge: the direction selector sizes to its content, duration and width sliders stay compact, and narrow panes stack the same controls responsively.
+- The plugins do not read each other's settings and neither requires the other to be installed; the common appearance comes from the `commons/flash` code bundled into each plugin.
 
 ---
 
