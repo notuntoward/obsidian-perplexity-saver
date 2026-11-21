@@ -208,7 +208,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		if (!flash || !("type" in flash) || flash.type !== "group" || !flash.items) {
 			throw new Error("Missing insertion flash settings");
 		}
-		expect(flash.items.map((item) => item.name)).toEqual(["Direction", "Duration", "Width", "Colors"]);
+		expect(flash.items.map((item) => item.name)).toEqual(["Flash Style", "Duration", "Width", "Colors"]);
 		const calls = vi.mocked(createLineFlashSettingsGroup).mock.calls;
 		expect(calls.at(-1)?.[0].colors?.themeFlash()).toEqual(insertionThemeFlashAppearance());
 
@@ -216,7 +216,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			item.name,
 			"control" in item ? item.control : undefined,
 		])) as Record<string, { disabled?: () => boolean } | undefined>;
-		expect(controls.Direction).toMatchObject({ type: "dropdown", key: "insertFlashMode" });
+		expect(controls["Flash Style"]).toMatchObject({ type: "dropdown", key: "insertFlashMode" });
 		expect(flash.items[3]).toMatchObject({ name: "Colors", render: expect.any(Function) });
 		expect(flash.items[0]).toMatchObject({ aliases: expect.arrayContaining(["Highlight inserted line"]) });
 		const disabled = (name: string): boolean => controls[name]?.disabled?.() ?? false;
