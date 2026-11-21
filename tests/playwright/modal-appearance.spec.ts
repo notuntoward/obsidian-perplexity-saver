@@ -76,7 +76,7 @@ for (const theme of ["light", "dark"]) {
 		await page.addScriptTag({ content: `
 			const token = { player: {}, revision: 1 };
 			SaverTime.openGoToTime({workspace: {iterateAllLeaves() {}, on() {}, offref() {}}}, {
-				getPlaybackToken: () => token, getDuration: () => 4000,
+				getPlaybackToken: () => token, getVideoId: () => "dQw4w9WgXcQ", getDuration: () => 4000,
 				seekTo: seconds => { window.sought = seconds; }
 			});
 		` });
@@ -87,7 +87,7 @@ for (const theme of ["light", "dark"]) {
 		await expect(modal.locator(".modal-title")).toHaveCSS("color", theme === "light" ? "rgb(38, 38, 38)" : "rgb(222, 222, 222)");
 		await expect(modal.locator(".modal-title")).toHaveCSS("font-size", "24px");
 		await expect(modal.locator("[data-commons-modal-icon], .commons-modal-hints, .commons-modal-intro")).toHaveCount(0);
-		await expect(input).toHaveAccessibleDescription("Seconds, m:ss, or h:mm:ss.");
+		await expect(input).toHaveAccessibleDescription("Seconds, m:ss, h:mm:ss, or a timestamped YouTube URL. Paste to seek.");
 		await expect(modal.locator(".commons-modal-description")).toHaveCSS("font-size", "14px");
 		await expect(modal.locator(".commons-modal-actions")).toHaveCSS("border-top-width", "0px");
 		for (const width of [1024, 320]) {
@@ -129,6 +129,20 @@ for (const theme of ["light", "dark"]) {
 		await input.press("Enter");
 		await expect(modal).toHaveCount(0);
 		expect(await page.evaluate("window.sought")).toBe(83);
+		await page.addScriptTag({ content: `
+			SaverTime.openGoToTime({workspace: {iterateAllLeaves() {}, on() {}, offref() {}}}, {
+				getPlaybackToken: () => token, getVideoId: () => "dQw4w9WgXcQ", getDuration: () => 4000,
+				seekTo: seconds => { window.sought = seconds; }
+			});
+		` });
+		const pasteInput = page.locator(".commons-modal").getByRole("textbox", { name: "Video timestamp" });
+		await pasteInput.evaluate((el) => {
+			const clipboard = new DataTransfer();
+			clipboard.setData("text/plain", "https://youtu.be/dQw4w9WgXcQ?si=share&t=125");
+			el.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+		});
+		await expect(page.locator(".commons-modal")).toHaveCount(0);
+		expect(await page.evaluate("window.sought")).toBe(125);
 		await page.locator("#native").evaluate(el => {
 			el.classList.add("commons-modal");
 			const message = el.ownerDocument.createElement("div");
