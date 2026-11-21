@@ -18,6 +18,7 @@ import {
 	blockInsertion,
 	createNoteInsertionAnchor,
 	flashInsertedLine,
+	insertionThemeFlashAppearance,
 	getNoteInsertionPosition,
 	insertAtNoteInsertionAnchor,
 	insertionMessage,
@@ -212,6 +213,7 @@ describe("inserted line flash colors", () => {
 	}
 
 	it("uses the theme accent without resolving a custom color", () => {
+		expect(insertionThemeFlashAppearance()).toEqual({ color: "var(--interactive-accent)", opacity: 0.8 });
 		renderFlash(document);
 		expect(flashEditorLine).toHaveBeenCalledWith(
 			expect.anything(),

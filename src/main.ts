@@ -72,6 +72,7 @@ import {
 	createNoteInsertionAnchor,
 	copyInsertionFallback,
 	flashInsertedLine,
+	insertionThemeFlashAppearance,
 	insertionMessage,
 	insertPlaybackTimestamp,
 	noteInsertionAnchors,
@@ -2737,6 +2738,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 				colors: {
 					desc: "Use Obsidian's accent color, or choose separate insertion-flash colors for light and dark themes.",
 					disabled: () => this.plugin.settings.insertFlashMode === "off",
+					themeFlash: insertionThemeFlashAppearance,
 					useTheme: {
 						get: () => this.plugin.settings.insertFlashUseThemeColors,
 						set: (value) => this.setControlValue("insertFlashUseThemeColors", value),

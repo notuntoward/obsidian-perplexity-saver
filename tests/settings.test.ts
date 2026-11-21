@@ -1,7 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import PerplexitySaverPlugin, { PerplexitySaverSettingTab } from "../src/main";
 import type { App, SettingDefinitionGroup } from "obsidian";
+import { createLineFlashSettingsGroup } from "commons/flash";
+import { insertionThemeFlashAppearance } from "../src/video/noteInsertion";
 import { HeadlineMethod } from "../src/normalize/headlines";
+
+vi.mock("commons/flash", async (original) => {
+	const actual = await original<typeof import("commons/flash")>();
+	return { ...actual, createLineFlashSettingsGroup: vi.fn(actual.createLineFlashSettingsGroup) };
+});
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
@@ -202,6 +209,8 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 			throw new Error("Missing insertion flash settings");
 		}
 		expect(flash.items.map((item) => item.name)).toEqual(["Direction", "Duration", "Width", "Colors"]);
+		const calls = vi.mocked(createLineFlashSettingsGroup).mock.calls;
+		expect(calls.at(-1)?.[0].colors?.themeFlash()).toEqual(insertionThemeFlashAppearance());
 
 		const controls = Object.fromEntries(flash.items.map((item) => [
 			item.name,

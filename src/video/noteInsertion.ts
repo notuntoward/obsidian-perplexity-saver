@@ -496,20 +496,26 @@ export interface InsertionFlashSettings {
 	darkColor: string;
 }
 
+export function insertionThemeFlashAppearance(): { color: string; opacity: number } {
+	return { color: "var(--interactive-accent)", opacity: LINE_FLASH_DEFAULT_PROFILE.opacity };
+}
+
 /** Briefly highlight the line at the editor's cursor, after CodeMirror has scrolled it into view. */
 export function flashInsertedLine(view: EditorView, flash: InsertionFlashSettings): void {
 	const mode = flash.mode;
 	if (mode === "off") return;
-	const color = flash.useThemeColors
-		? "var(--interactive-accent)"
-		: view.dom.ownerDocument.body.classList.contains("theme-dark") ? flash.darkColor : flash.lightColor;
+	const appearance = flash.useThemeColors
+		? insertionThemeFlashAppearance()
+		: {
+			color: view.dom.ownerDocument.body.classList.contains("theme-dark") ? flash.darkColor : flash.lightColor,
+			opacity: LINE_FLASH_DEFAULT_PROFILE.opacity,
+		};
 	view.requestMeasure({
 		read: () => view.dom.isConnected ? view.coordsAtPos(view.state.selection.main.head, -1) : null,
 		write: (coords) => {
 			if (coords) flashEditorLine(view, coords, {
 				mode,
-				color,
-				opacity: LINE_FLASH_DEFAULT_PROFILE.opacity,
+				...appearance,
 				sizeChars: flash.sizeChars,
 				durationMs: flash.durationMs,
 			});
