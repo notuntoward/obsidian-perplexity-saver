@@ -69,6 +69,8 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 - **Zotero Local API enabled**: Check `Zotero -> Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero`.
 - **Better BibTeX** (optional, highly recommended): Provides reliable citekeys.
 
+Zotero's linked attachment base directory controls relative paths, not where files are moved. Configure ZotMoov's destination inside the vault if attachment links should open in Obsidian. When creating a literature note, the plugin links the actual indexed vault file; it warns and marks an attachment unavailable when that file is outside the vault or not indexed. Open those attachments from Zotero instead. Existing notes are not updated automatically.
+
 ### Commands
 
 - **"Import AI dialog from clipboard"** - parses clipboard text into a new note with formatted callouts and sources.

@@ -319,6 +319,11 @@ export class ItemView extends Component {
 	}
 }
 
+export class FileSystemAdapter {
+	constructor(private basePath = "") {}
+	getBasePath(): string { return this.basePath; }
+}
+
 export class TFile {
 	path: string;
 	parent: { path: string } | null;

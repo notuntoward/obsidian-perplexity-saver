@@ -218,7 +218,8 @@ export async function writeNote(
 		}
 	}
 
-	const body = buildLitNoteBody(app, settings, item, transcript);
+	await ensureWorkspaceReady(app);
+	const body = buildLitNoteBody(app, settings, item, transcript, existing?.path ?? notePath);
 	const frontmatter = buildLitNoteFrontmatter(item, settings);
 
 	if (!frontmatter.authors || (Array.isArray(frontmatter.authors) && frontmatter.authors.length === 0)) {

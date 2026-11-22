@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { App, TFile } from "obsidian";
+import path from "path";
+import { App, FileSystemAdapter, TFile } from "obsidian";
 import { createdNotices } from "../__mocks__/obsidian";
 import {
 	ensureFolder,
@@ -246,6 +247,41 @@ describe("writeLitNote", () => {
 		expect(fmApplied.citekey).toBe("Sample2024");
 		expect(fmApplied.title).toBe("Sample Article");
 		expect(fmApplied.tags).toEqual([]);
+	});
+
+	it("waits for the vault index before resolving attachment links when overwriting a note", async () => {
+		const base = path.resolve("test-vault");
+		const attachment = makeMockFile("attachments/paper.pdf");
+		const note = makeMockFile("elsewhere/existing.md");
+		let ready: (() => void) | undefined;
+		let content = "";
+		const workspace = {
+			layoutReady: false,
+			onLayoutReady: vi.fn((callback: () => void) => { ready = callback; }),
+		};
+		const generateMarkdownLink = vi.fn(() => "[[attachments/paper.pdf|PDF]]");
+		const app = {
+			workspace,
+			vault: {
+				adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+				getAbstractFileByPath: vi.fn((p: string) => workspace.layoutReady && p === attachment.path ? attachment : null),
+				createFolder: vi.fn(),
+				modify: vi.fn(async (_file: TFile, body: string) => { content = body; }),
+			},
+			fileManager: { generateMarkdownLink, processFrontMatter: vi.fn() },
+		} as unknown as App;
+		const writing = writeNote(app, { litNotesFolder: "lit" }, {
+			title: "Paper",
+			citekey: "paper",
+			creators: [{ firstName: "Jane", lastName: "Doe", creatorType: "author" }],
+			attachments: [{ path: path.join(base, "attachments", "paper.pdf") }],
+		}, note);
+		expect(app.vault.modify).not.toHaveBeenCalled();
+		workspace.layoutReady = true;
+		ready?.();
+		await writing;
+		expect(content).toContain("**[[attachments/paper.pdf|PDF]]**");
+		expect(generateMarkdownLink).toHaveBeenCalledWith(attachment, note.path, "", "PDF");
 	});
 
 	it("pops up a warning Notice when unable to create authors file property", async () => {

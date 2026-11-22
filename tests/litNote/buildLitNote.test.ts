@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import path from "path";
+import { describe, expect, it, vi } from "vitest";
+import { App, FileSystemAdapter, TFile } from "obsidian";
+import { createdNotices } from "../__mocks__/obsidian";
 import {
 	buildAliases,
 	buildInfoCalloutLinks,
@@ -27,19 +30,15 @@ describe("Lit Note Builder", () => {
 	});
 
 	describe("Callout components", () => {
-		it("builds links with all attachment types using itemkey", () => {
+		it("builds links with resolved attachments using itemkey", () => {
 			const item: ZoteroItemPayload = {
 				title: "Test",
 				citekey: "test",
 				itemkey: "VVUZBQM2",
 				DOI: "10.1234/test",
 				url: "https://example.com",
-				attachments: [
-					{ path: "/path/to/doc.pdf" },
-					{ path: "C:\\Users\\Bob\\file.epub" },
-				],
 			};
-			const links = buildInfoCalloutLinks(item);
+			const links = buildInfoCalloutLinks(item, ["**[[doc.pdf|PDF]]**", "**[[file.epub|EPUB]]**"]);
 			expect(links).toBe("[**Zotero**](zotero://select/library/items/VVUZBQM2) | [**DOI**](https://doi.org/10.1234/test) | [**URL**](https://example.com) | **[[doc.pdf|PDF]]** | **[[file.epub|EPUB]]**");
 		});
 
@@ -215,6 +214,55 @@ describe("Lit Note Builder", () => {
 	});
 
 	describe("Full note body Regressions", () => {
+		it("links the actual in-vault attachment rather than another file with the same name", () => {
+			createdNotices.length = 0;
+			const base = path.resolve("test-vault");
+			const file = Object.assign(new TFile(), { path: "attachments/paper.pdf" });
+			const generateMarkdownLink = vi.fn(() => "[[attachments/paper.pdf|PDF]]");
+			const app = {
+				vault: {
+					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+					getAbstractFileByPath: vi.fn((p: string) => p === file.path ? file : null),
+				},
+				fileManager: { generateMarkdownLink },
+			} as unknown as App;
+			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+				title: "Paper",
+				citekey: "paper",
+				attachments: [{ path: path.join(base, "attachments", "paper.pdf") }],
+			});
+			expect(body).toContain("**[[attachments/paper.pdf|PDF]]**");
+			expect(generateMarkdownLink).toHaveBeenCalledWith(file, "lit/paper.md", "", "PDF");
+			expect(createdNotices).toHaveLength(0);
+		});
+
+		it("warns and does not create a misleading link for outside or unindexed attachments", () => {
+			createdNotices.length = 0;
+			const base = path.resolve("test-vault");
+			const outside = path.join(`${base}-other`, "paper.pdf");
+			const missing = path.join(base, "attachments", "missing.pdf");
+			const app = {
+				vault: {
+					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+					getAbstractFileByPath: vi.fn(() => null),
+				},
+				fileManager: { generateMarkdownLink: vi.fn() },
+			} as unknown as App;
+			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+				title: "Paper",
+				citekey: "paper",
+				attachments: [{ path: outside }, { path: missing }, { title: "Unknown PDF" }],
+			});
+			expect(body).not.toContain("[[paper.pdf|PDF]]");
+			expect(body).toContain("**PDF unavailable in vault**");
+			expect(app.fileManager.generateMarkdownLink).not.toHaveBeenCalled();
+			expect(createdNotices).toHaveLength(1);
+			expect(createdNotices[0].message).toContain(outside);
+			expect(createdNotices[0].message).toContain(missing);
+			expect(createdNotices[0].message).toContain("Unknown PDF: no file path supplied by Zotero");
+			expect(createdNotices[0].message).toContain("ZotMoov destination");
+		});
+
 		it("assembles the complete note with clean callouts and all branches", () => {
 			const item: ZoteroItemPayload = {
 				title: "Test Note",

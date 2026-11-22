@@ -13,7 +13,8 @@
  *   - infoCalloutPrefix: abstract block (if present)
  */
 
-import { htmlToMarkdown, App } from "obsidian";
+import path from "path";
+import { htmlToMarkdown, App, FileSystemAdapter, Notice, TFile } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { findLitNoteForCitekey } from "../zotero/matcher";
 import { normalizeTranscriptHeading } from "./transcriptSection";
@@ -106,14 +107,6 @@ export function buildAliases(title?: string, existingAliases?: unknown): string[
 }
 
 /**
- * Return the last path component of a file path, normalising Windows
- * backslashes. Mirrors the Jinja2 `basename` macro.
- */
-function basenameForLink(filePath: string): string {
-	return filePath.replace(/\\/g, "/").split("/").pop() ?? filePath;
-}
-
-/**
  * Strip URLs, DOIs, and orphaned commas from a BBT-formatted bibliography
  * string. Ported from `cleanup_bibliography_text()` in the Python receiver.
  */
@@ -162,10 +155,10 @@ const ATTACHMENT_LABELS: Record<string, string> = {
 /**
  * Build the `[!info]-` callout title link bar.
  * Always includes the Zotero desktop select URI (zotero://select/library/items/<itemkey>);
- * adds DOI, URL, and Wikilinked attachment links only when the corresponding field is present.
+ * Adds DOI, URL, and resolved attachment links when present.
  * Ported from `build_info_callout_links()`.
  */
-export function buildInfoCalloutLinks(item: ZoteroItemPayload): string {
+export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: string[] = []): string {
 	let zoteroUri = "";
 
 	if (item.itemkey) {
@@ -188,20 +181,49 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload): string {
 		links.push(`[**URL**](${item.url})`);
 	}
 
-	for (const att of item.attachments ?? []) {
-		const rawPath = (att).path;
-		const path = typeof rawPath === "string" ? rawPath : "";
-		const lowerPath = path.toLowerCase();
-		for (const [suffix, label] of Object.entries(ATTACHMENT_LABELS)) {
-			if (lowerPath.endsWith(suffix)) {
-				const base = basenameForLink(path);
-				links.push(`**[[${base}|${label}]]**`);
-				break;
-			}
-		}
-	}
+	links.push(...attachmentLinks);
 
 	return links.join(" | ");
+}
+
+function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string): string[] {
+	const links: string[] = [];
+	const unavailable: string[] = [];
+	for (const attachment of item.attachments ?? []) {
+		const attachmentPath = attachment.path;
+		if (!attachmentPath) {
+			if (!attachment.url) {
+				links.push("**Attachment unavailable in vault**");
+				unavailable.push(`${attachment.title || "Attachment"}: no file path supplied by Zotero`);
+			}
+			continue;
+		}
+		const label = ATTACHMENT_LABELS[path.extname(attachmentPath).toLowerCase()];
+		if (!label) continue;
+
+		const adapter = app.vault.adapter;
+		const relative = adapter instanceof FileSystemAdapter && path.isAbsolute(attachmentPath)
+			? path.relative(adapter.getBasePath(), attachmentPath)
+			: "";
+		const insideVault = relative && relative !== ".." &&
+			!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+		const file = insideVault
+			? app.vault.getAbstractFileByPath(relative.split(path.sep).join("/"))
+			: null;
+		if (file instanceof TFile) {
+			links.push(`**${app.fileManager.generateMarkdownLink(file, sourcePath, "", label)}**`);
+		} else {
+			links.push(`**${label} unavailable in vault**`);
+			unavailable.push(attachmentPath);
+		}
+	}
+	if (unavailable.length) {
+		new Notice(
+			`Zotero attachments unavailable in the Obsidian vault:\n${unavailable.join("\n")}\nCheck the ZotMoov destination and vault location, or open them in Zotero.`,
+			15000
+		);
+	}
+	return links;
 }
 
 /**
@@ -302,9 +324,11 @@ export function buildLitNoteBody(
 	app: App,
 	settings: { litNotesFolder?: string; transcriptHeading?: string },
 	item: ZoteroItemPayload,
-	transcript?: string
+	transcript?: string,
+	notePath?: string
 ): string {
-	const calloutLinks = buildInfoCalloutLinks(item);
+	const sourcePath = notePath ?? `${settings.litNotesFolder ?? ""}/${item.citekey || item.itemkey || "untitled"}.md`;
+	const calloutLinks = buildInfoCalloutLinks(item, buildAttachmentLinks(app, item, sourcePath));
 	const calloutPrefix = buildInfoCalloutPrefix(item);
 
 	// Info callout header line
