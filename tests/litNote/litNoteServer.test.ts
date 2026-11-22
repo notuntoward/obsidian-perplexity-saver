@@ -154,6 +154,19 @@ describe("Lit Note Server", () => {
 		expect(server.close).toHaveBeenCalled();
 	});
 
+	it.each(["create", "open"])("explains how to resolve a missing citation key for %s", async (action) => {
+		const { app, created } = makeApp();
+		const json = await post(app, {
+			action, data: [{ citekey: "", title: "Missing key" }],
+		});
+		expect(json.results).toEqual([{
+			citekey: "",
+			status: "error",
+			error: "Missing citation key. Enter one in Zotero or check Better BibTeX.",
+		}]);
+		expect(created).toHaveLength(0);
+	});
+
 	describe("create action", () => {
 		it.each(["create", "open"])("signals transcript folding after final cursor placement for %s", async (action) => {
 			const { app } = makeApp();

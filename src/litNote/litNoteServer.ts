@@ -326,7 +326,7 @@ async function handleCreateBatch(
 			results.push({
 				citekey: "",
 				status: "error",
-				error: "Payload missing citekey",
+				error: "Missing citation key. Enter one in Zotero or check Better BibTeX.",
 			});
 			continue;
 		}
@@ -568,7 +568,7 @@ async function handleOpenBatch(
 			results.push({
 				citekey: "",
 				status: "error",
-				error: "Missing citekey",
+				error: "Missing citation key. Enter one in Zotero or check Better BibTeX.",
 			});
 			continue;
 		}

@@ -7,7 +7,7 @@
 
 This plugin saves conversational threads from Perplexity.ai into your Obsidian vault, retaining proper Markdown formatting, deep-linking citations to footnotes, and generating clean metadata headers for fast search and archival.
 
-It also supports rich integration with Zotero 7/8/9 to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
+It also supports integration with Zotero to automatically link your Perplexity sources to your local Zotero library, and allows creating Zotero literature notes directly into Obsidian via a companion Zotero plugin.
 
 The time-entry, literature-note decision and author-format dialogs use the shared
 `commons/modal` appearance: plain headings, readable unshaded text, aligned form
@@ -63,13 +63,28 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 1. **Source Relinking**: Automatically matches and relinks `# Sources` in your Perplexity saves to your local Zotero items or existing literature notes.
 2. **Local HTTP Server**: Runs a zero-configuration local server on port `27124` that allows Zotero to instantly push new literature notes directly into your vault.
 
-### Prerequisites & Dependencies
-- **Zotero 7/8/9** running locally.
-- **[Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion)**: The companion plugin installed in Zotero 7/8/9. (This provides the "Create Lit Note" command, among others, in Zotero).
-- **Zotero Local API enabled**: Check `Zotero -> Settings -> Advanced -> Allow other applications on this computer to communicate with Zotero`.
-- **Better BibTeX** (optional, highly recommended): Provides reliable citekeys.
+### Zotero and Obsidian setup
 
-Zotero's linked attachment base directory controls relative paths, not where files are moved. Configure ZotMoov's destination inside the vault if attachment links should open in Obsidian. When creating a literature note, the plugin links the actual indexed vault file; it warns and marks an attachment unavailable when that file is outside the vault or not indexed. Open those attachments from Zotero instead. Existing notes are not updated automatically.
+1. Install and enable Perplexity Saver in the Obsidian vault, and install the [Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion#installation) in Zotero 10. Use current versions of both plugins so unresolved file attachments can be reported correctly.
+2. In Obsidian, open **Settings → Perplexity Saver → Zotero & Literature Note Relinking** and set **Literature notes folder** to the vault-relative folder for your notes (default `lit/lit_notes`). Keep this vault open with Perplexity Saver enabled. Its local listener uses `127.0.0.1:27124`; no companion port setting is needed. The companion can try to launch Obsidian if it is closed.
+3. In Zotero, ensure each item has a **Citation Key**. [Better BibTeX](https://retorque.re/zotero-better-bibtex/installation/) is recommended for generating keys but is optional; you can use or enter keys in Zotero's native field. Without active BBT, the companion shows a one-time recommendation and its **Regen Citation Key** command is unavailable; its settings show BBT's status.
+4. For optional **Relink sources with Zotero** functionality, enable **Settings → Advanced → Allow other applications on this computer to communicate with Zotero** in Zotero. This local API setting is separate from the literature-note listener. Leave Saver's **Better BibTeX HTTP Port** at `23119` unless Zotero uses another port.
+
+For companion commands and Zotero-side settings, see the [companion README](https://github.com/notuntoward/zotero-obsidian-companion#commands--usage).
+
+### Attachment files and filenames
+
+- **Location:** To include a supported file attachment link in a literature note, the actual Zotero attachment file must be inside the open vault and indexed by Obsidian. Saver links that exact file, not another file with the same name. The supported extensions are `.pdf`, `.html`, `.docx`, `.pptx`, `.epub`, and `.txt`; URL-only attachments are not file links.
+- **Stored or linked:** Zotero's stored files normally live in its data directory, often outside the vault. Linked files can point to files inside the vault. Neither plugin moves attachments. Do not move Zotero's whole data directory into a synced vault to solve attachment linking; see [Zotero's data-directory safety guidance](https://www.zotero.org/support/preferences/advanced#data_directory_location).
+- **Optional ZotMoov:** To move imported files into the vault and link them in Zotero, configure ZotMoov's **Directory to Move Files To** to a folder inside the vault, choose **move** under **File Behavior**, and enable **Automatically Move/Copy Files When Added** if desired. ZotMoov's **copy** mode is a separate backup, not the file Zotero tracks. Check allowed extensions, and back up your library before moving existing files. Zotero group libraries do not support linked files. See [ZotMoov's settings](https://github.com/wileyyugioh/zotmoov/blob/master/docs/SETTINGS_INFO.md) for details.
+- **Linked attachment base directory:** In Zotero **Settings → Advanced → Files and Folders**, this optional setting makes linked paths relative to a chosen folder; it does not move files or choose ZotMoov's destination. It may be unset for absolute paths. If you use relative paths, set it on each computer to the local folder containing those linked files, and ensure the resolved attachments are inside that computer's open vault. See [Zotero's base-directory guidance](https://www.zotero.org/support/preferences/advanced#linked_attachment_base_directory).
+- **Optional renaming:** In Zotero's General settings, enable automatic file renaming and, for linked files, **Rename linked files**. To use the citation key as the filename, set the filename format to `{{ citationKey }}`. Zotero applies its own eligibility and file-type rules; it does not necessarily rename every supplementary attachment. See [Zotero's file-renaming documentation](https://www.zotero.org/support/file_renaming).
+
+When creating or overwriting a note, Saver warns and marks supported attachments unavailable if their paths are outside the vault or not indexed. It also warns about file attachments with no resolvable path, including relative links whose base directory is missing. Check the attachment in Zotero, its base directory if applicable, and the vault location. Absence of ZotMoov or an unset base directory alone is not an error.
+
+To check the setup, select a Zotero item with a citation key and an accessible supported attachment, then choose **Obsidian → Create Lit Note**. Confirm that the note opens in the intended vault and that its attachment link opens the actual file. If it does not, check the warning and the attachment's location before changing settings.
+
+**Current limitation:** Citekey, metadata, filename, and attachment changes in Zotero do not automatically update an existing literature note. The proposed auto-sync and metadata-update command are not yet implemented. Overwriting an existing note is a separate, destructive choice; review the Obsidian prompt before proceeding.
 
 ### Commands
 

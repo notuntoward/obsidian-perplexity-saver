@@ -15,6 +15,7 @@ export interface ZoteroAttachment {
 	title?: string;
 	path?: string;
 	url?: string;
+	isFile?: boolean;
 }
 
 export interface ZoteroRelation {

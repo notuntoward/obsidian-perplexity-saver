@@ -192,7 +192,7 @@ function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: str
 	for (const attachment of item.attachments ?? []) {
 		const attachmentPath = attachment.path;
 		if (!attachmentPath) {
-			if (!attachment.url) {
+			if (attachment.isFile || !attachment.url) {
 				links.push("**Attachment unavailable in vault**");
 				unavailable.push(`${attachment.title || "Attachment"}: no file path supplied by Zotero`);
 			}
@@ -219,7 +219,7 @@ function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: str
 	}
 	if (unavailable.length) {
 		new Notice(
-			`Zotero attachments unavailable in the Obsidian vault:\n${unavailable.join("\n")}\nCheck the ZotMoov destination and vault location, or open them in Zotero.`,
+			`Zotero attachments unavailable in the Obsidian vault:\n${unavailable.join("\n")}\nCheck the files in Zotero and, for relative linked files, the linked attachment base directory. Files must be inside and indexed by the vault to link here.`,
 			15000
 		);
 	}

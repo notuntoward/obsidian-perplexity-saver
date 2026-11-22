@@ -260,7 +260,25 @@ describe("Lit Note Builder", () => {
 			expect(createdNotices[0].message).toContain(outside);
 			expect(createdNotices[0].message).toContain(missing);
 			expect(createdNotices[0].message).toContain("Unknown PDF: no file path supplied by Zotero");
-			expect(createdNotices[0].message).toContain("ZotMoov destination");
+			expect(createdNotices[0].message).toContain("linked attachment base directory");
+			expect(createdNotices[0].message).not.toContain("ZotMoov");
+		});
+
+		it("warns for unresolved file attachments with URLs but not URL-only attachments", () => {
+			createdNotices.length = 0;
+			const app = { vault: {} } as App;
+			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+				title: "Paper",
+				citekey: "paper",
+				attachments: [
+					{ title: "Missing file", isFile: true, url: "https://example.com/paper" },
+					{ title: "Web link", isFile: false, url: "https://example.com/link" },
+				],
+			});
+			expect(body).toContain("**Attachment unavailable in vault**");
+			expect(createdNotices).toHaveLength(1);
+			expect(createdNotices[0].message).toContain("Missing file: no file path supplied by Zotero");
+			expect(createdNotices[0].message).not.toContain("Web link");
 		});
 
 		it("assembles the complete note with clean callouts and all branches", () => {
