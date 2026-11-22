@@ -111,10 +111,32 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   missing note can be created from the Zotero data.
 - Legacy `{ action: "open", citekey }` still opens a single existing note and
   never creates.
+- `{ action: "sync", data: ZoteroItemPayload[] }` reconciles keys and managed
+  attachments; `{ action: "update", data: ZoteroItemPayload[] }` previews and
+  refreshes Zotero-owned metadata as well.
+- `{ action: "apply-sync" | "validate-zotero-key", token, data: [ZoteroItemPayload] }`
+  revalidates an approved, single-use plan against the current item and note.
+- `GET /lit-note-identities` returns indexed item keys, Obsidian note paths,
+  library identities, and citation keys for reconciliation.
+- When citation keys differ, the companion sends `citationKeyCheck` for the
+  Obsidian citation key, including matching Zotero items in accessible libraries.
+  The server requires this check before presenting a choice and includes it in
+  the plan snapshot. The companion rechecks it immediately before changing Zotero.
+- The payload includes the Zotero library name and attachment item keys. After a
+  citekey change in Zotero, `zoteroChanges` records the previous citekey and
+  only attachment path changes verified by the same attachment item key. The
+  review and its selections are revalidated with the one-use plan.
+- A prepared plan with `needsAttachmentCheck` requires the companion to enumerate
+  paths for all file attachments in accessible Zotero libraries, including
+  trashed items, and send them as `zoteroAttachmentPaths` on `apply-sync`.
+  Unavailable paths or library enumeration errors stop duplicate-file cleanup.
 
 Response: `{ success, results: [{ citekey, status, error? }] }` where `status`
-is `created | overwritten | opened | skipped | missing | error`. The Zotero side
-tags items and reports errors from `results`; it no longer shows its own
+is `created | overwritten | opened | updated | skipped | missing | error`, or
+`prepared | set-zotero-key` for a pending reconciliation. Pending results are
+not success: the companion rechecks the item and validates the one-use token,
+then verifies a saved Zotero key and refreshes attachment paths before applying.
+The Zotero side tags items and reports errors from `results`; it no longer shows its own
 overwrite dialog.
 
 ## Invariants

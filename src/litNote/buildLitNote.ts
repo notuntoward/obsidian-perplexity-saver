@@ -158,7 +158,7 @@ const ATTACHMENT_LABELS: Record<string, string> = {
  * Adds DOI, URL, and resolved attachment links when present.
  * Ported from `build_info_callout_links()`.
  */
-export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: string[] = []): string {
+export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: string[] = [], managed = false): string {
 	let zoteroUri = "";
 
 	if (item.itemkey) {
@@ -181,12 +181,16 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: 
 		links.push(`[**URL**](${item.url})`);
 	}
 
+	if (managed) {
+		const attachments = attachmentLinks.length ? ` | ${attachmentLinks.join(" | ")}` : "";
+		return `${links.join(" | ")}<!-- zotero-attachments:start -->${attachments}<!-- zotero-attachments:end -->`;
+	}
 	links.push(...attachmentLinks);
 
 	return links.join(" | ");
 }
 
-function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string): string[] {
+export function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string, warnUnavailable = true): string[] {
 	const links: string[] = [];
 	const unavailable: string[] = [];
 	for (const attachment of item.attachments ?? []) {
@@ -217,7 +221,7 @@ function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: str
 			unavailable.push(attachmentPath);
 		}
 	}
-	if (unavailable.length) {
+	if (unavailable.length && warnUnavailable) {
 		new Notice(
 			`Zotero attachments unavailable in the Obsidian vault:\n${unavailable.join("\n")}\nCheck the files in Zotero and, for relative linked files, the linked attachment base directory. Files must be inside and indexed by the vault to link here.`,
 			15000
@@ -328,7 +332,7 @@ export function buildLitNoteBody(
 	notePath?: string
 ): string {
 	const sourcePath = notePath ?? `${settings.litNotesFolder ?? ""}/${item.citekey || item.itemkey || "untitled"}.md`;
-	const calloutLinks = buildInfoCalloutLinks(item, buildAttachmentLinks(app, item, sourcePath));
+	const calloutLinks = buildInfoCalloutLinks(item, buildAttachmentLinks(app, item, sourcePath), true);
 	const calloutPrefix = buildInfoCalloutPrefix(item);
 
 	// Info callout header line
@@ -445,6 +449,9 @@ export function buildLitNoteFrontmatter(
 	}
 	if (item.itemkey) {
 		fm.zotero_item_key = item.itemkey.trim();
+	}
+	if (item.libraryURI) {
+		fm.zotero_library_uri = item.libraryURI.trim();
 	}
 	if (item.itemType) {
 		fm.zotero_item_type = item.itemType.trim();

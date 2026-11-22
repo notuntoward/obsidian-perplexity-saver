@@ -18,6 +18,7 @@
  */
 
 import http from "http";
+import { randomUUID } from "crypto";
 import { App, Notice, normalizePath, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import {
@@ -30,7 +31,12 @@ import {
 } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
-import { askNoteDecision, type NoteDecision } from "./decisionModal";
+import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision } from "./decisionModal";
+import { getLitNoteFiles } from "./litNoteFinder";
+import { syncLitNote } from "./syncLitNote";
+import { findIdenticalAttachments } from "./attachmentIdentity";
+import type { IdenticalAttachment } from "./attachmentIdentity";
+import { assertAttachmentsUnshared } from "./attachmentSharing";
 import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "./transcriptSection";
 import type {
 	LitNoteItemResult,
@@ -60,6 +66,32 @@ export interface LitNoteServerSettings {
 
 /** Serialize create/open handling so two requests can't race on the vault. */
 let opChain: Promise<unknown> = Promise.resolve();
+
+interface SyncPlan {
+	mode: "auto" | "metadata";
+	kind: "apply-sync" | "validate-zotero-key";
+	input: string;
+	snapshot: string;
+	notePath?: string;
+	identicalAttachments?: IdenticalAttachment[];
+	decisions: Array<{ title: string; message: string; buttons: DecisionButton[]; review?: AttachmentReviewRow[]; conflict?: CitekeyConflictDetails; choice: NoteDecision }>;
+	expires: number;
+}
+
+const syncPlans = new Map<string, SyncPlan>();
+
+function syncInput(item: ZoteroItemPayload, mode: SyncPlan["mode"]): string {
+	const common = {
+		title: item.title, citekey: item.citekey, itemkey: item.itemkey, libraryURI: item.libraryURI,
+		attachments: item.attachments, citationKeyCheck: item.citationKeyCheck,
+		libraryName: item.libraryName, zoteroChanges: item.zoteroChanges,
+	};
+	return JSON.stringify(mode === "auto" ? common : {
+		...common, tags: item.tags, collections: item.collections,
+		creators: item.creators, date: item.date, itemType: item.itemType, DOI: item.DOI,
+		url: item.url, publicationTitle: item.publicationTitle, publisher: item.publisher, ISBN: item.ISBN,
+	});
+}
 
 function runSerialized<T>(fn: () => Promise<T>): Promise<T> {
 	const run = opChain.then(fn, fn);
@@ -155,6 +187,9 @@ function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
 		created: 0,
 		overwritten: 0,
 		opened: 0,
+		updated: 0,
+		"set-zotero-key": 0,
+		prepared: 0,
 		skipped: 0,
 		missing: 0,
 		error: 0,
@@ -176,6 +211,10 @@ function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
 			new Notice(`Updated literature note from Zotero: ${name}`, 5000);
 			return;
 		}
+		if (r.status === "updated") {
+			new Notice(`Updated literature note from Zotero: ${name}`, 5000);
+			return;
+		}
 		if (r.status === "missing") {
 			new Notice(`Literature note not found in vault: ${name}`, 5000);
 			return;
@@ -194,6 +233,7 @@ function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
 	if (counts.created) parts.push(`${counts.created} created`);
 	if (counts.overwritten) parts.push(`${counts.overwritten} overwritten`);
 	if (counts.opened) parts.push(`${counts.opened} opened`);
+	if (counts.updated) parts.push(`${counts.updated} updated`);
 	if (counts.skipped) parts.push(`${counts.skipped} skipped`);
 	if (counts.missing) parts.push(`${counts.missing} missing`);
 	if (counts.error) parts.push(`${counts.error} failed`);
@@ -794,6 +834,23 @@ async function handleRequest(
 	req: http.IncomingMessage,
 	res: http.ServerResponse
 ): Promise<void> {
+	if (req.method === "GET" && req.url === "/lit-note-identities") {
+		await ensureWorkspaceReady(app);
+		const identities = getLitNoteFiles(app, settings.litNotesFolder).flatMap((file) => {
+			const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+			if (typeof fm?.zotero_item_key !== "string") return [];
+			return [{
+				itemkey: fm.zotero_item_key,
+				notePath: file.path,
+				libraryURI: typeof fm.zotero_library_uri === "string" ? fm.zotero_library_uri : undefined,
+				citekey: typeof fm.citekey === "string" ? fm.citekey : file.basename,
+				modifiedAt: file.stat?.mtime,
+				size: file.stat?.size,
+			}];
+		});
+		sendJson(res, 200, { success: true, identities });
+		return;
+	}
 	if (req.method === "GET" && req.url === "/lit-notes") {
 		const folderPath = normalizePath(settings.litNotesFolder);
 		const folder = app.vault.getAbstractFileByPath(folderPath);
@@ -853,6 +910,154 @@ async function handleRequest(
 				handleCreateBatch(app, settings, items)
 			);
 			sendJson(res, 200, resultsResponse(results));
+		} else if (parsed.action === "sync" || parsed.action === "update") {
+			const items = parsed.data;
+			if (!Array.isArray(items) || items.length === 0) {
+				sendJson(res, 400, { success: false, error: "data array is empty or missing" });
+				return;
+			}
+			const mode = parsed.action === "sync" ? "auto" : "metadata";
+			const results = await runSerialized(() => withNoteDecisionSession(app, async (session) => {
+				await ensureWorkspaceReady(app);
+				for (const [id, plan] of syncPlans) if (plan.expires < Date.now()) syncPlans.delete(id);
+				const entries: LitNoteItemResult[] = [];
+				let cancelled = false;
+				for (const item of items) {
+					try {
+						const decisions: SyncPlan["decisions"] = [];
+						const entry = await syncLitNote(app, settings, item, mode, async (title, message, buttons, review, conflict) => {
+							raiseAndFocus(app, app.workspace.getMostRecentLeaf());
+							const choice = await session.ask(title, message, buttons, review, conflict);
+							if (choice === "cancel") cancelled = true;
+							decisions.push({ title, message, buttons, review, conflict, choice });
+							return choice;
+						}, { prepareOnly: true });
+						if ((entry.status === "prepared" || entry.status === "set-zotero-key") && entry.snapshot !== undefined) {
+							const token = randomUUID();
+							syncPlans.set(token, {
+								mode, kind: entry.status === "prepared" ? "apply-sync" : "validate-zotero-key",
+								input: syncInput(item, mode), snapshot: entry.snapshot,
+								notePath: entry.notePath, identicalAttachments: entry.identicalAttachments,
+								decisions, expires: Date.now() + 120000,
+							});
+							entries.push({
+								citekey: entry.citekey, status: entry.status, token,
+								noteCitekey: entry.noteCitekey, expectedZoteroKey: entry.expectedZoteroKey,
+								...(entry.identicalAttachments?.some((pair) => pair.note.path !== pair.zotero.path)
+									? { needsAttachmentCheck: true } : {}),
+							});
+						} else entries.push(entry);
+					} catch (error) {
+						entries.push({
+							citekey: item?.citekey ?? "",
+							status: "error",
+							error: `Unable to reconcile note: ${error instanceof Error ? error.message : String(error)}`,
+						});
+					}
+					if (cancelled) break;
+				}
+				if (cancelled) {
+					for (const entry of entries) if (entry.token) syncPlans.delete(entry.token);
+					return items.map((item, index) => entries[index]?.status === "error"
+						? entries[index]
+						: { citekey: item.citekey ?? "", status: "skipped" as const });
+				}
+				for (const entry of entries) {
+					const plan = entry.token ? syncPlans.get(entry.token) : undefined;
+					if (plan) plan.expires = Date.now() + 120000;
+				}
+				return entries;
+			}));
+			if (mode === "metadata" || results.some((entry) => entry.status === "error")) {
+				const completed = results.filter((entry) => entry.status !== "set-zotero-key" && entry.status !== "prepared");
+				if (completed.length) noticeSummary(completed);
+			}
+			sendJson(res, 200, resultsResponse(results));
+		} else if (parsed.action === "apply-sync" || parsed.action === "validate-zotero-key") {
+			const plan = syncPlans.get(parsed.token);
+			syncPlans.delete(parsed.token);
+			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			if (!plan || plan.kind !== parsed.action || plan.expires < Date.now() || !item || syncInput(item, plan.mode) !== plan.input) {
+				sendJson(res, 200, resultsResponse([{
+					citekey: item?.citekey ?? "", status: "error",
+					error: "The Zotero item or update plan changed or expired; retry the update.",
+				}]));
+				return;
+			}
+			const duplicatePairs = (plan.identicalAttachments ?? []).filter((pair) => pair.note.path !== pair.zotero.path);
+			const zoteroPaths = parsed.zoteroAttachmentPaths;
+			if (duplicatePairs.length && (!plan.notePath || !Array.isArray(zoteroPaths) ||
+				zoteroPaths.some((attachmentPath) => typeof attachmentPath !== "string" || !attachmentPath))) {
+				sendJson(res, 200, resultsResponse([{
+					citekey: item.citekey ?? "", status: "error",
+					error: "Zotero attachment references could not be verified; duplicate files were not removed.",
+				}]));
+				return;
+			}
+			const entry = await runSerialized(async () => {
+				try {
+					await ensureWorkspaceReady(app);
+					let index = 0;
+					const result = await syncLitNote(app, settings, item, plan.mode, async (title, message, buttons, review, conflict) => {
+						const decision = plan.decisions[index++];
+						if (!decision || decision.title !== title || decision.message !== message ||
+							JSON.stringify(decision.buttons) !== JSON.stringify(buttons) ||
+							JSON.stringify(decision.review) !== JSON.stringify(review) ||
+							JSON.stringify(decision.conflict) !== JSON.stringify(conflict)) {
+							throw new Error("The note or its links changed after the decision; retry the update.");
+						}
+						return decision.choice;
+					}, {
+						expectedContent: plan.snapshot,
+						expectedIdenticalAttachments: plan.identicalAttachments,
+						prepareOnly: parsed.action === "validate-zotero-key",
+						beforeApply: async () => {
+							if (index !== plan.decisions.length) throw new Error("The note or its links changed after the decision; retry the update.");
+							if (duplicatePairs.length && plan.notePath && zoteroPaths) {
+								await assertAttachmentsUnshared(app, plan.notePath, duplicatePairs, zoteroPaths);
+							}
+						},
+						trashIdenticalAttachments: async (pairs, notePath) => {
+							if (!duplicatePairs.length) return;
+							if (!zoteroPaths) throw new Error("Zotero attachment references are unavailable.");
+							await assertAttachmentsUnshared(app, notePath, duplicatePairs, zoteroPaths, plan.notePath);
+							const noteFiles: TFile[] = [];
+							const zoteroFiles: TFile[] = [];
+							for (const pair of pairs) {
+								const noteFile = app.vault.getAbstractFileByPath(pair.note.path);
+								const zoteroFile = app.vault.getAbstractFileByPath(pair.zotero.path);
+								if (!(noteFile instanceof TFile) || !(zoteroFile instanceof TFile)) {
+									throw new Error("An attachment disappeared before duplicate cleanup.");
+								}
+								noteFiles.push(noteFile);
+								zoteroFiles.push(zoteroFile);
+							}
+							const verified = await findIdenticalAttachments(app, noteFiles, zoteroFiles);
+							if (JSON.stringify(verified) !== JSON.stringify(pairs)) {
+								throw new Error("Attachments changed before duplicate cleanup.");
+							}
+							for (const pair of duplicatePairs) {
+								const file = app.vault.getAbstractFileByPath(pair.note.path);
+								if (!(file instanceof TFile)) throw new Error(`Attachment disappeared: ${pair.note.path}`);
+								await app.fileManager.trashFile(file);
+								if (await app.vault.adapter.exists(pair.note.path)) {
+									throw new Error(`Attachment was not moved to Trash: ${pair.note.path}`);
+								}
+							}
+						},
+					});
+					if (parsed.action === "validate-zotero-key") {
+						if (result.status !== "set-zotero-key" || index !== plan.decisions.length) {
+							return { citekey: item.citekey, status: "error" as const, error: "The note changed after the decision; retry the update." };
+						}
+						return { citekey: item.citekey, status: "skipped" as const, noteCitekey: result.noteCitekey };
+					}
+					return result;
+				} catch (error) {
+					return { citekey: item.citekey, status: "error" as const, error: errorMessage(error) };
+				}
+			});
+			sendJson(res, 200, resultsResponse([entry]));
 		} else if (parsed.action === "open") {
 			const openRequest = parsed;
 			const data = Array.isArray(openRequest.data) ? openRequest.data : [];
@@ -928,6 +1133,7 @@ export function startLitNoteServer(app: App, settings: LitNoteServerSettings): h
  * Gracefully stop the server. Call from `Plugin.onunload()`.
  */
 export function stopLitNoteServer(server: http.Server): void {
+	syncPlans.clear();
 	server.close((err) => {
 		if (err) {
 			console.warn("[LitNoteServer] Error on close:", err);

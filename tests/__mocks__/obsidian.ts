@@ -332,6 +332,14 @@ export class TFile {
 		this.path = path;
 		this.parent = parentPath ? { path: parentPath } : null;
 	}
+
+}
+
+export function parseLinktext(linktext: string): { path: string; subpath: string } {
+	const index = linktext.indexOf("#");
+	return index < 0
+		? { path: linktext, subpath: "" }
+		: { path: linktext.slice(0, index), subpath: linktext.slice(index) };
 }
 
 export class TFolder {

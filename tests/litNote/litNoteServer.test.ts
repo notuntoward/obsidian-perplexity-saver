@@ -4,8 +4,11 @@ import {
 	raiseAndFocus,
 	positionCursorTwoLinesPastEnd,
 } from "../../src/litNote/litNoteServer";
-import { askNoteDecision } from "../../src/litNote/decisionModal";
+import { askNoteDecision, withNoteDecisionSession } from "../../src/litNote/decisionModal";
 import { askAuthorFormatDecision } from "../../src/litNote/authorFormatModal";
+import { syncLitNote } from "../../src/litNote/syncLitNote";
+import { findIdenticalAttachments } from "../../src/litNote/attachmentIdentity";
+import { assertAttachmentsUnshared } from "../../src/litNote/attachmentSharing";
 import { TFile } from "obsidian";
 import * as Obsidian from "obsidian";
 
@@ -19,10 +22,23 @@ const createdNotices = (
 
 vi.mock("../../src/litNote/decisionModal", () => ({
 	askNoteDecision: vi.fn(),
+	withNoteDecisionSession: vi.fn(async (_app, run) => run({ ask: vi.fn() })),
 }));
 
 vi.mock("../../src/litNote/authorFormatModal", () => ({
 	askAuthorFormatDecision: vi.fn(),
+}));
+
+vi.mock("../../src/litNote/syncLitNote", () => ({
+	syncLitNote: vi.fn(),
+}));
+
+vi.mock("../../src/litNote/attachmentIdentity", () => ({
+	findIdenticalAttachments: vi.fn(),
+}));
+
+vi.mock("../../src/litNote/attachmentSharing", () => ({
+	assertAttachmentsUnshared: vi.fn(),
 }));
 
 let requestHandler: (req: any, res: any) => Promise<void>;
@@ -60,6 +76,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 
 	const app: any = {
 		vault: {
+			adapter: { exists: vi.fn(async () => false) },
 			getAbstractFileByPath: vi.fn((path: string) =>
 				path === FOLDER ? { path } : (files.get(path) ?? null)
 			),
@@ -77,6 +94,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 			getName: vi.fn(() => "TestVault"),
 		},
 		fileManager: {
+			trashFile: vi.fn(async () => {}),
 			processFrontMatter: vi.fn(async (file: any, cb: (fm: any) => void) => {
 				const fm: any = {};
 				cb(fm);
@@ -152,6 +170,247 @@ describe("Lit Note Server", () => {
 		const server = startLitNoteServer(app, { litNotesFolder: FOLDER } as any);
 		server.close();
 		expect(server.close).toHaveBeenCalled();
+	});
+
+	it.each(["sync", "update"])("routes %s batches to the reconciliation engine", async (action) => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote).mockResolvedValue({ citekey: "key", status: "updated" });
+		const data = [{ citekey: "key", itemkey: "ABC", libraryURI: "library" }];
+		const json = await post(app, { action, data });
+		expect(json.results).toEqual([{ citekey: "key", status: "updated" }]);
+		expect(syncLitNote).toHaveBeenCalledWith(
+			app, expect.anything(), data[0], action === "sync" ? "auto" : "metadata",
+			expect.any(Function), { prepareOnly: true }
+		);
+	});
+
+	it("requires an unchanged Zotero payload and consumes the prepared plan once", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original note" })
+			.mockResolvedValueOnce({ citekey: "key", status: "updated" });
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const token = prepared.results[0].token;
+		expect(prepared.results[0].status).toBe("prepared");
+		const applied = await post(app, { action: "apply-sync", token, data: [item] });
+		expect(applied.results[0].status).toBe("updated");
+		const reused = await post(app, { action: "apply-sync", token, data: [item] });
+		expect(reused.results[0].status).toBe("error");
+	});
+
+	it("rejects a changed Zotero attachment without applying the plan", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original" });
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library", attachments: [{ path: "old.pdf" }] };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const changed = { ...item, attachments: [{ path: "new.pdf" }] };
+		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [changed] });
+		expect(applied.results[0].status).toBe("error");
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
+	});
+
+	it("requires an inventory of Zotero references before removing identical copies", async () => {
+		const { app } = makeApp();
+		const snapshot = (path: string) => ({ path, size: 4, mtime: 1, ctime: 1, sha256: "hash" });
+		vi.mocked(syncLitNote).mockResolvedValueOnce({
+			citekey: "key", status: "prepared", snapshot: "original", notePath: "lit/note.md",
+			identicalAttachments: [{ note: snapshot("old.pdf"), zotero: snapshot("new.pdf") }],
+		});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		expect(prepared.results[0].needsAttachmentCheck).toBe(true);
+		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [item] });
+		expect(applied.results[0].status).toBe("error");
+		expect(applied.results[0].error).toContain("references could not be verified");
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
+	});
+
+	it("rechecks file sharing and bytes before trashing an identical copy", async () => {
+		const { app, files } = makeApp(["old.pdf", "new.pdf"]);
+		const snapshot = (path: string) => ({ path, size: 4, mtime: 1, ctime: 1, sha256: "hash" });
+		const pairs = [{ note: snapshot("old.pdf"), zotero: snapshot("new.pdf") }];
+		vi.mocked(assertAttachmentsUnshared).mockResolvedValue(undefined);
+		vi.mocked(findIdenticalAttachments).mockResolvedValue(pairs);
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original", notePath: "lit/note.md", identicalAttachments: pairs })
+			.mockImplementationOnce(async (_app, _settings, item, _mode, _prompt, options) => {
+				await options?.beforeApply?.();
+				await options?.trashIdenticalAttachments?.(pairs, "lit/note.md");
+				return { citekey: item.citekey, status: "updated" };
+			});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const applied = await post(app, {
+			action: "apply-sync", token: prepared.results[0].token, data: [item],
+			zoteroAttachmentPaths: ["C:\\vault\\new.pdf"],
+		});
+		expect(applied.results[0].status).toBe("updated");
+		expect(assertAttachmentsUnshared).toHaveBeenCalledTimes(2);
+		expect(findIdenticalAttachments).toHaveBeenCalledWith(app, [files.get("old.pdf")], [files.get("new.pdf")]);
+		expect(app.fileManager.trashFile).toHaveBeenCalledWith(files.get("old.pdf"));
+	});
+
+	it("does not trash a duplicate when the final content check changes", async () => {
+		const { app } = makeApp(["old.pdf", "new.pdf"]);
+		const snapshot = (path: string) => ({ path, size: 4, mtime: 1, ctime: 1, sha256: "hash" });
+		const pairs = [{ note: snapshot("old.pdf"), zotero: snapshot("new.pdf") }];
+		vi.mocked(assertAttachmentsUnshared).mockResolvedValue(undefined);
+		vi.mocked(findIdenticalAttachments).mockResolvedValue([]);
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original", notePath: "lit/note.md", identicalAttachments: pairs })
+			.mockImplementationOnce(async (_app, _settings, item, _mode, _prompt, options) => {
+				await options?.beforeApply?.();
+				await options?.trashIdenticalAttachments?.(pairs, "lit/note.md");
+				return { citekey: item.citekey, status: "updated" };
+			});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const applied = await post(app, {
+			action: "apply-sync", token: prepared.results[0].token, data: [item],
+			zoteroAttachmentPaths: ["C:\\vault\\new.pdf"],
+		});
+		expect(applied.results[0].status).toBe("error");
+		expect(applied.results[0].error).toContain("changed before duplicate cleanup");
+		expect(app.fileManager.trashFile).not.toHaveBeenCalled();
+	});
+
+	it("does not report success when the duplicate remains after trashing", async () => {
+		const { app } = makeApp(["old.pdf", "new.pdf"]);
+		const snapshot = (path: string) => ({ path, size: 4, mtime: 1, ctime: 1, sha256: "hash" });
+		const pairs = [{ note: snapshot("old.pdf"), zotero: snapshot("new.pdf") }];
+		vi.mocked(assertAttachmentsUnshared).mockResolvedValue(undefined);
+		vi.mocked(findIdenticalAttachments).mockResolvedValue(pairs);
+		app.vault.adapter.exists.mockResolvedValue(true);
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original", notePath: "lit/note.md", identicalAttachments: pairs })
+			.mockImplementationOnce(async (_app, _settings, item, _mode, _prompt, options) => {
+				await options?.beforeApply?.();
+				await options?.trashIdenticalAttachments?.(pairs, "lit/note.md");
+				return { citekey: item.citekey, status: "updated" };
+			});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const applied = await post(app, {
+			action: "apply-sync", token: prepared.results[0].token, data: [item],
+			zoteroAttachmentPaths: ["C:\\vault\\new.pdf"],
+		});
+		expect(applied.results[0].status).toBe("error");
+		expect(applied.results[0].error).toContain("was not moved to Trash");
+	});
+
+	it("rejects a changed Zotero change summary without applying the plan", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "original" });
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library",
+			zoteroChanges: { previousCitekey: "old", attachmentMoves: [{ itemkey: "ATT", from: "before", to: "after" }] } };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const changed = { ...item, zoteroChanges: { ...item.zoteroChanges, attachmentMoves: [] } };
+		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [changed] });
+		expect(applied.results[0].status).toBe("error");
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects changed clickable citekey details during replay", async () => {
+		const { app } = makeApp();
+		const conflict = { title: "Work", itemkey: "ABC", libraryURI: "library", notePath: "lit/note.md", noteCitekey: "note", zoteroCitekey: "key" };
+		vi.mocked(withNoteDecisionSession).mockImplementationOnce(async (_app, run) =>
+			run({ ask: vi.fn().mockResolvedValue("use-zotero") }));
+		vi.mocked(syncLitNote)
+			.mockImplementationOnce(async (_app, _settings, item, _mode, prompt) => {
+				await prompt("Citekeys differ", "Choose.", [{ label: "Use Zotero", value: "use-zotero" }], undefined, conflict);
+				return { citekey: item.citekey, status: "prepared", snapshot: "original" };
+			})
+			.mockImplementationOnce(async (_app, _settings, item, _mode, prompt) => {
+				await prompt("Citekeys differ", "Choose.", [{ label: "Use Zotero", value: "use-zotero" }], undefined, { ...conflict, notePath: "lit/other.md" });
+				return { citekey: item.citekey, status: "updated" };
+			});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [item] });
+		expect(applied.results[0].status).toBe("error");
+		expect(applied.results[0].error).toContain("changed after the decision");
+	});
+
+	it("rejects changed citation-key check results before applying a decision", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote).mockResolvedValueOnce({
+			citekey: "key", status: "set-zotero-key", noteCitekey: "note",
+			expectedZoteroKey: "key", snapshot: "original",
+		});
+		const item = { citekey: "key", itemkey: "ABC", libraryURI: "library",
+			citationKeyCheck: { citekey: "note", matches: [] } };
+		const prepared = await post(app, { action: "sync", data: [item] });
+		const changed = { ...item, citationKeyCheck: { citekey: "note", matches: [
+			{ title: "Other", citekey: "note", libraryURI: "library", itemkey: "OTHER" },
+		] } };
+		const verified = await post(app, { action: "validate-zotero-key", token: prepared.results[0].token, data: [changed] });
+		expect(verified.results[0].status).toBe("error");
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
+	});
+
+	it("cancels the whole reconciliation batch without applying earlier plans", async () => {
+		const { app } = makeApp();
+		vi.mocked(withNoteDecisionSession).mockImplementationOnce(async (_app, run) =>
+			run({ ask: vi.fn().mockResolvedValue("cancel") }));
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "first", status: "prepared", snapshot: "first note" })
+			.mockImplementationOnce(async (_app, _settings, item, _mode, prompt) => {
+				await prompt("Confirm", "Continue?", [{ label: "Cancel", value: "cancel" }]);
+				return { citekey: item.citekey, status: "skipped" };
+			});
+		const result = await post(app, {
+			action: "sync",
+			data: [{ citekey: "first" }, { citekey: "second" }, { citekey: "third" }],
+		});
+		expect(result.results.map((entry: { status: string }) => entry.status)).toEqual(["skipped", "skipped", "skipped"]);
+		expect(syncLitNote).toHaveBeenCalledTimes(2);
+	});
+
+	it("validates the note-key choice with a single-use token before Zotero changes", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote)
+			.mockResolvedValueOnce({ citekey: "zotero", status: "set-zotero-key", noteCitekey: "note", expectedZoteroKey: "zotero", snapshot: "note content" })
+			.mockResolvedValueOnce({ citekey: "zotero", status: "set-zotero-key", noteCitekey: "note", expectedZoteroKey: "zotero", snapshot: "note content" });
+		const item = { citekey: "zotero", itemkey: "ABC", libraryURI: "library" };
+		const initial = await post(app, { action: "sync", data: [item] });
+		const token = initial.results[0].token;
+		const checked = await post(app, { action: "validate-zotero-key", token, data: [item] });
+		expect(checked.results[0]).toMatchObject({ status: "skipped", noteCitekey: "note" });
+		const reused = await post(app, { action: "validate-zotero-key", token, data: [item] });
+		expect(reused.results[0].status).toBe("error");
+	});
+
+	it("reports an unexpected per-note failure without aborting the batch", async () => {
+		const { app } = makeApp();
+		vi.mocked(syncLitNote)
+			.mockRejectedValueOnce(new Error("read failed"))
+			.mockResolvedValueOnce({ citekey: "second", status: "updated" });
+		const json = await post(app, {
+			action: "sync",
+			data: [{ citekey: "first" }, { citekey: "second" }],
+		});
+		expect(json.results).toEqual([
+			{ citekey: "first", status: "error", error: "Unable to reconcile note: read failed" },
+			{ citekey: "second", status: "updated" },
+		]);
+	});
+
+	it("returns indexed Zotero identities for literature notes", async () => {
+		const { app } = makeApp([`${FOLDER}/note.md`]);
+		app.vault.getMarkdownFiles = app.vault.getFiles;
+		app.metadataCache = {
+			getFileCache: () => ({ frontmatter: {
+				category: ["literaturenote"], citekey: "key", zotero_item_key: "ABC", zotero_library_uri: "library",
+			} }),
+		};
+		startLitNoteServer(app, { litNotesFolder: FOLDER } as any);
+		const { res, endPromise } = createMockRes();
+		requestHandler(createMockReq("GET", "/lit-note-identities", null), res);
+		await endPromise;
+		expect(JSON.parse(res.end.mock.calls[0][0] as string).identities).toEqual([
+			{ citekey: "key", itemkey: "ABC", libraryURI: "library", notePath: `${FOLDER}/note.md` },
+		]);
 	});
 
 	it.each(["create", "open"])("explains how to resolve a missing citation key for %s", async (action) => {

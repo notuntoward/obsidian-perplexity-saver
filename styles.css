@@ -32,6 +32,76 @@
 	order: 2;
 }
 
+.lit-note-decision-message {
+	overflow-wrap: anywhere;
+}
+
+.lit-note-citekey-details {
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
+.lit-note-copyable-key {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4em;
+}
+
+.lit-note-copyable-key code {
+	overflow-wrap: anywhere;
+}
+
+.lit-note-attachment-review {
+	max-height: min(45vh, 360px);
+	overflow-y: auto;
+}
+
+.lit-note-attachment-review-bulk {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5em;
+}
+
+.lit-note-attachment-review-row {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	align-items: stretch;
+	margin: 1em 0;
+	overflow-wrap: anywhere;
+}
+
+.lit-note-attachment-review-row[hidden] {
+	display: none;
+}
+
+.lit-note-attachment-review-title {
+	font-weight: var(--font-semibold);
+}
+
+.lit-note-attachment-review-options {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35em;
+}
+
+.lit-note-attachment-review-options label {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5em;
+}
+
+.lit-note-decision-actions {
+	flex-wrap: wrap;
+}
+
+.lit-note-decision-actions button {
+	max-width: 100%;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
 /* Grayed-out setting row, used by the "Heading lead bias" input when
    the "Prompt heading method" is set to "Lead sentence" (which has no
    use for the lead-bias parameter). The `is-disabled` class is toggled

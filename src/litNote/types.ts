@@ -12,6 +12,7 @@ export interface ZoteroCreator {
 }
 
 export interface ZoteroAttachment {
+	itemkey?: string;
 	title?: string;
 	path?: string;
 	url?: string;
@@ -20,6 +21,11 @@ export interface ZoteroAttachment {
 
 export interface ZoteroRelation {
 	citekey?: string;
+}
+
+export interface CitationKeyCheck {
+	citekey: string;
+	matches: Array<{ title: string; citekey: string; libraryURI: string; itemkey: string }>;
 }
 
 export interface ZoteroItemPayload {
@@ -36,6 +42,8 @@ export interface ZoteroItemPayload {
 	creators?: ZoteroCreator[];
 	date?: string;
 	itemkey?: string;
+	libraryURI?: string;
+	libraryName?: string;
 	itemType?: string;
 	publicationTitle?: string;
 	volume?: string;
@@ -48,6 +56,11 @@ export interface ZoteroItemPayload {
 	notes?: string[]; // HTML strings
 	attachments?: ZoteroAttachment[];
 	relations?: ZoteroRelation[];
+	citationKeyCheck?: CitationKeyCheck;
+	zoteroChanges?: {
+		previousCitekey: string;
+		attachmentMoves: Array<{ itemkey: string; from: string; to: string }>;
+	};
 }
 
 export interface LitNoteCreateRequest {
@@ -64,12 +77,27 @@ export interface LitNoteOpenRequest {
 	citekey?: string;
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest;
+export interface LitNoteSyncRequest {
+	action: "sync" | "update";
+	data: ZoteroItemPayload[];
+}
+
+export interface LitNoteApplySyncRequest {
+	action: "apply-sync" | "validate-zotero-key";
+	token: string;
+	data: ZoteroItemPayload[];
+	zoteroAttachmentPaths?: string[];
+}
+
+export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest;
 
 export type LitNoteItemStatus =
 	| "created"
 	| "overwritten"
 	| "opened"
+	| "updated"
+	| "set-zotero-key"
+	| "prepared"
 	| "skipped"
 	| "missing"
 	| "error";
@@ -78,11 +106,17 @@ export interface LitNoteItemResult {
 	citekey: string;
 	status: LitNoteItemStatus;
 	error?: string;
+	noteCitekey?: string;
+	expectedZoteroKey?: string;
+	token?: string;
+	needsAttachmentCheck?: boolean;
+	deferUntilChanged?: boolean;
 }
 
 export interface LitNoteResponse {
 	success: boolean;
 	citekeys?: string[];
+	identities?: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string; modifiedAt?: number; size?: number }>;
 	results?: LitNoteItemResult[];
 	path?: string;
 	error?: string;
