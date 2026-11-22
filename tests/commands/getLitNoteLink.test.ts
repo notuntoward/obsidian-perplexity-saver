@@ -290,7 +290,7 @@ aliases:
 		const command = commands[0];
 
 		// Execute editorCallback synchronously
-		command.editorCallback({ replaceSelection: vi.fn() }, {});
+		command.editorCallback({ getSelection: () => "", replaceSelection: vi.fn() }, {});
 
 		expect(openSpy).toHaveBeenCalled();
 		expect(openedModal).toBeInstanceOf(LitNoteSelectModal);
@@ -299,5 +299,68 @@ aliases:
 		expect(readSpy).not.toHaveBeenCalled();
 
 		openSpy.mockRestore();
+	});
+
+	it("uses selected editor text for the link and skips the link text modal", () => {
+		const mockFile = Object.assign(Object.create(TFile.prototype), {
+			path: "lit/lit_notes/Chen24.md",
+			basename: "Chen24",
+			extension: "md",
+			parent: { path: "lit/lit_notes" },
+			stat: { mtime: 1000 },
+		});
+		const noteInfo = {
+			file: mockFile,
+			title: "Article title",
+			aliases: [],
+			citekey: "Chen24",
+		};
+
+		const openedModals: LitNoteSelectModal[] = [];
+		const openNoteModal = vi
+			.spyOn(LitNoteSelectModal.prototype, "open")
+			.mockImplementation(function (this: LitNoteSelectModal) {
+				openedModals.push(this);
+			});
+		const openLinkTextModal = vi.spyOn(LinkOptionSelectModal.prototype, "open");
+		const replaceSelection = vi.fn();
+		const commands: any[] = [];
+		vi.useFakeTimers();
+		const mockPlugin: any = {
+			app: {
+				vault: {
+					getMarkdownFiles: () => [mockFile],
+				},
+				metadataCache: {
+					getFileCache: () => ({
+						frontmatter: {
+							category: ["literaturenote"],
+							title: "Article title",
+							citekey: "Chen24",
+						},
+					}),
+				},
+			},
+			addCommand: (cmd: any) => commands.push(cmd),
+			settings: { litNotesFolder: "lit/lit_notes" },
+		};
+
+		registerGetLitNoteLinkCommand(mockPlugin);
+		commands[0].editorCallback({
+			getSelection: () => "selected text",
+			replaceSelection,
+		}, {});
+
+		expect(openedModals).toHaveLength(1);
+		const openedModal = openedModals[0];
+		expect(openedModal).toBeInstanceOf(LitNoteSelectModal);
+		openedModal.onChooseItem(noteInfo);
+		vi.runAllTimers();
+		expect(replaceSelection).toHaveBeenCalledWith("[[Chen24|selected text]]");
+		expect(openLinkTextModal).not.toHaveBeenCalled();
+
+		openNoteModal.mockRestore();
+		openLinkTextModal.mockRestore();
+		vi.useRealTimers();
 	});
 });

@@ -195,6 +195,7 @@ export function registerGetLitNoteLinkCommand(plugin: {
 		id: "get-literature-note-link",
 		name: "Get literature note link",
 		editorCallback: (editor: Editor, view: MarkdownView) => {
+			const selectedText = editor.getSelection();
 			const files = getLitNoteFiles(plugin.app, plugin.settings.litNotesFolder);
 			if (files.length === 0) {
 				new Notice(`No literature notes found in '${plugin.settings.litNotesFolder}'.`);
@@ -211,6 +212,11 @@ export function registerGetLitNoteLinkCommand(plugin: {
 				plugin.app,
 				notesInfo,
 				(selectedNote) => {
+					if (selectedText) {
+						editor.replaceSelection(`[[${selectedNote.file.basename}|${selectedText}]]`);
+						return;
+					}
+
 					const linkOptions = buildLinkOptionsForNote(selectedNote);
 
 					// Level 2: Select Link Text Option (Title -> Aliases -> Citekey)
