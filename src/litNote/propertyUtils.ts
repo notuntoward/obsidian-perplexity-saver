@@ -1,13 +1,8 @@
 /**
  * Utilities for normalizing and formatting Obsidian literature note properties
  * according to the canonical schema:
- * - Lowercase snake_case property names (acronyms treated as one word).
- * - Plural Obsidian properties ('tags', 'aliases', 'cssclasses').
- * - Collision detection without overwriting.
  * - Text cleaning (whitespace trim, stray trailing punctuation removal).
- * - Real YAML lists for multi-value properties (single value as one-item list).
  * - ISO 8601 dates (YYYY-MM-DD, YYYY-MM-DDTHH:mm, partial YYYY / YYYY-MM, ambiguous dates flagged).
- * - Numbers and booleans stored as true primitives.
  * - Bare DOIs (no https://doi.org/ prefix).
  * - Omission of empty values (empty strings, null, 'N/A', empty lists).
  */
@@ -53,38 +48,8 @@ const MONTH_NAMES: Record<string, string> = {
 };
 
 /**
- * Convert a property name to lowercase snake_case.
- * Treats a run of capitals (such as an acronym) as one word before a lowercase letter
- * or boundary (e.g. "ZoteroURL" -> "zotero_url", "HTMLParser" -> "html_parser").
- */
-export function toSnakeCase(name: string): string {
-	return name
-		.trim()
-		// Treat a run of capitals (acronyms) as one word before a lowercase letter:
-		.replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
-		// Word boundary from lowercase/digit to uppercase:
-		.replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-		// Replace spaces, hyphens, and any other non-alphanumeric characters with underscores:
-		.replace(/[^a-zA-Z0-9]+/g, "_")
-		// Collapse consecutive underscores:
-		.replace(/_+/g, "_")
-		// Trim leading and trailing underscores:
-		.replace(/^_+|_+$/g, "")
-		.toLowerCase();
-}
-
-/**
- * Map of singular Obsidian property names to their canonical plural forms.
- */
-export const PLURAL_PROPERTY_MAP: Record<string, string> = {
-	tag: "tags",
-	alias: "aliases",
-	cssclass: "cssclasses",
-};
-
-/**
  * Canonical order of frontmatter properties for literature notes.
- * Used both when converting old Dataview notes and when writing new notes from Zotero.
+ * Used when writing new notes from Zotero.
  * Notice: zotero_tags is placed directly above created_date.
  */
 export const FRONTMATTER_ORDER: string[] = [
@@ -159,38 +124,6 @@ export function orderFrontmatter(fm: Record<string, unknown>): Record<string, un
 
 	return ordered;
 }
-
-/**
- * Properties that must always be represented as lists in frontmatter.
- */
-export const MULTI_VALUE_PROPERTIES = new Set([
-	"authors",
-	"tags",
-	"aliases",
-	"cssclasses",
-	"category",
-	"zotero_tags",
-	"zotero_collections",
-]);
-
-/**
- * Properties representing identifiers or text that must never be coerced to numbers.
- */
-export const IDENTIFIER_PROPERTIES = new Set([
-	"doi",
-	"isbn",
-	"url",
-	"citekey",
-	"zotero_item_key",
-	"zotero_item_type",
-	"title",
-	"publication",
-	"book_title",
-	"publisher",
-	"publication_date",
-	"created_date",
-	"modified_date",
-]);
 
 /**
  * Check if a property value is considered empty.
@@ -527,90 +460,6 @@ export function formatTimestampWithOffset(val: unknown): string | null {
 }
 
 /**
- * Safely parse an author string from an older literature note when structured
- * creators cannot be retrieved from Zotero.
- * Handles:
- * - Semicolon-separated authors: "Smith, John; Doe, Jane" -> ["Smith, John", "Doe, Jane"]
- * - "and" / "&" separated authors: "Smith, John and Doe, Jane" -> ["Smith, John", "Doe, Jane"]
- * - Even comma-separated pairs: "Mølmen, Knut Sindre, Almquist, Nicki Winfield, Skattebo, Øyvind" -> ["Mølmen, Knut Sindre", "Almquist, Nicki Winfield", "Skattebo, Øyvind"]
- * - Single authors with 1 or 0 commas: "Morris, G. Elliott" -> ["Morris, G. Elliott"]
- */
-export function parseAuthorStringFallback(raw: string): string[] {
-	if (!raw) return [];
-	const trimmed = cleanTextValue(raw);
-	if (!trimmed) return [];
-
-	// 1. Semicolon delimiter (standard in bibliographies for separating multiple Last, First names)
-	if (trimmed.includes(";")) {
-		const parts = trimmed
-			.split(";")
-			.map(cleanTextValue)
-			.filter((s) => !isEmptyValue(s));
-		if (parts.length > 0) return parts;
-	}
-
-	// 2. Conjunction delimiters: " and " or " & "
-	if (/\s+(?:and|&)\s+/i.test(trimmed)) {
-		const parts = trimmed
-			.split(/\s+(?:and|&)\s+/i)
-			.map(cleanTextValue)
-			.filter((s) => !isEmptyValue(s));
-		if (parts.length > 0) return parts;
-	}
-
-	// 3. Comma-separated parts
-	const commaParts = trimmed
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean);
-
-	// Case 3a: No commas (e.g. "Aristotle") or single comma (e.g. "Morris, G. Elliott") -> 1 author
-	if (commaParts.length <= 2) {
-		return [trimmed];
-	}
-
-	// Case 3b: Even number of parts >= 4, e.g. "Last1, First1, Last2, First2" -> pair every two items
-	if (commaParts.length >= 4 && commaParts.length % 2 === 0) {
-		const paired: string[] = [];
-		for (let i = 0; i < commaParts.length; i += 2) {
-			paired.push(cleanTextValue(`${commaParts[i]}, ${commaParts[i + 1]}`));
-		}
-		return paired;
-	}
-
-	// Case 3c: Odd number of parts (e.g. "Smith, John, Jr.") or ambiguous -> preserve as single string
-	return [trimmed];
-}
-
-/**
- * Extract a Zotero item key from body text or callout links.
- * Supports:
- * - zotero://select/library/items/KEY
- * - zotero://select/items/KEY or zotero://select/items/0_KEY
- * - zotero://select/groups/<id>/items/KEY
- * - http(s)://zotero.org/users/<id>/items/KEY
- * - http(s)://zotero.org/groups/<id>/items/KEY
- */
-export function extractZoteroItemKey(text: string): string | null {
-	if (!text) return null;
-	// Protocol links
-	const proto = text.match(
-		/zotero:\/\/(?:select\/(?:library|groups\/\d+|items)?\/items\/(?:0_)?([A-Za-z0-9]+)|select\/items\/(?:0_)?([A-Za-z0-9]+))/i
-	);
-	if (proto) {
-		return proto[1] || proto[2] || null;
-	}
-	// Web URLs
-	const web = text.match(
-		/https?:\/\/(?:www\.)?zotero\.org\/(?:users|groups)\/\d+\/items\/([A-Za-z0-9]+)/i
-	);
-	if (web) {
-		return web[1] || null;
-	}
-	return null;
-}
-
-/**
  * Normalize Dataview field key or creatorType to lowercase alphanumeric only (stripping spaces, underscores, hyphens, brackets).
  */
 export function normalizeDataviewKey(rawKey: string): string {
@@ -656,21 +505,6 @@ export const AUTHOR_CREATOR_KEY_SET = new Set([
 ]);
 
 /**
- * Creator keys that should NOT be put in `authors` (left in callout and logged).
- */
-export const NON_AUTHOR_CREATOR_KEY_SET = new Set([
-	"editor",
-	"serieseditor",
-	"translator",
-	"reviewedauthor",
-	"interviewer",
-	"recipient",
-	"commenter",
-	"counsel",
-	"attorneyagent",
-]);
-
-/**
  * Check if a normalized or raw key corresponds to an author/creator role.
  * Matches all standard author roles (author, director, programmer, creator, etc.)
  * as well as any 'First*' prefix variants (e.g. FirstAuthor, FirstDirector, FirstProgrammer).
@@ -687,7 +521,7 @@ export function isAuthorCreatorKey(rawKey: string): boolean {
 
 /**
  * Convert Zotero creator objects into author strings according to canonical creator rules.
- * Shared function used both in new note creation from Zotero and old note conversion.
+ * Used when creating notes from Zotero.
  * - Only includes creator types configured as authors (author, creator, director, podcaster, etc.).
  * - Excludes non-author creator types (editor, translator, seriesEditor, etc.).
  * - If creatorType is unspecified, defaults to author.
