@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import PerplexitySaverPlugin, { PerplexitySaverSettingTab } from "../src/main";
+import PerplexitySaverPlugin from "../src/main";
+import { PerplexitySaverSettingTab } from "../src/settingsTab";
 import type { App, SettingDefinitionGroup } from "obsidian";
 import { createLineFlashSettingsGroup } from "commons/flash";
 import { insertionThemeFlashAppearance } from "../src/video/noteInsertion";
