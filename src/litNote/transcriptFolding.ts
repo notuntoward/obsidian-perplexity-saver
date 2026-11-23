@@ -1,7 +1,7 @@
 import { MarkdownView, Notice, type Plugin, type TFile } from "obsidian";
 import { foldHeadingInView } from "commons/workspace";
 import { setTimeoutIn, type CancelTimer } from "commons/windows";
-import { findTranscriptRange } from "./transcriptSection";
+import { findTranscriptRange } from "commons/youtube";
 
 interface FoldingSettings {
 	collapseTranscriptOnOpen: boolean;

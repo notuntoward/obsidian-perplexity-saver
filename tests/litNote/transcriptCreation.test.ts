@@ -6,10 +6,10 @@ import {
 	transcriptVideoSources,
 	type TranscriptVideoSource,
 } from "../../src/litNote/transcriptCreation";
-import { fetchYouTubeCaptions } from "../../src/litNote/youtubeTranscript";
+import { fetchYouTubeCaptions } from "commons/youtube";
 import { createdNotices } from "../__mocks__/obsidian";
 
-vi.mock("../../src/litNote/youtubeTranscript", async (original) => ({
+vi.mock("commons/youtube", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	fetchYouTubeCaptions: vi.fn(),
 }));

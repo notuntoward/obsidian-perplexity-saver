@@ -36,8 +36,14 @@ import { deduplicateDialogCitations } from "./normalize/turns";
 import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
 import type { NameStyle } from "./litNote/bibtexName";
 import { ViewTracker } from "./litNote/viewTracker";
-import { hasLiteratureNoteCategory } from "./litNote/litNoteFinder";
-import { DEFAULT_TRANSCRIPT_HEADING } from "./litNote/transcriptSection";
+import { hasLiteratureNoteCategory } from "commons/litnote";
+import {
+	DEFAULT_TRANSCRIPT_HEADING,
+	findNoteVideoId,
+	linkUrlAt,
+	parseYouTubeUrl,
+	type TimestampCopyFormat,
+} from "commons/youtube";
 import { notifyNoTranscript, renameStrandedTranscriptHeadings } from "./litNote/transcriptHeadingRecovery";
 import { registerTranscriptFolding } from "./litNote/transcriptFolding";
 import { registerTranscriptProtection } from "./litNote/transcriptProtection";
@@ -86,7 +92,6 @@ import {
 } from "./video/noteInsertion";
 import { createLineFlashSettingsGroup, LINE_FLASH_DEFAULT_PROFILE, type LineFlashMode } from "commons/flash";
 import { registerTimestampLinks, type TimestampClickAction, type TimestampRequest } from "./video/timestampLinks";
-import { findNoteVideoId, linkUrlAt, parseYouTubeUrl, type TimestampCopyFormat } from "./video/youtubeLinks";
 import { nextPart, PART_ORDER, type NotePart } from "./video/switchParts";
 import { VideoWorkspaceModal, VIDEO_WORKSPACE_LABELS, isSavedVideoWorkspace, type SavedVideoWorkspace, type PreferredVideoWorkspace, type VideoWorkspaceLayout, type VideoPlaybackPosition } from "./video/workspaceLayout";
 import { BackgroundPlayback, type NotePlayback } from "./video/backgroundPlayback";

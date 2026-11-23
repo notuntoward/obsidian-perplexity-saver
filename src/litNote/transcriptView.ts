@@ -28,16 +28,27 @@ import {
 	parseStoredTranscript,
 	storedLinesToCues,
 	type StoredTranscriptLine,
-} from "./transcriptSection";
+	buildTranscriptParagraphs,
+	groupSentencesIntoParagraphs,
+	needsSpaceBetween,
+	SENTENCE_END,
+	isEnglishTranscript,
+	resolveTranscriptLanguage,
+	prepareTranscript,
+	sentenceRows,
+	formatShortTimestamp,
+	alignedSentenceRows,
+	ALIGNMENT_CACHE_KEY,
+	readAlignmentCache,
+	type WordTimings,
+	readInlineTimings,
+	formatClock,
+	parseYouTubeUrl,
+	timestampClipboardText,
+	type TimestampCopyFormat,
+} from "commons/youtube";
 import { notifyNoTranscript } from "./transcriptHeadingRecovery";
-import { buildTranscriptParagraphs, groupSentencesIntoParagraphs, needsSpaceBetween, SENTENCE_END } from "./transcriptParagraphs";
-import { isEnglishTranscript, resolveTranscriptLanguage } from "./transcriptLanguage";
-import { prepareTranscript, sentenceRows } from "./transcriptSentences";
-import { formatShortTimestamp } from "./youtubeTranscript";
-import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, type WordTimings } from "./transcriptAlignment";
-import { readInlineTimings } from "./transcriptTimingStorage";
 import { needsCaptionTimingRepair } from "./captionTiming";
-import { formatClock, parseYouTubeUrl, timestampClipboardText, type TimestampCopyFormat } from "../video/youtubeLinks";
 import type { TimestampInsertionTime } from "../video/videoView";
 import type { BackgroundPlayback } from "../video/backgroundPlayback";
 

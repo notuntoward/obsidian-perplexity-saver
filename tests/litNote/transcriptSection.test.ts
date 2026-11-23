@@ -10,16 +10,14 @@ import {
 	parseStoredTranscript,
 	parseTimestamp,
 	storedLinesToCues,
-} from "../../src/litNote/transcriptSection";
-import {
 	escapeCueText,
 	formatPreciseTimestamp,
 	formatTranscript,
 	formatTranscriptCues,
 	type TranscriptLine,
-} from "../../src/litNote/youtubeTranscript";
+	prepareTranscript,
+} from "commons/youtube";
 import { transcriptRows } from "../../src/litNote/transcriptView";
-import { prepareTranscript } from "../../src/litNote/transcriptSentences";
 
 /** Build the HeadingCache Obsidian's metadata cache would produce. */
 function headingsOf(content: string): HeadingCache[] {

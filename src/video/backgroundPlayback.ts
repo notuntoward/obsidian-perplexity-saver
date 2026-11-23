@@ -2,7 +2,7 @@ import { Notice, type App } from "obsidian";
 import { writeClipboardIn } from "commons/windows";
 import { PLAYBACK_RATES, type TimestampInsertionTime, type VideoView } from "./videoView";
 import { YouTubeEmbed } from "./youtubePlayer";
-import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "./youtubeLinks";
+import { formatClock, timestampClipboardText, watchUrl, type TimestampCopyFormat } from "commons/youtube";
 import { insertionMessage, insertPlaybackTimestamp, type NoteInsertionTarget, type TimestampListStyle } from "./noteInsertion";
 
 export type NotePlayback = Pick<VideoView,

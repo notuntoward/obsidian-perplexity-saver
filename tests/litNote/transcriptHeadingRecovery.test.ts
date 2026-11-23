@@ -15,7 +15,7 @@ import {
 	renameStrandedTranscriptHeadings,
 	renameTranscriptHeading,
 } from "../../src/litNote/transcriptHeadingRecovery";
-import { headingsFromText } from "../../src/litNote/transcriptSection";
+import { headingsFromText } from "commons/youtube";
 
 const cues = (count: number): string => Array.from({ length: count }, (_, i) =>
 	`[0:0${i}](https://youtu.be/dQw4w9WgXcQ?t=${i} "${i}–${i + 1}") caption ${i}`).join("\n");

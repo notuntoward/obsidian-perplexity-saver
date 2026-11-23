@@ -32,12 +32,12 @@ import {
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision } from "./decisionModal";
-import { getLitNoteFiles } from "./litNoteFinder";
+import { getLitNoteFiles } from "commons/litnote";
 import { syncLitNote } from "./syncLitNote";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
 import { assertAttachmentsUnshared } from "./attachmentSharing";
-import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "./transcriptSection";
+import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "commons/youtube";
 import type {
 	LitNoteItemResult,
 	LitNoteItemStatus,

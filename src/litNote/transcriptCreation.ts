@@ -1,8 +1,15 @@
 import { Modal, Notice, type App, type TFile } from "obsidian";
 import { applyModalAppearance } from "commons/modal";
-import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "./transcriptSection";
-import { fetchYouTubeCaptions, formatNativeTranscript } from "./youtubeTranscript";
-import { findYouTubeLinks, parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
+import {
+	findTranscriptRange,
+	headingsFromText,
+	normalizeTranscriptHeading,
+	fetchYouTubeCaptions,
+	formatNativeTranscript,
+	findYouTubeLinks,
+	parseYouTubeUrl,
+	watchUrl,
+} from "commons/youtube";
 
 export interface TranscriptVideoSource {
 	videoId: string;

@@ -1,12 +1,24 @@
 import { getFrontMatterInfo, Notice, parseYaml, type App, type Plugin, type TFile } from "obsidian";
 import { askNoteDecision } from "./decisionModal";
-import { prepareTranscript, type PreparedTranscript } from "./transcriptSentences";
-import { findTranscriptRange, parseStoredTranscript, type StoredTranscriptLine } from "./transcriptSection";
-import { readInlineTimings, writeInlineTimings } from "./transcriptTimingStorage";
+import {
+	prepareTranscript,
+	type PreparedTranscript,
+	findTranscriptRange,
+	parseStoredTranscript,
+	type StoredTranscriptLine,
+	readInlineTimings,
+	writeInlineTimings,
+	alignedSentenceRows,
+	ALIGNMENT_CACHE_KEY,
+	readAlignmentCache,
+	transcriptVideoId,
+	type WordTimings,
+	fetchYouTubeCaptions,
+	formatNativeTranscript,
+	parseYouTubeUrl,
+	watchUrl,
+} from "commons/youtube";
 import { approveTranscriptUpdate } from "./transcriptProtection";
-import { alignedSentenceRows, ALIGNMENT_CACHE_KEY, readAlignmentCache, transcriptVideoId, type WordTimings } from "./transcriptAlignment";
-import { fetchYouTubeCaptions, formatNativeTranscript } from "./youtubeTranscript";
-import { parseYouTubeUrl, watchUrl } from "../video/youtubeLinks";
 
 const running = new WeakMap<App, Set<TFile>>();
 

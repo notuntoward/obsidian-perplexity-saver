@@ -4,10 +4,7 @@ import type { App, WorkspaceLeaf } from "obsidian";
 import "commons/testing";
 import { dispatchSearchNavigation } from "commons/search";
 import { hiddenTranscriptNavigationRows, transcriptSearchCommands, TranscriptView, type TranscriptSearchSettings, type TranscriptViewHost } from "../../src/litNote/transcriptView";
-import { prepareTranscript } from "../../src/litNote/transcriptSentences";
-import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
-import { writeInlineTimings } from "../../src/litNote/transcriptTimingStorage";
-import type { WordTimings } from "../../src/litNote/transcriptAlignment";
+import { prepareTranscript, parseStoredTranscript, writeInlineTimings, type WordTimings } from "commons/youtube";
 import { createdNotices } from "../__mocks__/obsidian";
 
 const scopeHandlers = vi.hoisted(() => new Map<string, (event: KeyboardEvent) => unknown>());

@@ -28,7 +28,7 @@ import {
 	timestampedScreenshotItem,
 	type InsertionFlashSettings,
 } from "../../src/video/noteInsertion";
-import { timestampLink } from "../../src/video/youtubeLinks";
+import { timestampLink } from "commons/youtube";
 
 describe("video note insertion", () => {
 	let view: EditorView | null = null;

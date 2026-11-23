@@ -3,7 +3,7 @@ import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, typ
 import { editorInfoField, type Plugin } from "obsidian";
 import { getEditorLeafLocations } from "commons/workspace";
 import { forEachWindow } from "commons/windows";
-import { hasLiteratureNoteCategory } from "../litNote/litNoteFinder";
+import { hasLiteratureNoteCategory } from "commons/litnote";
 import { isTranscriptCapturePosition, transcriptStart } from "../litNote/transcriptProtection";
 import { blockInsertion, noteInsertionAnchors, readNoteInsertionAnchors, resolveNoteInsertionEditor, type TimestampListStyle } from "./noteInsertion";
 import { loadedPlayers, visibleTranscripts } from "./session";

@@ -1,8 +1,7 @@
 import { Modal, type App } from "obsidian";
 import { applyModalAppearance, closeOnEscapeFromOtherWindows } from "commons/modal";
-import { isValidYouTubeUrl } from "../litNote/youtubeTranscript";
+import { isValidYouTubeUrl, formatClock, parseYouTubeTime } from "commons/youtube";
 import type { NotePlayback } from "./backgroundPlayback";
-import { formatClock, parseYouTubeTime } from "./youtubeLinks";
 
 type SeekablePlayback = Pick<NotePlayback, "getVideoId" | "getPlaybackToken" | "getDuration" | "seekTo">;
 

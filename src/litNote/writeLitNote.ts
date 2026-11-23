@@ -4,8 +4,9 @@ import { App, normalizePath, Notice, TFile } from "obsidian";
 import type { EventRef } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
-import { findLitNoteFile } from "./litNoteFinder";
-import { downloadYouTubeTranscript, getYouTubeUrlFromItem } from "./youtubeTranscript";
+import { findLitNoteFile, litNotePath } from "commons/litnote";
+import { downloadYouTubeTranscript } from "commons/youtube";
+import { getYouTubeUrlFromItem } from "./youtubeItem";
 import { approveTranscriptUpdate } from "./transcriptProtection";
 
 import type { NameStyle } from "./bibtexName";
@@ -22,8 +23,7 @@ export interface LitNoteWriterSettings {
  * Normalise lit note path from settings and citekey.
  */
 export function notePathFor(settings: LitNoteWriterSettings, citekey: string): string {
-	const folderPath = normalizePath(settings.litNotesFolder);
-	return normalizePath(`${folderPath}/${citekey}.md`);
+	return litNotePath(settings.litNotesFolder, citekey);
 }
 
 export function existingFile(

@@ -3,15 +3,12 @@ import type { App, Plugin, TFile } from "obsidian";
 import { getFrontMatterInfo } from "obsidian";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import { registerCaptionTimingRepair, runCaptionTiming } from "../../src/litNote/captionTiming";
-import { fetchYouTubeCaptions } from "../../src/litNote/youtubeTranscript";
-import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
-import { prepareTranscript } from "../../src/litNote/transcriptSentences";
-import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
+import { fetchYouTubeCaptions, parseStoredTranscript, prepareTranscript, readInlineTimings } from "commons/youtube";
 import { createdNotices } from "../__mocks__/obsidian";
-import { cacheForTest } from "./transcriptAlignment.test";
+import { cacheForTest } from "./alignmentFixture";
 
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
-vi.mock("../../src/litNote/youtubeTranscript", async (original) => ({
+vi.mock("commons/youtube", async (original) => ({
 	...await original<Record<string, unknown>>(), fetchYouTubeCaptions: vi.fn(),
 }));
 vi.mock("obsidian", async (original) => ({

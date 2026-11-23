@@ -4,7 +4,7 @@ import { parser } from "@lezer/markdown";
 import { editorInfoField, getFrontMatterInfo, MarkdownView, Notice, setIcon, setTooltip, type Plugin, type TFile } from "obsidian";
 import { getActiveLeafInFocusedWindow } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
-import { DEFAULT_TRANSCRIPT_HEADING, detectTranscriptSections, normalizeTranscriptHeading } from "./transcriptSection";
+import { DEFAULT_TRANSCRIPT_HEADING, detectTranscriptSections, normalizeTranscriptHeading } from "commons/youtube";
 
 interface TranscriptRange {
 	from: number;

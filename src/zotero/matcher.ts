@@ -110,5 +110,5 @@ export function matchTitles(
 	return Math.round(finalScore);
 }
 
-export { findLitNoteForCitekey } from "../litNote/litNoteFinder";
+export { findLitNoteForCitekey } from "commons/litnote";
 

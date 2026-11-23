@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EditorState } from "@codemirror/state";
 import {
-	clampPan,
 	collectNoteTimestamps,
 	embedUrl,
 	findNoteVideoId,
@@ -10,13 +9,16 @@ import {
 	linkUrlAt,
 	parseYouTubeTime,
 	parseYouTubeUrl,
+	timestampLink,
+	timestampClipboardText,
+	watchUrl,
+} from "commons/youtube";
+import {
+	clampPan,
 	screenshotClipboardText,
 	screenshotFileName,
 	compactNoteName,
 	snipRect,
-	timestampLink,
-	timestampClipboardText,
-	watchUrl,
 	zoomAt,
 } from "../../src/video/youtubeLinks";
 

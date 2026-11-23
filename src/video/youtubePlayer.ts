@@ -1,5 +1,5 @@
 import { setTimeoutIn, type CancelTimer } from "commons/windows";
-import { embedUrl } from "./youtubeLinks";
+import { embedUrl } from "commons/youtube";
 
 /** YouTube player states reported in `infoDelivery` messages. */
 export const PLAYER_STATE = { unstarted: -1, ended: 0, playing: 1, paused: 2, buffering: 3, cued: 5 } as const;

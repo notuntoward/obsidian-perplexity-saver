@@ -5,7 +5,7 @@ import { flashEditorLine, LINE_FLASH_DEFAULT_PROFILE, type LineFlashMode } from 
 import { getActiveLeafInFocusedWindow, getEditorLeafLocations } from "commons/workspace";
 import { writeClipboardIn } from "commons/windows";
 import { getFrontMatterInfo, MarkdownView, Notice, type App, type WorkspaceLeaf } from "obsidian";
-import { timestampClipboardText, timestampLink } from "./youtubeLinks";
+import { timestampClipboardText, timestampLink } from "commons/youtube";
 import { isTranscriptCapturePosition, transcriptStart } from "../litNote/transcriptProtection";
 
 interface InsertionAnchors {

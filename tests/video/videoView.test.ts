@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceLeaf } from "obsidian";
 import { createdNotices } from "../__mocks__/obsidian";
 import { VideoView, type VideoViewHost } from "../../src/video/videoView";
-import { timestampLink, type TimestampCopyFormat } from "../../src/video/youtubeLinks";
+import { timestampLink, type TimestampCopyFormat } from "commons/youtube";
 import { MockMenu } from "commons/testing";
 
 const writeClipboard = vi.hoisted(() => vi.fn());

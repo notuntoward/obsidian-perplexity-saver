@@ -17,7 +17,7 @@ import path from "path";
 import { htmlToMarkdown, App, FileSystemAdapter, Notice, TFile } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { findLitNoteForCitekey } from "../zotero/matcher";
-import { normalizeTranscriptHeading } from "./transcriptSection";
+import { normalizeTranscriptHeading } from "commons/youtube";
 
 
 // ---------------------------------------------------------------------------

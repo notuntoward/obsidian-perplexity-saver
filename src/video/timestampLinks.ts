@@ -3,7 +3,7 @@ import type { Plugin } from "obsidian";
 import { onEachDocument } from "commons/windows";
 import { registerLinkActivation, registerNativeLinkActivation } from "commons/links";
 import { Notice } from "obsidian";
-import { linkUrlAt, parseYouTubeUrl } from "./youtubeLinks";
+import { linkUrlAt, parseYouTubeUrl } from "commons/youtube";
 
 export type TimestampClickAction = "viewer" | "browser";
 

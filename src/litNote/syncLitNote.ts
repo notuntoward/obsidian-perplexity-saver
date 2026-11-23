@@ -4,7 +4,7 @@ import { buildAliases, buildAttachmentLinks, buildLitNoteFrontmatter } from "./b
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
 import type { AttachmentReviewRow, CitekeyConflictDetails, DecisionButton, NoteDecision } from "./decisionModal";
-import { getLitNoteFiles } from "./litNoteFinder";
+import { getLitNoteFiles } from "commons/litnote";
 import type { ZoteroItemPayload } from "./types";
 import type { LitNoteWriterSettings } from "./writeLitNote";
 

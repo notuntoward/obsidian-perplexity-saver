@@ -1,6 +1,6 @@
 import { MarkdownView, Menu, Notice, setIcon, setTooltip, type Plugin, type TFile, type WorkspaceLeaf } from "obsidian";
 import { getEditorLeafLocations } from "commons/workspace";
-import { findNoteVideoId } from "./youtubeLinks";
+import { findNoteVideoId } from "commons/youtube";
 import { VIDEO_VIEW_TYPE, VideoView } from "./videoView";
 
 /** Find a player for this video in any window, including a deferred tab. */

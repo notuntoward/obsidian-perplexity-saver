@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
 	isValidYouTubeUrl,
 	extractYouTubeUrlFromText,
-	getYouTubeUrlFromItem,
 	extractYouTubeVideoId,
 	buildTimestampUrl,
 	formatTimestamp,
@@ -11,12 +10,13 @@ import {
 	formatTranscript,
 	downloadYouTubeTranscript,
 	type TranscriptLine,
-} from "../../src/litNote/youtubeTranscript";
+	parseStoredTranscript,
+	prepareTranscript,
+	readInlineTimings,
+	alignedSentenceRows,
+} from "commons/youtube";
+import { getYouTubeUrlFromItem } from "../../src/litNote/youtubeItem";
 import { requestUrlMock } from "../__mocks__/obsidian";
-import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
-import { prepareTranscript } from "../../src/litNote/transcriptSentences";
-import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
-import { alignedSentenceRows } from "../../src/litNote/transcriptAlignment";
 
 describe("youtubeTranscript", () => {
 	beforeEach(() => {

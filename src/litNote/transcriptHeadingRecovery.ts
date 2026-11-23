@@ -5,7 +5,7 @@ import {
 	headingsFromText,
 	normalizeTranscriptHeading,
 	sameTranscriptHeading,
-} from "./transcriptSection";
+} from "commons/youtube";
 
 /** A note whose transcript sits under a heading other than the configured one. */
 export interface StrandedTranscript {

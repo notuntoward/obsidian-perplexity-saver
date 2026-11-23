@@ -1,7 +1,7 @@
 import { setTimeoutIn } from "commons/windows";
 import { ItemSuggestModal } from "commons/modal";
 import { App, Editor, FuzzySuggestModal, MarkdownView, Notice, TFile } from "obsidian";
-import { getLitNoteFiles } from "../litNote/litNoteFinder";
+import { getLitNoteFiles } from "commons/litnote";
 import type { ZoteroClient } from "../zotero/zoteroClient";
 import { sortByEngagement } from "../litNote/engagementSort";
 import type { ViewTracker } from "../litNote/viewTracker";

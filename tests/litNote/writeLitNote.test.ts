@@ -12,10 +12,7 @@ import {
 	writeNote,
 } from "../../src/litNote/writeLitNote";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
-import { parseStoredTranscript } from "../../src/litNote/transcriptSection";
-import { prepareTranscript } from "../../src/litNote/transcriptSentences";
-import { readInlineTimings } from "../../src/litNote/transcriptTimingStorage";
-import { alignedSentenceRows } from "../../src/litNote/transcriptAlignment";
+import { parseStoredTranscript, prepareTranscript, readInlineTimings, alignedSentenceRows } from "commons/youtube";
 
 function makeMockFile(path: string): TFile {
 	return Object.assign(Object.create(TFile.prototype), { path });

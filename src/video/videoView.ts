@@ -4,7 +4,15 @@ import { captureElementImage } from "commons/os";
 import { findLeafForFile, getActiveLeafInFocusedWindow, getWindowForLeaf, loadLeafIfDeferred } from "commons/workspace";
 import { requestFrameIn, setTimeoutIn, writeClipboardIn } from "commons/windows";
 import { getCommandHotkeyLabel, renderKeyHints } from "commons/modal";
-import { findTranscriptRange } from "../litNote/transcriptSection";
+import {
+	findTranscriptRange,
+	collectNoteTimestamps,
+	findNoteVideoId,
+	formatClock,
+	timestampClipboardText,
+	watchUrl,
+	type TimestampCopyFormat,
+} from "commons/youtube";
 import {
 	copyInsertionFallback,
 	getNoteInsertionPosition,
@@ -19,18 +27,12 @@ import {
 } from "./noteInsertion";
 import {
 	clampPan,
-	collectNoteTimestamps,
-	findNoteVideoId,
-	formatClock,
 	screenshotClipboardText,
 	screenshotFileName,
 	snipRect,
-	timestampClipboardText,
-	watchUrl,
 	zoomAt,
 	type SnipRect,
 	type ZoomState,
-	type TimestampCopyFormat,
 } from "./youtubeLinks";
 import { PLAYER_STATE, YouTubeEmbed, type PlayerInfo } from "./youtubePlayer";
 import { openGoToTime } from "./goToTime";
