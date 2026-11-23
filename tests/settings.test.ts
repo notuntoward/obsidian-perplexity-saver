@@ -2,239 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import PerplexitySaverPlugin from "../src/main";
 import { PerplexitySaverSettingTab } from "../src/settingsTab";
 import type { App, SettingDefinitionGroup } from "obsidian";
-import { createLineFlashSettingsGroup } from "commons/flash";
-import { insertionThemeFlashAppearance } from "../src/video/noteInsertion";
 import { HeadlineMethod } from "../src/normalize/headlines";
 
-vi.mock("commons/flash", async (original) => {
-	const actual = await original<typeof import("commons/flash")>();
-	return { ...actual, createLineFlashSettingsGroup: vi.fn(actual.createLineFlashSettingsGroup) };
-});
 
 vi.mock("obsidian", async (original) => ({
 	...await original<Record<string, unknown>>(),
 	debounce: (callback: () => void) => callback,
 }));
 
-describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", () => {
-	it("discards obsolete timing opt-ins so a saved off preference cannot hide transcript repair", async () => {
-		const app = { workspace: { getLeavesOfType: () => [] } } as unknown as App;
-		const plugin = new PerplexitySaverPlugin(app, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({ captionWordTiming: false, whisperxEnabled: true, whisperxPythonPath: "obsolete" });
-		await plugin.loadSettings();
-		expect(plugin.settings).not.toHaveProperty("captionWordTiming");
-		expect(plugin.settings).not.toHaveProperty("whisperxPythonPath");
-		expect(plugin.settings).not.toHaveProperty("whisperxEnabled");
-		const tab = new PerplexitySaverSettingTab(app, plugin);
-		expect(JSON.stringify(tab.getSettingDefinitions())).not.toContain("captionWordTiming");
-	});
-
-	it("defaults transcript folding on and preserves an explicit off setting", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.collapseTranscriptOnOpen).toBe(true);
-		vi.mocked(plugin.loadData).mockResolvedValue({ collapseTranscriptOnOpen: false });
-		await plugin.loadSettings();
-		expect(plugin.settings.collapseTranscriptOnOpen).toBe(false);
-		const tab = new PerplexitySaverSettingTab({} as App, plugin);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Collapse transcript on open",
-			control: { type: "toggle", key: "collapseTranscriptOnOpen" },
-		}));
-		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
-		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("collapseTranscriptOnOpen", true);
-		expect(plugin.settings.collapseTranscriptOnOpen).toBe(true);
-		expect(plugin.saveSettings).toHaveBeenCalledOnce();
-	});
-
-	it("defaults copies to link only and migrates the previous list-item value", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.timestampCopyFormat).toBe("link");
-		vi.mocked(plugin.loadData).mockResolvedValue({ timestampCopyFormat: "list" });
-		await plugin.loadSettings();
-		expect(plugin.settings.timestampCopyFormat).toBe("unordered");
-	});
-
-	it("defaults playback pause on for timestamp and screenshot actions and places it beside their settings", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.pausePlaybackOnMediaActions).toBe(true);
-		vi.mocked(plugin.loadData).mockResolvedValue({ pausePlaybackOnMediaActions: false });
-		await plugin.loadSettings();
-		expect(plugin.settings.pausePlaybackOnMediaActions).toBe(false);
-
-		const group = new PerplexitySaverSettingTab({} as App, plugin)
-			.getSettingDefinitions()
-			.find((item): item is SettingDefinitionGroup =>
-				"type" in item && item.type === "group" && item.heading === "Video viewer");
-		expect(group?.items).toBeDefined();
-		const items = group!.items!;
-		const copyIndex = items.findIndex((item) => item.name === "Copy timestamp format");
-		const pause = items[copyIndex + 1];
-		expect(pause).toMatchObject({
-			name: "Pause playback for timestamp and screenshot actions",
-			control: { type: "toggle", key: "pausePlaybackOnMediaActions" },
-		});
-	});
-
-	it("defaults toolbar captures to insertion and preserves and saves an explicit copy choice", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.videoToolbarCaptureAction).toBe("insert");
-		vi.mocked(plugin.loadData).mockResolvedValue({ videoToolbarCaptureAction: "copy" });
-		await plugin.loadSettings();
-		expect(plugin.settings.videoToolbarCaptureAction).toBe("copy");
-		const tab = new PerplexitySaverSettingTab({} as App, plugin);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "Video viewer");
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Toolbar screenshot action",
-			control: {
-				type: "dropdown", key: "videoToolbarCaptureAction",
-				options: { insert: "Insert into note (default)", copy: "Copy to clipboard" },
-			},
-		}));
-		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
-		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("videoToolbarCaptureAction", "insert");
-		expect(plugin.settings.videoToolbarCaptureAction).toBe("insert");
-		expect(plugin.saveSettings).toHaveBeenCalledOnce();
-	});
-
-	it("defaults YouTube captions off, preserves an explicit on choice and exposes a saved toggle", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.showYoutubeCaptions).toBe(false);
-		vi.mocked(plugin.loadData).mockResolvedValue({ showYoutubeCaptions: true });
-		await plugin.loadSettings();
-		expect(plugin.settings.showYoutubeCaptions).toBe(true);
-		const tab = new PerplexitySaverSettingTab({} as App, plugin);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "Video viewer");
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Show YouTube captions",
-			control: { type: "toggle", key: "showYoutubeCaptions" },
-		}));
-		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
-		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("showYoutubeCaptions", false);
-		expect(plugin.settings.showYoutubeCaptions).toBe(false);
-		expect(plugin.saveSettings).toHaveBeenCalledOnce();
-	});
-
-	it("defaults inserted timestamps to the current list and offers every insertion form", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.timestampListStyle).toBe("match");
-		vi.mocked(plugin.loadData).mockResolvedValue({ timestampListStyle: "task" });
-		await plugin.loadSettings();
-		expect(plugin.settings.timestampListStyle).toBe("task");
-		const tab = new PerplexitySaverSettingTab({} as App, plugin);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "Video viewer");
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Insert timestamp format",
-			control: {
-				type: "dropdown", key: "timestampListStyle",
-				options: {
-					match: "Match current list (default)",
-					unordered: "Unordered list (-)",
-					ordered: "Ordered list (1.)",
-					task: "Task list (- [ ])",
-					link: "Plain timestamp only",
-				},
-			},
-		}));
-		vi.spyOn(plugin, "saveSettings").mockResolvedValue();
-		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("timestampListStyle", "ordered");
-		expect(plugin.settings.timestampListStyle).toBe("ordered");
-		expect(plugin.saveSettings).toHaveBeenCalledOnce();
-	});
-
-	it("puts insertion marking last with dependent flash controls disabled when highlighting is off", async () => {
-		const plugin = new PerplexitySaverPlugin({} as App, {
-			id: "perplexity-saver", name: "Perplexity Saver", version: "1.0.0",
-			minAppVersion: "1.14.0", author: "", description: "",
-		});
-		vi.spyOn(plugin, "loadData").mockResolvedValue({});
-		await plugin.loadSettings();
-		expect(plugin.settings.insertFlashMode).toBe("centered");
-		expect(plugin.settings.insertFlashUseThemeColors).toBe(true);
-		expect(plugin.settings.insertFlashColorLight).toBe("#6496ff");
-		expect(plugin.settings.insertFlashColorDark).toBe("#6496ff");
-
-		const tab = new PerplexitySaverSettingTab({} as App, plugin);
-		const definitions = tab.getSettingDefinitions();
-		const marking = definitions.at(-2);
-		expect(marking && "type" in marking && marking.type === "group" && marking.heading).toBe("Insertion marking");
-		if (!marking || !("type" in marking) || marking.type !== "group" || !marking.items) {
-			throw new Error("Missing insertion marking settings");
-		}
-		expect(marking.items.map((item) => item.name)).toEqual(["Show insertion target"]);
-
-		const flash = definitions.at(-1);
-		expect(flash && "type" in flash && flash.type === "group" && flash.heading).toBe("Insertion flash");
-		if (!flash || !("type" in flash) || flash.type !== "group" || !flash.items) {
-			throw new Error("Missing insertion flash settings");
-		}
-		expect(flash.items.map((item) => item.name)).toEqual(["Flash Style", "Duration", "Width", "Colors"]);
-		const calls = vi.mocked(createLineFlashSettingsGroup).mock.calls;
-		expect(calls.at(-1)?.[0].colors?.themeFlash()).toEqual(insertionThemeFlashAppearance());
-
-		const controls = Object.fromEntries(flash.items.map((item) => [
-			item.name,
-			"control" in item ? item.control : undefined,
-		])) as Record<string, { disabled?: () => boolean } | undefined>;
-		expect(controls["Flash Style"]).toMatchObject({ type: "dropdown", key: "insertFlashMode" });
-		expect(flash.items[3]).toMatchObject({ name: "Colors", render: expect.any(Function) });
-		expect(flash.items[0]).toMatchObject({ aliases: expect.arrayContaining(["Highlight inserted line"]) });
-		const disabled = (name: string): boolean => controls[name]?.disabled?.() ?? false;
-
-		plugin.settings.insertFlashMode = "off";
-		for (const name of [
-			"Duration",
-			"Width",
-		]) expect(disabled(name)).toBe(true);
-
-		plugin.settings.insertFlashMode = "left";
-		plugin.settings.insertFlashUseThemeColors = true;
-		expect(disabled("Duration")).toBe(false);
-		expect(disabled("Width")).toBe(false);
-	});
-
-	const createMockPlugin = () => ({
+describe("Saver settings", () => {
+const createMockPlugin = () => ({
 		settings: {
 			timestampCopyFormat: "link",
 			timestampListStyle: "match",
@@ -272,28 +49,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		litNoteServerSettings: null as any,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
 	});
-
-	it("exposes the video workspace default and focus indicator settings", async () => {
-		const plugin = createMockPlugin();
-		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "YouTube transcripts");
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Initial video workspace",
-			control: expect.objectContaining({ type: "dropdown", key: "preferredVideoWorkspace" }),
-		}));
-		expect(group?.items).toContainEqual(expect.objectContaining({
-			name: "Video note focus indicator",
-			control: { type: "toggle", key: "videoNoteFocusIndicator" },
-		}));
-		vi.spyOn(tab, "refreshDomState").mockImplementation(() => {});
-		await tab.setControlValue("preferredVideoWorkspace", "both");
-		expect((plugin.settings as any).preferredVideoWorkspace).toBe("both");
-		expect((plugin.settings as any).videoNoteFocusIndicator).toBe(true);
-		expect(plugin.saveSettings).toHaveBeenCalledOnce();
-	});
-
-	it("getSettingDefinitions returns all expected top-level settings and groups", () => {
+it("getSettingDefinitions returns all expected top-level settings and groups", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
@@ -313,7 +69,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(names).toContain("Literature note formatting");
 	});
 
-	it("headlineLeadBias disabled predicate evaluates based on headlineMethod", () => {
+it("headlineLeadBias disabled predicate evaluates based on headlineMethod", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
@@ -334,7 +90,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(leadBiasSetting.control.disabled()).toBe(false);
 	});
 
-	it("sourceTitleMaxChars disabled predicate evaluates based on autoFetchSourceTitles", () => {
+it("sourceTitleMaxChars disabled predicate evaluates based on autoFetchSourceTitles", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
@@ -354,7 +110,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(maxCharsSetting.control.disabled()).toBe(true);
 	});
 
-	it("setControlValue updates settings, triggers saveSettings and refreshes DOM state", async () => {
+it("setControlValue updates settings, triggers saveSettings and refreshes DOM state", async () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 		const refreshSpy = vi.spyOn(tab, "refreshDomState");
@@ -366,32 +122,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("offers and saves every timestamp copy format in the video viewer settings", async () => {
-		const plugin = createMockPlugin();
-		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
-		const group = tab.getSettingDefinitions().find((item): item is SettingDefinitionGroup =>
-			"type" in item && item.type === "group" && item.heading === "Video viewer");
-		expect(group?.type).toBe("group");
-		if (!group?.items) throw new Error("Missing Video viewer settings");
-		const format = group.items.find((item) => "name" in item && item.name === "Copy timestamp format");
-		expect(format && "control" in format ? format.control : undefined).toMatchObject({
-			type: "dropdown", key: "timestampCopyFormat",
-			options: {
-				link: "Timestamp link only (default)",
-				unordered: "Unordered list (-)",
-				ordered: "Ordered list (1.)",
-				task: "Task list (- [ ])",
-			},
-		});
-		const insertIndex = group.items.findIndex((item) => "name" in item && item.name === "Insert timestamp format");
-		const copyIndex = group.items.findIndex((item) => item === format);
-		expect(copyIndex).toBe(insertIndex + 1);
-		await tab.setControlValue("timestampCopyFormat", "task");
-		expect(plugin.settings.timestampCopyFormat).toBe("task");
-		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
-	});
-
-	it("authorDropVon disabled predicate evaluates based on authorFormatStyle", () => {
+it("authorDropVon disabled predicate evaluates based on authorFormatStyle", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);
 
@@ -412,7 +143,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(dropVonSetting.control.disabled()).toBe(true);
 	});
 
-	it("setControlValue updates authorFormatStyle and authorDropVon", async () => {
+it("setControlValue updates authorFormatStyle and authorDropVon", async () => {
 		const plugin = createMockPlugin();
 		(plugin as any).litNoteServerSettings = {
 			litNotesFolder: "lit/lit_notes",
@@ -431,7 +162,7 @@ describe("PerplexitySaverSettingTab declarative settings API (Obsidian 1.13)", (
 		expect(plugin.litNoteServerSettings.authorDropVon).toBe(true);
 	});
 
-	it("setControlValue updates downloadYoutubeTranscripts", async () => {
+it("setControlValue updates downloadYoutubeTranscripts", async () => {
 		const plugin = createMockPlugin();
 		(plugin as any).litNoteServerSettings = {
 			litNotesFolder: "lit/lit_notes",

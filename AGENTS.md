@@ -33,6 +33,13 @@ Read the shared `perplexity-debugging` skill at
 missing, treat live browser escalation as blocked rather than copying an old
 profile or requesting repeated console paste.
 
+## Plugin boundaries
+
+Video playback, transcript UI/protection/folding and video workspaces belong to
+`obsidian-watchword`, not this plugin. Saver keeps Zotero note creation and optional
+caption downloads. Shared note formats and optional workspace-event handoffs live
+in `commons/youtube`; never import Watchword source into Saver.
+
 ## Shared library: commons
 
 Use commons for workspace/window/tab/focus, per-window timers/clipboard, modal,

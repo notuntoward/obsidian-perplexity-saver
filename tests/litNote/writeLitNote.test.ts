@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import path from "path";
+import { EventEmitter } from "node:events";
 import { App, FileSystemAdapter, TFile } from "obsidian";
 import { createdNotices } from "../__mocks__/obsidian";
 import {
@@ -12,13 +13,39 @@ import {
 	writeNote,
 } from "../../src/litNote/writeLitNote";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
-import { parseStoredTranscript, prepareTranscript, readInlineTimings, alignedSentenceRows } from "commons/youtube";
+import { onTranscriptUpdateApproval, parseStoredTranscript, prepareTranscript, readInlineTimings, alignedSentenceRows } from "commons/youtube";
 
 function makeMockFile(path: string): TFile {
 	return Object.assign(Object.create(TFile.prototype), { path });
 }
 
 describe("writeLitNote", () => {
+	it.each([false, true])("offers an exact overwrite to an optional separate transcript protector (write fails: %s)", async (fails) => {
+		const file = makeMockFile("lit/notes/video.md");
+		const events = new EventEmitter();
+		const revoke = vi.fn();
+		const approve = vi.fn(() => revoke);
+		const body = "# Transcript\nNew captions\n";
+		const app = {
+			workspace: { layoutReady: true, trigger: events.emit.bind(events), on: events.on.bind(events) },
+			vault: {
+				getAbstractFileByPath: () => file,
+				modify: async () => {
+					expect(approve).toHaveBeenCalledExactlyOnceWith(file, body, false);
+					if (fails) throw new Error("Write failed");
+				},
+			},
+		} as unknown as App;
+		onTranscriptUpdateApproval(app, approve);
+		if (fails) {
+			await expect(writeLitNote(app, file.path, body, undefined, file)).rejects.toThrow("Write failed");
+			expect(revoke).toHaveBeenCalledOnce();
+		} else {
+			await expect(writeLitNote(app, file.path, body, undefined, file)).resolves.toBe(file);
+			expect(revoke).not.toHaveBeenCalled();
+		}
+	});
+
 	it("computes note path correctly", () => {
 		const settings = { litNotesFolder: "lit/notes" };
 		expect(notePathFor(settings, "Smith2020")).toBe("lit/notes/Smith2020.md");
@@ -74,6 +101,7 @@ describe("writeLitNote", () => {
 		let registeredCb: (() => void) | null = null;
 		const app = {
 			workspace: {
+				trigger: vi.fn(),
 				layoutReady: false,
 				onLayoutReady: vi.fn((cb: () => void) => {
 					registeredCb = cb;
@@ -94,7 +122,7 @@ describe("writeLitNote", () => {
 		let fmApplied: Record<string, unknown> = {};
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => {
 					if (p === "lit/notes/NewNote.md" && createdPath) return mockFile;
@@ -135,7 +163,7 @@ describe("writeLitNote", () => {
 		let fmApplied: Record<string, unknown> = {};
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn(() => null),
 				createFolder: vi.fn(),
@@ -174,7 +202,7 @@ describe("writeLitNote", () => {
 		let modifiedContent = "";
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => {
 					if (p === "lit/notes/ExistingNote.md") return mockFile;
@@ -216,7 +244,7 @@ describe("writeLitNote", () => {
 		let fmApplied: Record<string, unknown> = {};
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => {
 					if (p === "lit/notes/Sample2024.md" && createdPath) return mockFile;
@@ -254,6 +282,7 @@ describe("writeLitNote", () => {
 		let content = "";
 		const workspace = {
 			layoutReady: false,
+			trigger: vi.fn(),
 			onLayoutReady: vi.fn((callback: () => void) => { ready = callback; }),
 		};
 		const generateMarkdownLink = vi.fn(() => "[[attachments/paper.pdf|PDF]]");
@@ -291,7 +320,7 @@ describe("writeLitNote", () => {
 
 		const mockFile = makeMockFile("lit/notes/NoAuthor2024.md");
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn(() => mockFile),
 				createFolder: vi.fn(),
@@ -322,7 +351,7 @@ describe("writeLitNote", () => {
 
 		const mockFile = makeMockFile("lit/notes/WithAuthor2024.md");
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn(() => mockFile),
 				createFolder: vi.fn(),
@@ -385,7 +414,7 @@ describe("writeLitNote", () => {
 		});
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytLecture2024.md" && createdPath ? mockFile : null)),
 				createFolder: vi.fn(),
@@ -431,7 +460,7 @@ describe("writeLitNote", () => {
 		requestUrlMock.mockClear();
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytDisabled2024.md" && createdPath ? mockFile : null)),
 				createFolder: vi.fn(),
@@ -469,7 +498,7 @@ describe("writeLitNote", () => {
 		requestUrlMock.mockRejectedValueOnce(new Error("Network timeout"));
 
 		const app = {
-			workspace: { layoutReady: true },
+			workspace: { layoutReady: true, trigger: vi.fn() },
 			vault: {
 				getAbstractFileByPath: vi.fn((p) => (p === "lit/notes/ytError2024.md" && createdPath ? mockFile : null)),
 				createFolder: vi.fn(),

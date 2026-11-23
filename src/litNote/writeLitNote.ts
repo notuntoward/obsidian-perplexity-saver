@@ -5,9 +5,8 @@ import type { EventRef } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
 import { buildLitNoteBody, buildLitNoteFrontmatter } from "./buildLitNote";
 import { findLitNoteFile, litNotePath } from "commons/litnote";
-import { downloadYouTubeTranscript } from "commons/youtube";
+import { approveTranscriptUpdate, downloadYouTubeTranscript } from "commons/youtube";
 import { getYouTubeUrlFromItem } from "./youtubeItem";
-import { approveTranscriptUpdate } from "./transcriptProtection";
 
 import type { NameStyle } from "./bibtexName";
 
@@ -129,7 +128,7 @@ export async function writeLitNote(
 		}
 
 		if (file) {
-			const revokeApproval = approveTranscriptUpdate(file, contentOrBody, !!frontmatter && Object.keys(frontmatter).length > 0);
+			const revokeApproval = approveTranscriptUpdate(app, file, contentOrBody, !!frontmatter && Object.keys(frontmatter).length > 0);
 			try {
 				await app.vault.modify(file, contentOrBody);
 			} catch (error: unknown) {

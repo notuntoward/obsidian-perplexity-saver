@@ -102,6 +102,7 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 			}),
 		},
 		workspace: {
+			trigger: vi.fn(),
 			layoutReady: true,
 			getLeaf: vi.fn(() => ({
 				openFile: vi.fn(),

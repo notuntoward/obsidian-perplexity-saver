@@ -1,12 +1,6 @@
 import type { HeadlineMethod } from "./normalize/headlines";
 import type { NameStyle } from "./litNote/bibtexName";
-import { DEFAULT_TRANSCRIPT_HEADING, type TimestampCopyFormat } from "commons/youtube";
-import { LINE_FLASH_DEFAULT_PROFILE, type LineFlashMode } from "commons/flash";
-import type { TimestampClickAction } from "./video/timestampLinks";
-import type { VideoViewerLocation, VideoToolbarCaptureAction } from "./video/videoView";
-import type { TimestampListStyle } from "./video/noteInsertion";
-import type { PreferredVideoWorkspace, SavedVideoWorkspace, VideoPlaybackPosition } from "./video/workspaceLayout";
-import type { TranscriptPanelLocation, TranscriptSearchSettings } from "./litNote/transcriptView";
+import { DEFAULT_TRANSCRIPT_HEADING } from "commons/youtube";
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -83,39 +77,10 @@ export interface PerplexitySaverSettings {
 	downloadYoutubeTranscripts: boolean;
 	/**
 	 * Text of the level-1 heading that downloaded YouTube transcripts are stored
-	 * under, and that the transcript side panel reads from.
+	 * under. Match this heading in Watchword when using a custom name.
 	 */
 	transcriptHeading: string;
-	/** Fold the stored transcript once whenever its note opens. */
-	collapseTranscriptOnOpen: boolean;
-	/** What a plain click on a YouTube timestamp link does; Ctrl/Cmd-click does the other. */
-	timestampClickAction: TimestampClickAction;
-	/** Where a new video viewer opens: a split next to the note, or its own window. */
-	videoViewerLocation: VideoViewerLocation;
-	timestampCopyFormat: TimestampCopyFormat;
-	timestampListStyle: TimestampListStyle;
-	pausePlaybackOnMediaActions: boolean;
-	showInsertionTarget: boolean;
-	/** Highlight the line a timestamp or screenshot was inserted on. */
-	insertFlashMode: LineFlashMode | "off";
-	insertFlashDuration: number;
-	insertFlashSize: number;
-	insertFlashUseThemeColors: boolean;
-	insertFlashColorLight: string;
-	insertFlashColorDark: string;
-	videoToolbarCaptureAction: VideoToolbarCaptureAction;
-	showYoutubeCaptions: boolean;
-	videoNoteFocusIndicator: boolean;
-	preferredVideoWorkspace: PreferredVideoWorkspace;
-	videoPlayback: Record<string, VideoPlaybackPosition>;
-	videoWorkspaces: Record<string, SavedVideoWorkspace>;
-	/** Where the transcript panel opens: the right sidebar, or below the video viewer. */
-	transcriptPanelLocation: TranscriptPanelLocation;
-	/** Scroll transcript panels to keep the line the video viewer is playing in view. */
-	followTranscript: boolean;
-	transcriptSearchBehavior: TranscriptSearchSettings["keyboard"];
-	transcriptSearchMatching: TranscriptSearchSettings["matching"];
-	transcriptSearchHighlights: TranscriptSearchSettings["highlights"];
+
 }
 
 export const DEFAULT_SETTINGS: PerplexitySaverSettings = {
@@ -138,28 +103,4 @@ export const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	authorDropVon: false,
 	downloadYoutubeTranscripts: true,
 	transcriptHeading: DEFAULT_TRANSCRIPT_HEADING,
-	collapseTranscriptOnOpen: true,
-	timestampClickAction: "viewer",
-	videoViewerLocation: "split",
-	timestampCopyFormat: "link",
-	timestampListStyle: "match",
-	pausePlaybackOnMediaActions: true,
-	showInsertionTarget: true,
-	insertFlashMode: LINE_FLASH_DEFAULT_PROFILE.mode,
-	insertFlashDuration: LINE_FLASH_DEFAULT_PROFILE.durationMs,
-	insertFlashSize: LINE_FLASH_DEFAULT_PROFILE.sizeChars,
-	insertFlashUseThemeColors: true,
-	insertFlashColorLight: "#6496ff",
-	insertFlashColorDark: "#6496ff",
-	videoToolbarCaptureAction: "insert",
-	showYoutubeCaptions: false,
-	videoNoteFocusIndicator: true,
-	preferredVideoWorkspace: "video",
-	videoPlayback: {},
-	videoWorkspaces: {},
-	transcriptPanelLocation: "sidebar",
-	followTranscript: true,
-	transcriptSearchBehavior: "obsidian",
-	transcriptSearchMatching: "all-words",
-	transcriptSearchHighlights: "always",
 };

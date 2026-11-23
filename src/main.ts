@@ -1,7 +1,6 @@
 import {
 	Editor,
 	MarkdownView,
-	Notice,
 	Plugin,
 	debounce,
 } from "obsidian";
@@ -19,24 +18,14 @@ import { registerFootnoteNavigation } from "./normalize/footnoteNavigation";
 import { ZoteroClient } from "./zotero/zoteroClient";
 import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
 import { ViewTracker } from "./litNote/viewTracker";
-import {
-	type TimestampCopyFormat,
-} from "commons/youtube";
-import {
-	TRANSCRIPT_VIEW_TYPE,
-	TranscriptView,
-} from "./litNote/transcriptView";
-import { isSavedVideoWorkspace } from "./video/workspaceLayout";
+import { notifyTranscriptNoteOpened } from "commons/youtube";
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import { DEFAULT_SETTINGS, type PerplexitySaverSettings } from "./settings";
 import { PerplexitySaverSettingTab } from "./settingsTab";
 import { perplexityInputStateField, startImport } from "./dialog/inlineInput";
-import { VideoController } from "./video/videoController";
 
 export type { PerplexitySaverSettings };
-
-const FRAME_PENDING_CLASS = "perplexity-saver-frame-pending";
 
 export default class PerplexitySaverPlugin extends Plugin {
 	settings!: PerplexitySaverSettings;
@@ -45,24 +34,8 @@ export default class PerplexitySaverPlugin extends Plugin {
 	litNoteServerSettings: LitNoteServerSettings | null = null;
 	private litNoteServer: http.Server | null = null;
 
-	private framePendingBody: HTMLElement | null = null;
-	readonly video = new VideoController(this);
-
-	// Obsidian assigns the top-corner tab group classes only once the layout is ready, after views have rendered.
-	private markFramePending(): void {
-		const body = this.app.workspace.containerEl.ownerDocument.body;
-		body.addClass(FRAME_PENDING_CLASS);
-		this.framePendingBody = body;
-		this.app.workspace.onLayoutReady(() => {
-			body.removeClass(FRAME_PENDING_CLASS);
-			this.framePendingBody = null;
-		});
-	}
-
 	async onload(): Promise<void> {
-		this.markFramePending();
 		await this.loadSettings();
-		this.video.registerEditorFeatures();
 		registerFootnoteNavigation(this);
 		this.zoteroClient = new ZoteroClient({ port: this.settings.zoteroPort });
 
@@ -80,14 +53,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				this.viewTracker.rename(oldPath, file.path);
-				this.video.renameNote(oldPath, file.path);
 				this.persistViews();
 			})
 		);
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				this.viewTracker.remove(file.path);
-				this.video.forgetNote(file.path);
 				this.persistViews();
 			})
 		);
@@ -100,11 +71,9 @@ export default class PerplexitySaverPlugin extends Plugin {
 			authorDropVon: this.settings.authorDropVon,
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 			transcriptHeading: this.settings.transcriptHeading,
-			onNoteOpened: this.video.foldOpenedTranscript,
+			onNoteOpened: (file) => notifyTranscriptNoteOpened(this.app, file),
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
-
-		this.video.registerViews();
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -140,8 +109,6 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
-		this.framePendingBody?.removeClass(FRAME_PENDING_CLASS);
-		this.video.dispose();
 		if (this.litNoteServer) {
 			stopLitNoteServer(this.litNoteServer);
 			this.litNoteServer = null;
@@ -153,53 +120,25 @@ export default class PerplexitySaverPlugin extends Plugin {
 		void this.saveSettings();
 	}, 5000, true);
 
-	/** Propagate a changed transcript heading to note creation and open transcript panels. */
+	/** Propagate a changed transcript heading to literature-note creation. */
 	applyTranscriptHeading(): void {
 		if (this.litNoteServerSettings) {
 			this.litNoteServerSettings.transcriptHeading = this.settings.transcriptHeading;
-		}
-		for (const leaf of this.app.workspace.getLeavesOfType(TRANSCRIPT_VIEW_TYPE)) {
-			if (leaf.view instanceof TranscriptView) void leaf.view.reload();
 		}
 	}
 
 	async loadSettings(): Promise<void> {
 		const loaded: unknown = await this.loadData();
-		const stored: Omit<Partial<PerplexitySaverSettings>, "timestampCopyFormat"> & {
-			timestampCopyFormat?: TimestampCopyFormat | "list";
-			captionWordTiming?: boolean;
-			whisperxEnabled?: boolean;
-			whisperxPythonPath?: string;
-		} =
+		const stored: Partial<PerplexitySaverSettings> =
 			loaded && typeof loaded === "object"
 				? loaded
 				: {};
-		const {
-			captionWordTiming: _timing,
-			whisperxEnabled: _whisperx,
-			whisperxPythonPath: _pythonPath,
-			timestampCopyFormat,
-			...current
-		} = stored;
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, current, {
-			timestampCopyFormat: timestampCopyFormat === "list"
-				? "unordered"
-				: timestampCopyFormat ?? DEFAULT_SETTINGS.timestampCopyFormat,
-		});
-		this.settings.videoPlayback = { ...this.settings.videoPlayback };
-		this.settings.videoWorkspaces = {};
-		for (const [path, saved] of Object.entries(current.videoWorkspaces ?? {})) {
-			if (isSavedVideoWorkspace(saved)) this.settings.videoWorkspaces[path] = saved;
-			else {
-				console.error("Perplexity Saver: invalid saved video workspace", path);
-				new Notice(`Could not restore the saved video workspace for ${path}.`);
-			}
-		}
+		// Retain older video preferences in data.json for Watchword's explicit import.
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
-		this.video.refreshSettings();
 	}
 
 	/**
