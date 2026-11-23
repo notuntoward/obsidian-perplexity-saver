@@ -214,19 +214,19 @@ describe("Lit Note Builder", () => {
 	});
 
 	describe("Full note body Regressions", () => {
-		it("links the actual in-vault attachment rather than another file with the same name", () => {
+		it("links the actual in-vault attachment rather than another file with the same name", async () => {
 			createdNotices.length = 0;
 			const base = path.resolve("test-vault");
 			const file = Object.assign(new TFile(), { path: "attachments/paper.pdf" });
 			const generateMarkdownLink = vi.fn(() => "[[attachments/paper.pdf|PDF]]");
 			const app = {
 				vault: {
-					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base, stat: async () => ({ type: "file" }) }),
 					getAbstractFileByPath: vi.fn((p: string) => p === file.path ? file : null),
 				},
 				fileManager: { generateMarkdownLink },
 			} as unknown as App;
-			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+			const body = await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
 				title: "Paper",
 				citekey: "paper",
 				attachments: [{ path: path.join(base, "attachments", "paper.pdf") }],
@@ -236,38 +236,47 @@ describe("Lit Note Builder", () => {
 			expect(createdNotices).toHaveLength(0);
 		});
 
-		it("warns and does not create a misleading link for outside or unindexed attachments", () => {
+		it("explains outside, missing, unindexed and unresolved attachments without blocking note creation", async () => {
 			createdNotices.length = 0;
 			const base = path.resolve("test-vault");
 			const outside = path.join(`${base}-other`, "paper.pdf");
 			const missing = path.join(base, "attachments", "missing.pdf");
+			const unindexed = path.join(base, "attachments", "unindexed.pdf");
 			const app = {
 				vault: {
-					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+					adapter: Object.assign(new FileSystemAdapter(), {
+						getBasePath: () => base,
+						stat: async (p: string) => p.endsWith("unindexed.pdf") ? { type: "file" } : null,
+					}),
 					getAbstractFileByPath: vi.fn(() => null),
 				},
 				fileManager: { generateMarkdownLink: vi.fn() },
 			} as unknown as App;
-			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+			const body = await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
 				title: "Paper",
 				citekey: "paper",
-				attachments: [{ path: outside }, { path: missing }, { title: "Unknown PDF" }],
+				attachments: [{ path: outside }, { path: missing }, { path: unindexed }, { path: "relative/paper.pdf" }, { title: "Unknown PDF" }],
 			});
 			expect(body).not.toContain("[[paper.pdf|PDF]]");
 			expect(body).toContain("**PDF unavailable in vault**");
 			expect(app.fileManager.generateMarkdownLink).not.toHaveBeenCalled();
 			expect(createdNotices).toHaveLength(1);
 			expect(createdNotices[0].message).toContain(outside);
+			expect(createdNotices[0].message).toContain(`outside the open Obsidian vault (${base})`);
 			expect(createdNotices[0].message).toContain(missing);
-			expect(createdNotices[0].message).toContain("Unknown PDF: no file path supplied by Zotero");
-			expect(createdNotices[0].message).toContain("linked attachment base directory");
+			expect(createdNotices[0].message).toContain("file is missing");
+			expect(createdNotices[0].message).toContain(unindexed);
+			expect(createdNotices[0].message).toContain("not indexed by Obsidian");
+			expect(createdNotices[0].message).toContain("Unknown PDF: Zotero could not resolve a file path");
+			expect(createdNotices[0].message).toContain("Zotero did not provide an absolute file path");
+			expect(createdNotices[0].message).toContain("Linked Attachment Base Directory");
 			expect(createdNotices[0].message).not.toContain("ZotMoov");
 		});
 
-		it("warns for unresolved file attachments with URLs but not URL-only attachments", () => {
+		it("warns for unresolved file attachments with URLs but not URL-only attachments", async () => {
 			createdNotices.length = 0;
 			const app = { vault: {} } as App;
-			const body = buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+			const body = await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
 				title: "Paper",
 				citekey: "paper",
 				attachments: [
@@ -277,11 +286,31 @@ describe("Lit Note Builder", () => {
 			});
 			expect(body).toContain("**Attachment unavailable in vault**");
 			expect(createdNotices).toHaveLength(1);
-			expect(createdNotices[0].message).toContain("Missing file: no file path supplied by Zotero");
+			expect(createdNotices[0].message).toContain("Missing file: Zotero could not resolve a file path");
 			expect(createdNotices[0].message).not.toContain("Web link");
 		});
 
-		it("assembles the complete note with clean callouts and all branches", () => {
+		it("reports filesystem errors without misdiagnosing a missing or unindexed file", async () => {
+			createdNotices.length = 0;
+			const base = path.resolve("test-vault");
+			const app = {
+				vault: {
+					adapter: Object.assign(new FileSystemAdapter(), {
+						getBasePath: () => base,
+						stat: async () => { throw new Error("Access denied"); },
+					}),
+					getAbstractFileByPath: () => null,
+				},
+			} as unknown as App;
+			await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+				title: "Paper", citekey: "paper",
+				attachments: [{ path: path.join(base, "restricted.pdf") }],
+			});
+			expect(createdNotices[0].message).toContain("Obsidian could not check this file: Access denied");
+			expect(createdNotices[0].message).not.toContain("not indexed");
+		});
+
+		it("assembles the complete note with clean callouts and all branches", async () => {
 			const item: ZoteroItemPayload = {
 				title: "Test Note",
 				citekey: "Test24",
@@ -292,7 +321,7 @@ describe("Lit Note Builder", () => {
 			};
 			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
 			const mockSettings = { litNotesFolder: "" } as any;
-			const body = buildLitNoteBody(mockApp, mockSettings, item);
+			const body = await buildLitNoteBody(mockApp, mockSettings, item);
 			expect(body).toContain("> [!info]- &nbsp;[**Zotero**]()");
 			expect(body).toContain("> Smith (2024)."); // bibliography
 			expect(body).toContain("> [!note]- &nbsp;Zotero Note (2)");
@@ -300,21 +329,21 @@ describe("Lit Note Builder", () => {
 			expect(body).toContain("> ### Note 2"); // h1 promoted to h3 and indented
 		});
 
-		it("ensures there is a blank line before the first info callout to prevent Live Preview auto-expansion", () => {
+		it("ensures there is a blank line before the first info callout to prevent Live Preview auto-expansion", async () => {
 			const item: ZoteroItemPayload = {
 				title: "Test Note",
 				citekey: "Test24",
 			};
 			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
 			const mockSettings = { litNotesFolder: "" } as any;
-			const body = buildLitNoteBody(mockApp, mockSettings, item);
+			const body = await buildLitNoteBody(mockApp, mockSettings, item);
 			
 			// The regression: Obsidian auto-expands callouts if they are on the very first visible line.
 			// The generated body string MUST start with a newline to prevent this.
 			expect(body.startsWith("\n> [!info]-")).toBe(true);
 		});
 
-		it("inserts transcript two blank lines below callout and bibliography under # Transcript heading", () => {
+		it("inserts transcript two blank lines below callout and bibliography under # Transcript heading", async () => {
 			const item: ZoteroItemPayload = {
 				title: "YouTube Video Note",
 				citekey: "astley1987",
@@ -325,7 +354,7 @@ describe("Lit Note Builder", () => {
 			const mockSettings = { litNotesFolder: "" } as any;
 			const sampleTranscript = "[00:00](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0) We're no strangers to love\n[00:18](https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=18) You know the rules";
 
-			const body = buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
+			const body = await buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
 
 			// Must contain bibliography
 			expect(body).toContain("> Astley, R. (1987). Never Gonna Give You Up.");
@@ -342,7 +371,7 @@ describe("Lit Note Builder", () => {
 			expect(body.endsWith("\n\n")).toBe(true);
 		});
 
-		it("inserts transcript two blank lines below callout when bibliography is absent", () => {
+		it("inserts transcript two blank lines below callout when bibliography is absent", async () => {
 			const item: ZoteroItemPayload = {
 				title: "YouTube Video Without Bib",
 				citekey: "video2024",
@@ -352,12 +381,12 @@ describe("Lit Note Builder", () => {
 			const mockSettings = { litNotesFolder: "" } as any;
 			const sampleTranscript = "[00:00](https://youtu.be/dQw4w9WgXcQ&t=0) Hello world";
 
-			const body = buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
+			const body = await buildLitNoteBody(mockApp, mockSettings, item, sampleTranscript);
 
 			expect(body).toContain("\n\n\n# Transcript\n\n" + sampleTranscript);
 		});
 
-		it("uses the configured transcript heading", () => {
+		it("uses the configured transcript heading", async () => {
 			const item: ZoteroItemPayload = {
 				title: "YouTube Video",
 				citekey: "video2025",
@@ -366,7 +395,7 @@ describe("Lit Note Builder", () => {
 			const mockApp = { vault: { getAbstractFileByPath: () => null } } as any;
 			const sampleTranscript = "[00:00](https://youtu.be/dQw4w9WgXcQ?t=0) Hello world";
 
-			const body = buildLitNoteBody(
+			const body = await buildLitNoteBody(
 				mockApp,
 				{ litNotesFolder: "", transcriptHeading: "## Video captions " },
 				item,

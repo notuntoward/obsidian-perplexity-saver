@@ -108,7 +108,7 @@ function citekeyOf(item: ZoteroItemPayload): string {
 }
 
 import {
-	ensureFolder,
+	litNotesFolderError,
 	ensureWorkspaceReady,
 	existingFile,
 	writeNote,
@@ -263,7 +263,11 @@ async function handleCreateBatch(
 		raiseWindow(initialWin, app);
 	}
 	await ensureWorkspaceReady(app);
-	await ensureFolder(app, settings);
+	const folderError = litNotesFolderError(settings.litNotesFolder);
+	if (folderError) {
+		new Notice(folderError, 15000);
+		return items.map((item) => ({ citekey: citekeyOf(item), status: "error", error: folderError }));
+	}
 
 	const entries = items.map((item) => ({ item, citekey: citekeyOf(item) }));
 	const existingEntries = entries.filter(
@@ -598,6 +602,11 @@ async function handleOpenBatch(
 		raiseWindow(initialWin, app);
 	}
 	await ensureWorkspaceReady(app);
+	const folderError = litNotesFolderError(settings.litNotesFolder);
+	if (folderError) {
+		new Notice(folderError, 15000);
+		return entries.map((entry) => ({ citekey: entry.citekey, status: "error", error: folderError }));
+	}
 	const results: LitNoteItemResult[] = [];
 	const found: OpenEntry[] = [];
 	const missing: OpenEntry[] = [];
@@ -756,7 +765,6 @@ async function handleOpenBatch(
 					}
 				}
 
-				await ensureFolder(app, settings);
 				for (let i = 0; i < creatable.length; i++) {
 					const entry = creatable[i];
 					try {
@@ -834,6 +842,13 @@ async function handleRequest(
 	req: http.IncomingMessage,
 	res: http.ServerResponse
 ): Promise<void> {
+	if (req.method === "GET" && (req.url === "/lit-note-identities" || req.url === "/lit-notes")) {
+		const folderError = litNotesFolderError(settings.litNotesFolder);
+		if (folderError) {
+			sendJson(res, 200, { success: false, error: folderError });
+			return;
+		}
+	}
 	if (req.method === "GET" && req.url === "/lit-note-identities") {
 		await ensureWorkspaceReady(app);
 		const identities = getLitNoteFiles(app, settings.litNotesFolder).flatMap((file) => {

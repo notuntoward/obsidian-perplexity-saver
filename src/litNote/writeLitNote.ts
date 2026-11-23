@@ -1,5 +1,6 @@
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
+import path from "path";
 import { App, normalizePath, Notice, TFile } from "obsidian";
 import type { EventRef } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
@@ -18,10 +19,22 @@ export interface LitNoteWriterSettings {
 	transcriptHeading?: string;
 }
 
+export function litNotesFolderError(folder: string): string | null {
+	const value = folder.trim().replace(/\\/g, "/");
+	const normalized = path.posix.normalize(value);
+	if (value.includes("\0") || /^[A-Za-z]:/.test(value) || path.posix.isAbsolute(value) || path.win32.isAbsolute(folder.trim()) ||
+		normalized === ".." || normalized.startsWith("../")) {
+		return `Invalid Perplexity Saver literature notes folder "${folder}". Choose a folder relative to the open Obsidian vault.`;
+	}
+	return null;
+}
+
 /**
  * Normalise lit note path from settings and citekey.
  */
 export function notePathFor(settings: LitNoteWriterSettings, citekey: string): string {
+	const error = litNotesFolderError(settings.litNotesFolder);
+	if (error) throw new Error(error);
 	return litNotePath(settings.litNotesFolder, citekey);
 }
 
@@ -83,8 +96,11 @@ export async function ensureFolderPath(app: App, targetPath: string): Promise<vo
 	if (folderPath && !app.vault.getAbstractFileByPath(folderPath)) {
 		try {
 			await app.vault.createFolder(folderPath);
-		} catch {
-			// Ignore if it was created concurrently
+		} catch (error: unknown) {
+			const folder = app.vault.getAbstractFileByPath(folderPath);
+			if (!folder || folder instanceof TFile) {
+				throw new Error(`Cannot create literature notes folder "${folderPath}". Check Perplexity Saver's Literature notes folder and Obsidian's permissions: ${error instanceof Error ? error.message : String(error)}`);
+			}
 		}
 	}
 }
@@ -155,6 +171,8 @@ export async function writeLitNote(
 				file = await Promise.race([createdFile, timeout]);
 			}
 		}
+	} catch (error: unknown) {
+		throw new Error(`Cannot write literature note "${normPath}". Check Perplexity Saver's Literature notes folder and Obsidian's permissions: ${error instanceof Error ? error.message : String(error)}`);
 	} finally {
 		createWait.cancel?.();
 		if (createEventRef) app.vault.offref(createEventRef);
@@ -218,7 +236,7 @@ export async function writeNote(
 	}
 
 	await ensureWorkspaceReady(app);
-	const body = buildLitNoteBody(app, settings, item, transcript, existing?.path ?? notePath);
+	const body = await buildLitNoteBody(app, settings, item, transcript, existing?.path ?? notePath);
 	const frontmatter = buildLitNoteFrontmatter(item, settings);
 
 	if (!frontmatter.authors || (Array.isArray(frontmatter.authors) && frontmatter.authors.length === 0)) {

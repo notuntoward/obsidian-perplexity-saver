@@ -9,6 +9,7 @@ import {
 	ensureWorkspaceReady,
 	existingFile,
 	notePathFor,
+	litNotesFolderError,
 	writeLitNote,
 	writeNote,
 } from "../../src/litNote/writeLitNote";
@@ -49,6 +50,16 @@ describe("writeLitNote", () => {
 	it("computes note path correctly", () => {
 		const settings = { litNotesFolder: "lit/notes" };
 		expect(notePathFor(settings, "Smith2020")).toBe("lit/notes/Smith2020.md");
+	});
+
+	it("accepts vault-relative and blank folders while rejecting paths outside the vault", () => {
+		for (const folder of ["", "lit/notes", "lit/../notes"]) {
+			expect(litNotesFolderError(folder)).toBeNull();
+		}
+		for (const folder of ["../outside", "lit/../../outside", "/absolute", "C:\\outside", "C:outside", "\\\\server\\share"]) {
+			expect(litNotesFolderError(folder)).toContain("relative to the open Obsidian vault");
+			expect(() => notePathFor({ litNotesFolder: folder }, "key")).toThrow("Perplexity Saver");
+		}
 	});
 
 	it("identifies existing file if present", () => {
@@ -289,7 +300,10 @@ describe("writeLitNote", () => {
 		const app = {
 			workspace,
 			vault: {
-				adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+				adapter: Object.assign(new FileSystemAdapter(), {
+					getBasePath: () => base,
+					stat: async () => ({ type: "file" }),
+				}),
 				getAbstractFileByPath: vi.fn((p: string) => workspace.layoutReady && p === attachment.path ? attachment : null),
 				createFolder: vi.fn(),
 				modify: vi.fn(async (_file: TFile, body: string) => { content = body; }),

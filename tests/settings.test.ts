@@ -3,6 +3,8 @@ import PerplexitySaverPlugin from "../src/main";
 import { PerplexitySaverSettingTab } from "../src/settingsTab";
 import type { App, SettingDefinitionGroup } from "obsidian";
 import { HeadlineMethod } from "../src/normalize/headlines";
+import { FileSystemAdapter } from "obsidian";
+import path from "path";
 
 
 vi.mock("obsidian", async (original) => ({
@@ -120,6 +122,23 @@ it("setControlValue updates settings, triggers saveSettings and refreshes DOM st
 		expect(plugin.settings.searchesFolder).toBe("custom-folder");
 		expect(plugin.saveSettings).toHaveBeenCalledTimes(1);
 		expect(refreshSpy).toHaveBeenCalledTimes(1);
+	});
+
+it("shows the vault and resolved notes locations and updates them while editing", async () => {
+		const plugin = createMockPlugin();
+		const root = path.resolve("test-vault");
+		const app = { vault: { adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => root }) } };
+		const tab = new PerplexitySaverSettingTab(app as any, plugin as any);
+		const group = tab.getSettingDefinitions().find((d): d is SettingDefinitionGroup => "heading" in d && d.heading === "Zotero & Literature Note Relinking");
+		const row = group?.items?.find((item) => "name" in item && item.name === "Resolved literature note locations");
+		if (!row || !("render" in row) || !row.render) throw new Error("Missing locations setting");
+		const setting = { setDesc: vi.fn() };
+		row.render(setting as any, {} as any);
+		expect(setting.setDesc).toHaveBeenLastCalledWith(expect.stringContaining(path.resolve(root, "lit/lit_notes")));
+		await tab.setControlValue("litNotesFolder", "../outside");
+		expect(setting.setDesc).toHaveBeenLastCalledWith(expect.stringContaining("relative to the open Obsidian vault"));
+		await tab.setControlValue("litNotesFolder", "");
+		expect(setting.setDesc).toHaveBeenLastCalledWith(expect.stringContaining("new notes are created at its root"));
 	});
 
 it("authorDropVon disabled predicate evaluates based on authorFormatStyle", () => {

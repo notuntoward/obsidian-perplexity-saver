@@ -7,6 +7,7 @@ import type { AttachmentReviewRow, CitekeyConflictDetails, DecisionButton, NoteD
 import { getLitNoteFiles } from "commons/litnote";
 import type { ZoteroItemPayload } from "./types";
 import type { LitNoteWriterSettings } from "./writeLitNote";
+import { litNotesFolderError } from "./writeLitNote";
 
 const START = "<!-- zotero-attachments:start -->";
 const END = "<!-- zotero-attachments:end -->";
@@ -124,6 +125,8 @@ export async function syncLitNote(
 	const citekey = item.citekey?.trim() ?? "";
 	const result = (status: SyncResult["status"], error?: string): SyncResult =>
 		({ status, citekey, ...(error ? { error } : {}) });
+	const folderError = litNotesFolderError(settings.litNotesFolder);
+	if (folderError) return result("error", folderError);
 	if (!validKey(citekey) || !item.itemkey || !item.libraryURI) {
 		return result("error", "A valid citation key, Zotero item key, and library identity are required.");
 	}
@@ -202,9 +205,8 @@ export async function syncLitNote(
 	}
 	const collision = app.vault.getAbstractFileByPath(target);
 	if (collision && collision !== file) return result("error", `Cannot rename note: ${target} already exists.`);
-	const attachmentLinks = buildAttachmentLinks(app, item, target, false);
+	const attachmentLinks = await buildAttachmentLinks(app, item, target);
 	if (attachmentLinks.some((link) => link.includes("unavailable in vault"))) {
-		buildAttachmentLinks(app, item, target);
 		return result("error", "Some Zotero attachments are unavailable in the vault; existing note links were preserved. Retry when the files are available.");
 	}
 	let oldLinks: string[];

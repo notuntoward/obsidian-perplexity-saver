@@ -37,7 +37,10 @@ function fixture(legacy = false) {
 			resolvedLinks: {},
 		},
 		vault: {
-			adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base }),
+			adapter: Object.assign(new FileSystemAdapter(), {
+				getBasePath: () => base,
+				stat: async () => ({ type: "file", size: 0, mtime: 0, ctime: 0 }),
+			}),
 			getAbstractFileByPath: (p: string) => p === attachment.path ? attachment : p === file.path ? file : null,
 			getMarkdownFiles: () => [file],
 			read: async () => body,

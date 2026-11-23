@@ -173,6 +173,54 @@ describe("Lit Note Server", () => {
 		expect(server.close).toHaveBeenCalled();
 	});
 
+	it.each(["create", "open"])("reports an invalid notes folder per item for %s", async (action) => {
+		const { app } = makeApp();
+		const json = await post(app, { action, data: [{ title: "Paper", citekey: "key" }] }, { litNotesFolder: "../outside" });
+		expect(json.success).toBe(false);
+		expect(json.results).toEqual([expect.objectContaining({
+			citekey: "key",
+			status: "error",
+			error: expect.stringContaining("Perplexity Saver literature notes folder"),
+		})]);
+		expect(app.vault.create).not.toHaveBeenCalled();
+		expect(app.vault.createFolder).not.toHaveBeenCalled();
+	});
+
+	it("reports a notes folder creation failure for each affected item", async () => {
+		const { app } = makeApp();
+		app.vault.createFolder.mockRejectedValue(new Error("Access denied"));
+		const json = await post(app, { action: "create", data: [{ title: "Paper", citekey: "key" }] }, { litNotesFolder: "missing/folder" });
+		expect(json.results[0]).toEqual(expect.objectContaining({
+			status: "error",
+			error: expect.stringContaining("Cannot create literature notes folder"),
+		}));
+		expect(json.results[0].error).toContain("Access denied");
+		expect(app.vault.create).not.toHaveBeenCalled();
+	});
+
+	it("reports a note write failure with the target path and reason", async () => {
+		const { app } = makeApp();
+		app.vault.create.mockRejectedValue(new Error("Access denied"));
+		const json = await post(app, { action: "create", data: [{ title: "Paper", citekey: "key" }] });
+		expect(json.results[0].status).toBe("error");
+		expect(json.results[0].error).toContain(`${FOLDER}/key.md`);
+		expect(json.results[0].error).toContain("Access denied");
+		expect(json.results[0].error).toContain("Perplexity Saver");
+	});
+
+	it("creates the note and explains an unresolved Zotero attachment", async () => {
+		const { app, created } = makeApp();
+		const json = await post(app, {
+			action: "create",
+			data: [{ title: "Paper", citekey: "key", attachments: [{ title: "Source PDF", isFile: true }] }],
+		});
+		expect(json.results[0].status).toBe("created");
+		expect(created[0].body).toContain("Attachment unavailable in vault");
+		expect(createdNotices.some((notice) =>
+			notice.message.includes("Source PDF: Zotero could not resolve a file path")
+		)).toBe(true);
+	});
+
 	it.each(["sync", "update"])("routes %s batches to the reconciliation engine", async (action) => {
 		const { app } = makeApp();
 		vi.mocked(syncLitNote).mockResolvedValue({ citekey: "key", status: "updated" });

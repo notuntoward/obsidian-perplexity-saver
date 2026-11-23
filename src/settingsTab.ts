@@ -1,11 +1,14 @@
-import { App, Notice, PluginSettingTab, type SettingDefinitionItem } from "obsidian";
+import path from "path";
+import { App, FileSystemAdapter, Notice, PluginSettingTab, type Setting, type SettingDefinitionItem } from "obsidian";
 import { DEFAULT_TRANSCRIPT_HEADING } from "commons/youtube";
 import type PerplexitySaverPlugin from "./main";
 import { ZoteroClient } from "./zotero/zoteroClient";
 import type { NameStyle } from "./litNote/bibtexName";
+import { litNotesFolderError } from "./litNote/writeLitNote";
 
 export class PerplexitySaverSettingTab extends PluginSettingTab {
 	plugin: PerplexitySaverPlugin;
+	private litNoteLocations?: Setting;
 
 	constructor(app: App, plugin: PerplexitySaverPlugin) {
 		super(app, plugin);
@@ -24,6 +27,7 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 			if (this.plugin.litNoteServerSettings) {
 				this.plugin.litNoteServerSettings.litNotesFolder = String(value).trim();
 			}
+			this.litNoteLocations?.setDesc(this.describeLitNoteLocations());
 		}
 		if (key === "validateAuthorNameFormat") {
 			if (this.plugin.litNoteServerSettings) {
@@ -50,6 +54,19 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 		}
 		await this.plugin.saveSettings();
 		this.refreshDomState();
+	}
+
+	private describeLitNoteLocations(): string {
+		const folder = this.plugin.settings.litNotesFolder.trim();
+		const error = litNotesFolderError(folder);
+		const adapter = this.app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) {
+			return `The open vault has no local filesystem path to display.${error ? ` ${error}` : ""}`;
+		}
+		const root = adapter.getBasePath();
+		if (error) return `Open vault: ${root}. ${error}`;
+		const target = path.resolve(root, folder.replace(/\\/g, "/") || ".");
+		return `Open vault: ${root}. Literature notes: ${target}.${folder ? "" : " A blank setting searches the entire vault; new notes are created at its root."}`;
 	}
 
 	getSettingDefinitions(): SettingDefinitionItem[] {
@@ -182,6 +199,16 @@ export class PerplexitySaverSettingTab extends PluginSettingTab {
 							type: "text",
 							key: "litNotesFolder",
 							placeholder: "lit/lit_notes",
+						},
+					},
+					{
+						name: "Resolved literature note locations",
+						render: (setting) => {
+							this.litNoteLocations = setting;
+							setting.setDesc(this.describeLitNoteLocations());
+							return () => {
+								if (this.litNoteLocations === setting) this.litNoteLocations = undefined;
+							};
 						},
 					},
 					{

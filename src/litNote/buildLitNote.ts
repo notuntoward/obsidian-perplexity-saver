@@ -190,7 +190,7 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: 
 	return links.join(" | ");
 }
 
-export function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string, warnUnavailable = true): string[] {
+export async function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string): Promise<string[]> {
 	const links: string[] = [];
 	const unavailable: string[] = [];
 	for (const attachment of item.attachments ?? []) {
@@ -198,7 +198,7 @@ export function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePa
 		if (!attachmentPath) {
 			if (attachment.isFile || !attachment.url) {
 				links.push("**Attachment unavailable in vault**");
-				unavailable.push(`${attachment.title || "Attachment"}: no file path supplied by Zotero`);
+				unavailable.push(`${attachment.title || "Attachment"}: Zotero could not resolve a file path. Check the attachment in Zotero and its Linked Attachment Base Directory if it uses a relative path.`);
 			}
 			continue;
 		}
@@ -206,24 +206,45 @@ export function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePa
 		if (!label) continue;
 
 		const adapter = app.vault.adapter;
-		const relative = adapter instanceof FileSystemAdapter && path.isAbsolute(attachmentPath)
-			? path.relative(adapter.getBasePath(), attachmentPath)
+		const vaultRoot = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
+		const relative = vaultRoot && path.isAbsolute(attachmentPath)
+			? path.relative(vaultRoot, attachmentPath)
 			: "";
 		const insideVault = relative && relative !== ".." &&
 			!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-		const file = insideVault
-			? app.vault.getAbstractFileByPath(relative.split(path.sep).join("/"))
-			: null;
-		if (file instanceof TFile) {
+		const relativePath = insideVault ? relative.split(path.sep).join("/") : "";
+		const file = relativePath ? app.vault.getAbstractFileByPath(relativePath) : null;
+		let problem = "";
+		if (!vaultRoot) {
+			problem = "The open vault does not expose a local filesystem path; Saver cannot verify this attachment.";
+		} else if (!path.isAbsolute(attachmentPath)) {
+			problem = "Zotero did not provide an absolute file path. Check the attachment and Zotero's Linked Attachment Base Directory.";
+		} else if (!insideVault) {
+			problem = `The attachment is outside the open Obsidian vault (${vaultRoot}). Check the Zotero attachment and Linked Attachment Base Directory, or confirm that the intended vault is open.`;
+		} else {
+			try {
+				const info = await adapter.stat(relativePath);
+				if (!info) {
+					problem = "The file is missing from this location. Check the attachment in Zotero and its Linked Attachment Base Directory if it uses a relative path.";
+				} else if (info.type !== "file") {
+					problem = "This path is not a file. Check the attachment location in Zotero.";
+				} else if (!(file instanceof TFile)) {
+					problem = "The file exists inside the vault but is not indexed by Obsidian. Check that Obsidian can see the file and let it finish indexing.";
+				}
+			} catch (error: unknown) {
+				problem = `Obsidian could not check this file: ${error instanceof Error ? error.message : String(error)}. Check the file and its permissions.`;
+			}
+		}
+		if (!problem && file instanceof TFile) {
 			links.push(`**${app.fileManager.generateMarkdownLink(file, sourcePath, "", label)}**`);
 		} else {
 			links.push(`**${label} unavailable in vault**`);
-			unavailable.push(attachmentPath);
+			unavailable.push(`${attachment.title || label}: ${attachmentPath}\n${problem}`);
 		}
 	}
-	if (unavailable.length && warnUnavailable) {
+	if (unavailable.length) {
 		new Notice(
-			`Zotero attachments unavailable in the Obsidian vault:\n${unavailable.join("\n")}\nCheck the files in Zotero and, for relative linked files, the linked attachment base directory. Files must be inside and indexed by the vault to link here.`,
+			`Zotero attachments unavailable for "${item.title}":\n${unavailable.join("\n\n")}`,
 			15000
 		);
 	}
@@ -324,15 +345,15 @@ export function zoteroHtmlToMd(
  * frontmatter fence). This string is passed to `app.vault.create()` and
  * frontmatter is then added separately via `processFrontMatter`.
  */
-export function buildLitNoteBody(
+export async function buildLitNoteBody(
 	app: App,
 	settings: { litNotesFolder?: string; transcriptHeading?: string },
 	item: ZoteroItemPayload,
 	transcript?: string,
 	notePath?: string
-): string {
+): Promise<string> {
 	const sourcePath = notePath ?? `${settings.litNotesFolder ?? ""}/${item.citekey || item.itemkey || "untitled"}.md`;
-	const calloutLinks = buildInfoCalloutLinks(item, buildAttachmentLinks(app, item, sourcePath), true);
+	const calloutLinks = buildInfoCalloutLinks(item, await buildAttachmentLinks(app, item, sourcePath), true);
 	const calloutPrefix = buildInfoCalloutPrefix(item);
 
 	// Info callout header line
