@@ -19,6 +19,7 @@ interface FileInfo {
 	path: string;
 	size: number;
 	mtime: number;
+	ctime: number;
 	hash?: string;
 }
 
@@ -50,7 +51,7 @@ async function digest(filePath: string): Promise<string> {
 async function fileInfo(filePath: string): Promise<FileInfo | undefined> {
 	try {
 		const info = await stat(filePath);
-		return info.isFile() ? { path: filePath, size: info.size, mtime: info.mtimeMs } : undefined;
+		return info.isFile() ? { path: filePath, size: info.size, mtime: info.mtimeMs, ctime: info.ctimeMs } : undefined;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw error;
@@ -60,6 +61,23 @@ async function fileInfo(filePath: string): Promise<FileInfo | undefined> {
 async function hashOf(file: FileInfo): Promise<string> {
 	file.hash ??= await digest(file.path);
 	return file.hash;
+}
+
+export async function validateTrashNoteFile(
+	vaultRoot: string,
+	snapshot: NonNullable<AttachmentMoveCandidate["trashNoteSnapshots"]>[number],
+): Promise<void> {
+	const filePath = path.resolve(vaultRoot, snapshot.path);
+	if (!inside(vaultRoot, filePath)) throw new Error("A duplicate attachment is outside the vault; it was not trashed.");
+	const before = await fileInfo(filePath);
+	if (!before || before.size !== snapshot.size || before.mtime !== snapshot.mtime || before.ctime !== snapshot.ctime ||
+		await hashOf(before) !== snapshot.sha256) {
+		throw new Error(`Attachment ${snapshot.path} changed since review; it was not trashed.`);
+	}
+	const after = await fileInfo(filePath);
+	if (!after || after.size !== before.size || after.mtime !== before.mtime || after.ctime !== before.ctime) {
+		throw new Error(`Attachment ${snapshot.path} changed during verification; it was not trashed.`);
+	}
 }
 
 function inside(root: string, target: string): boolean {
@@ -110,11 +128,15 @@ export async function buildAttachmentMoveCandidate(
 	noteLinks: NoteAttachmentLink[],
 	problems: AttachmentProblem[],
 	vaultRoot: string,
+	explain?: (reason: string) => void,
 ): Promise<AttachmentMoveCandidate | undefined> {
 	const base = item.linkedAttachmentBaseDirectory;
-	if (!item.linkedAttachmentBaseDirectoryValidated || !base || !path.isAbsolute(base) ||
-		item.libraryType !== "user" ||
-		noteCitekey !== item.citekey || !problems.length ||
+	const reject = (reason: string): undefined => { explain?.(reason); return undefined; };
+	if (!item.linkedAttachmentBaseDirectoryValidated || !base || !path.isAbsolute(base))
+		return reject("Obsidian has not yet confirmed its Linked Attachment Base Directory.");
+	if (item.libraryType !== "user") return reject("Zotero does not support linked attachments in group libraries.");
+	if (noteCitekey !== item.citekey) return reject(`The note's citekey (${noteCitekey}) differs from Zotero's.`);
+	if (!problems.length ||
 		problems.some((problem) => !problem.path || !problem.itemkey || !["linked", "stored"].includes(problem.mode ?? "") ||
 			problem.title !== "Zotero attachment is outside the Obsidian vault" &&
 			problem.title !== "Stored Zotero attachment has not been moved into the vault")) return;
@@ -148,7 +170,13 @@ export async function buildAttachmentMoveCandidate(
 
 	const units: Unit[] = [];
 	const unpairedNotes = [...live];
-	for (const entry of zotero) {
+	const expectedName = item.attachmentBaseName;
+	if (!expectedName || path.basename(expectedName) !== expectedName ||
+		/[<>:"/\\|?*]/.test(expectedName) || Array.from(expectedName).some((char) => char.charCodeAt(0) < 32) || /[. ]$/.test(expectedName) ||
+		/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(expectedName)) {
+		return reject("Zotero's attachment naming format did not produce a valid filename.");
+	}
+	for (const entry of [...zotero.filter((file) => file.inVault), ...zotero.filter((file) => !file.inVault)]) {
 		const matches = unpairedNotes.filter((note) => same(note.path, entry.file.path) ||
 			(!entry.inVault && name(note.path) === name(entry.file.path)));
 		if (matches.length > 1) return;
@@ -157,7 +185,7 @@ export async function buildAttachmentMoveCandidate(
 	}
 	for (const note of unpairedNotes) units.push({ note });
 
-	const expected = (item.attachmentBaseName || item.citekey).toLocaleLowerCase();
+	const expected = expectedName.toLocaleLowerCase();
 	const score = (unit: Unit): [number, number, string] => {
 		const file = winner(unit);
 		return [
@@ -172,11 +200,13 @@ export async function buildAttachmentMoveCandidate(
 	for (const unit of units) {
 		const file = winner(unit);
 		if (file.size === 0 || (sizes.get(file.size) ?? 0) < 2) continue;
-		const key = `${file.size}:${await hashOf(file)}`;
+		if (unit.note && unit.zotero && !same(unit.note.path, unit.zotero.file.path) &&
+			(unit.note.size !== unit.zotero.file.size || await hashOf(unit.note) !== await hashOf(unit.zotero.file))) continue;
+		const key = `${extension(file.path)}:${file.size}:${await hashOf(file)}`;
 		groups.set(key, [...(groups.get(key) ?? []), unit]);
 	}
 	const trashZotero: Array<{ zotero: ZoteroFile; keeper: Unit }> = [];
-	const trashNotes: string[] = [];
+	const trashNotes: FileInfo[] = [];
 	for (const group of groups.values()) {
 		// Only consolidate copies involving a Zotero file; identical note-only files stay as linked extras.
 		if (group.length < 2 || !group.some((unit) => unit.zotero)) continue;
@@ -193,7 +223,7 @@ export async function buildAttachmentMoveCandidate(
 				} else trashZotero.push({ zotero: loser.zotero, keeper });
 			}
 			if (loser.note) {
-				trashNotes.push(loser.note.path);
+				trashNotes.push(loser.note);
 				keeper.claimed = true;
 			}
 			units.splice(units.indexOf(loser), 1);
@@ -203,21 +233,41 @@ export async function buildAttachmentMoveCandidate(
 	const relative = (filePath: string): string => path.relative(vaultRoot, filePath).split(path.sep).join("/");
 	const missing: string[] = [];
 	for (const link of dead) {
-		const available = units.filter((unit) => unit.zotero && !unit.note && !unit.claimed &&
+		const available = units.filter((unit) => unit.zotero && unit.zotero.file.size > 0 && !unit.note && !unit.claimed &&
 			(!link.extension || extension(unit.zotero.file.path) === link.extension));
 		const claim = available.find((unit) => link.file && name(unit.zotero!.file.path) === name(link.file.path)) ?? available[0];
 		if (claim) {
 			claim.claimed = true;
 			// The Zotero file replaces this empty placeholder.
-			if (link.file && inside(vaultRoot, link.file.path)) trashNotes.push(link.file.path);
+			if (link.file && inside(vaultRoot, link.file.path)) trashNotes.push(link.file);
 		} else {
 			// Nothing replaces this link; keep any empty file and explain the dropped link in the note.
 			missing.push(link.file ? relative(link.file.path) : link.target ?? `${link.extension ?? "attachment"} link`);
 		}
 	}
 
-	const finalPath = (unit: Unit): string => unit.note?.path ??
-		(unit.zotero!.inVault ? unit.zotero!.file.path : path.join(base, path.basename(unit.zotero!.file.path)));
+	const plannedPaths = new Map<Unit, string>();
+	const usedPaths = units.flatMap((unit) => unit.note ? [unit.note.path] :
+		unit.zotero?.inVault ? [unit.zotero.file.path] : []);
+	for (const unit of units) {
+		if (unit.note) plannedPaths.set(unit, unit.note.path);
+		else if (unit.zotero?.inVault) plannedPaths.set(unit, unit.zotero.file.path);
+		else if (unit.zotero) {
+			const ext = path.extname(unit.zotero.file.path);
+			let index = 1;
+			let destination = path.join(base, `${expectedName}${ext}`);
+			while (usedPaths.some((used) => same(used, destination))) {
+				destination = path.join(base, `${expectedName} ${++index}${ext}`);
+			}
+			usedPaths.push(destination);
+			plannedPaths.set(unit, destination);
+		}
+	}
+	const finalPath = (unit: Unit): string => {
+		const destination = plannedPaths.get(unit);
+		if (!destination) throw new Error("An attachment has no planned destination.");
+		return destination;
+	};
 	const operations: AttachmentMoveOperation[] = [];
 	for (const unit of units) {
 		const entry = unit.zotero;
@@ -234,7 +284,8 @@ export async function buildAttachmentMoveCandidate(
 			basename: path.basename(entry.file.path),
 			sourcePath: entry.file.path,
 			destinationPath,
-			resolution: unit.note ? unit.relinked ? "keep-destination" : "newest" : "move",
+			resolution: unit.note ? unit.relinked || (identical && name(unit.note.path) !== name(entry.file.path))
+				? "keep-destination" : "newest" : "move",
 			conflict: !unit.note && !!destination && destination.size > 0 && !identical,
 			identical,
 			sourceMtime: entry.file.mtime,
@@ -259,6 +310,22 @@ export async function buildAttachmentMoveCandidate(
 	if (!operations.some((operation) => !inside(vaultRoot, operation.sourcePath))) return;
 
 	const finalPaths = units.map(finalPath);
+	const trashFiles = [...new Map(trashNotes.map((file) => [file.path, file])).values()]
+		.filter((file) => !finalPaths.some((kept) => same(kept, file.path)) &&
+			!destinations.some((destination) => same(destination, file.path)));
+	const trashNoteSnapshots: NonNullable<AttachmentMoveCandidate["trashNoteSnapshots"]> = [];
+	for (const original of trashFiles) {
+		const filePath = original.path;
+		const file = await fileInfo(filePath);
+		if (!file || file.size !== original.size || file.mtime !== original.mtime || file.ctime !== original.ctime)
+			return reject(`Attachment ${filePath} changed during review.`);
+		const sha256 = await hashOf(file);
+		const after = await fileInfo(filePath);
+		if (!after || after.size !== file.size || after.mtime !== file.mtime || after.ctime !== file.ctime) {
+			return reject(`Attachment ${filePath} changed during review.`);
+		}
+		trashNoteSnapshots.push({ path: relative(filePath), size: file.size, mtime: file.mtime, ctime: file.ctime, sha256 });
+	}
 	// A file is accounted for only when the item and the note both had it; every other file is an extra.
 	const extras: AttachmentMoveCandidate["extras"] = [
 		...units.flatMap((unit) => unit.zotero && (unit.note || unit.claimed) ? [] : [{
@@ -271,10 +338,8 @@ export async function buildAttachmentMoveCandidate(
 		baseDirectory: base,
 		attachments: operations,
 		linkNoteFiles: units.filter((unit) => unit.note && !unit.zotero).map((unit) => unit.note!.path),
-		trashNoteFiles: [...new Set(trashNotes)]
-			.filter((filePath) => !finalPaths.some((kept) => same(kept, filePath)) &&
-				!destinations.some((destination) => same(destination, filePath)))
-			.map(relative),
+		trashNoteFiles: trashFiles.map((file) => relative(file.path)),
+		trashNoteSnapshots,
 		extras,
 	};
 }

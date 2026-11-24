@@ -49,6 +49,37 @@ test.beforeEach(async ({ page }) => {
 	await page.addScriptTag({ content: result.outputFiles[0].text });
 });
 
+test("review status fits its text and the status bar", async ({ page }) => {
+	await page.setContent(`
+		<style>
+			* { box-sizing: border-box; }
+			.status-bar { display: flex; align-items: center; height: 28px; font: 12px sans-serif; }
+			.status-bar-item { display: flex; align-items: center; padding: 3px 4px; }
+			button { display: flex; height: 36px; }
+		</style>
+		<div class="status-bar"><div class="status-bar-item">
+			<button class="lit-note-review-status">Zotero reviews: 51</button>
+		</div></div>
+	`);
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	const dimensions = await page.locator(".lit-note-review-status").evaluate((button) => {
+		const range = document.createRange();
+		range.selectNodeContents(button);
+		const text = range.getBoundingClientRect();
+		const bounds = button.getBoundingClientRect();
+		const bar = button.closest(".status-bar")!.getBoundingClientRect();
+		return {
+			leftPadding: text.left - bounds.left,
+			rightPadding: bounds.right - text.right,
+			height: bounds.height,
+			barHeight: bar.height,
+		};
+	});
+	expect(dimensions.leftPadding).toBeGreaterThanOrEqual(6);
+	expect(dimensions.rightPadding).toBeGreaterThanOrEqual(6);
+	expect(dimensions.height).toBeLessThanOrEqual(dimensions.barHeight);
+});
+
 test("attachment review exposes file roles and choices at desktop and narrow widths", async ({ page }) => {
 	await page.evaluate(() => {
 		const api = (window as Window & { AttachmentReview?: {
@@ -149,4 +180,25 @@ test("attachment errors show the path first and align expandable details", async
 		await expect(modal.locator(".lit-note-identity-grid strong").first()).toHaveCSS("font-weight", /^(bold|[6-9]00)$/);
 	}
 	await modal.getByRole("button", { name: "Close" }).click();
+});
+
+test("bulk move details are a readable list and the next step is explicit", async ({ page }) => {
+	await page.evaluate(() => {
+		const api = (window as Window & { AttachmentReview?: {
+			askNoteDecision: (app: object, title: string, message: string, buttons: object[]) => Promise<string>;
+		} }).AttachmentReview;
+		if (!api) throw new Error("Attachment review bundle is unavailable.");
+		void api.askNoteDecision({}, "Move Zotero attachments into the vault?",
+			"Move 4 attachments for 3 notes.\n\nDestination: C:\\vault\\attachments\n\n- Move 1 duplicate to Trash.\n- Keep extra files.\n\nContinue to the backup confirmation. No files will move yet.",
+			[{ label: "Continue to backup", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
+	});
+	const modal = page.locator(".modal");
+	await expect(modal.locator(".lit-note-decision-message ul li")).toHaveCount(2);
+	await expect(modal.getByText("No files will move yet.", { exact: false })).toBeVisible();
+	await expect(modal.getByRole("button", { name: "Continue to backup" })).toBeVisible();
+	for (const width of [1024, 320]) {
+		await page.setViewportSize({ width, height: 768 });
+		expect(await modal.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+	}
+	await modal.getByRole("button", { name: "Cancel" }).click();
 });

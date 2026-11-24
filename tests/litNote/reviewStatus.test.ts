@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createdNotices } from "../__mocks__/obsidian";
-import { allReviews, clearReviews, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, queueReview, removeReview, requestedReviews, reviewKey, setReviewListener } from "../../src/litNote/pendingReviews";
+import { allReviews, clearReviews, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, markReviewUncertain, queueReview, removeReview, requestedReviews, reviewKey, setReviewListener } from "../../src/litNote/pendingReviews";
 import { setupReviewStatus } from "../../src/litNote/reviewStatus";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import type { App } from "obsidian";
@@ -22,7 +22,7 @@ vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }))
 const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
 
 function setup() {
-	const button = { setText: vi.fn(), onclick: undefined as (() => void) | undefined };
+	const button = { setText: vi.fn(), title: "", onclick: undefined as (() => void) | undefined };
 	const status = { hidden: false, createEl: () => button };
 	setupReviewStatus({} as App, status as unknown as HTMLElement);
 	return { status, button };
@@ -47,10 +47,37 @@ describe("review status", () => {
 		queueReview(item, "Attachment links differ");
 		expect(status.hidden).toBe(false);
 		expect(createdNotices[0].message).toContain("status bar");
+		expect(createdNotices[0].message).toContain("Zotero reviews");
 		expect(createdNotices[0].timeout).toBe(0);
 		removeReview(reviewKey(item));
 		expect(status.hidden).toBe(true);
 		expect(createdNotices.at(-1)?.message).toContain("All Zotero reviews are complete");
+	});
+
+	it("requires an explicit check before clearing an interrupted operation", async () => {
+		const { button } = setup();
+		queueReview(item, "Attachment links differ", "lit/note.md");
+		markReviewUncertain({ ...item, error: "Could not relink paper.pdf" });
+		button.onclick?.();
+		expect(state.groups.map((group) => group.kind)).toEqual(["uncertain"]);
+		state.select?.(state.groups[0]);
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
+		state.select?.(allReviews()[0]);
+		await settle();
+		expect(allReviews()).toHaveLength(1);
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("The operation may have changed files or links");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Error: Could not relink paper.pdf");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][4]).toEqual({
+			title: "Work",
+			itemkey: "ABC",
+			libraryURI: "library",
+			notePath: "lit/note.md",
+		});
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("create");
+		state.select?.(allReviews()[0]);
+		await settle();
+		expect(allReviews()).toMatchObject([{ awaitingAcknowledgement: true }]);
+		expect(createdNotices.at(-1)?.message).toContain("Waiting for Zotero to acknowledge");
 	});
 
 	it("requires both library approval and backup confirmation before requesting corrections", async () => {
@@ -72,7 +99,8 @@ describe("review status", () => {
 		expect(allReviews()).toHaveLength(1);
 		expect(requestedReviews()).toMatchObject([{ operation: "library-recheck" }]);
 		expect(createdNotices.at(-1)?.message).toContain("awaiting recheck");
-		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1 (1/1 checked, 1 rechecking)");
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+		expect(button.title).toBe("1/1 checked, 1 rechecking");
 		finishLibraryRecheck(reviewKey(item), false);
 		expect(createdNotices.at(-1)?.message).toContain("Added zotero_library_uri library to 1 of 1 notes");
 		expect(createdNotices.at(-1)?.message).toContain("1 review remains");
@@ -159,5 +187,43 @@ describe("review status", () => {
 		}]);
 		finishAttachmentCorrection(reviewKey(item));
 		expect(createdNotices.at(-1)?.message).toContain("Moved Zotero attachment files");
+	});
+
+	it("explains the move and starts it only after the backup confirmation", async () => {
+		const { button } = setup();
+		const attachmentMove = {
+			baseDirectory: "C:\\vault\\attachments",
+			attachments: [{
+				itemkey: "ATT1", mode: "stored" as const, basename: "paper.pdf",
+				sourcePath: "C:\\zotero\\paper.pdf", destinationPath: "C:\\vault\\attachments\\paper.pdf",
+				resolution: "move" as const, conflict: false, identical: false, sourceMtime: 10,
+			}],
+			linkNoteFiles: [], trashNoteFiles: ["attachments/duplicate.pdf"],
+			extras: [{ path: "attachments/extra.pdf", origin: "note" as const }],
+		};
+		queueReview(item, "Stored Zotero attachment", "lit/note.md", undefined, undefined, attachmentMove);
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("create").mockResolvedValueOnce("cancel");
+		button.onclick?.();
+		state.select?.(state.groups.find((entry) => entry.kind === "attachment-move"));
+		await settle();
+		const first = vi.mocked(askNoteDecision).mock.calls[0];
+		expect(first[2]).toContain("Move 1 attachment for 1 note");
+		expect(first[2]).toContain("Destination: C:\\vault\\attachments");
+		expect(first[2]).toContain("- Move up to 1 duplicate or replaced empty file to Trash after safety checks.");
+		expect(first[2]).toContain("No files will move yet.");
+		expect(first[3][0].label).toBe("Continue to backup");
+		expect(vi.mocked(askNoteDecision).mock.calls[1][3][0].label).toBe("Move attachments now");
+		expect(requestedReviews()).toEqual([]);
+		vi.mocked(askNoteDecision).mockReset();
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("create").mockResolvedValueOnce("create");
+		button.onclick?.();
+		state.select?.(state.groups.find((entry) => entry.kind === "attachment-move"));
+		await settle();
+		expect(requestedReviews()).toMatchObject([{ operation: "attachment-move" }]);
+		markReviewUncertain({ ...item, error: "Could not relink paper.pdf" });
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+		expect(button.title).toBe("0/1 checked, 1 interrupted");
+		expect(createdNotices.at(-1)?.message).toContain("Check 1 interrupted operation");
+		expect(createdNotices.at(-1)?.message).toContain("Zotero reviews in the status bar");
 	});
 });

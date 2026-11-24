@@ -35,6 +35,7 @@ export interface AttachmentMoveCandidate {
 	linkNoteFiles: string[];
 	/** Vault paths of duplicate or empty note files to trash if nothing else links to them. */
 	trashNoteFiles: string[];
+	trashNoteSnapshots?: Array<{ path: string; size: number; mtime: number; ctime: number; sha256: string }>;
 	/**
 	 * Files found only in Zotero or only in the note, moved into the vault and linked from both, plus
 	 * note links to missing or empty files that no Zotero file replaces. All are recorded as a mismatch.
@@ -56,6 +57,9 @@ export interface PendingReview {
 	attachmentMove?: AttachmentMoveCandidate;
 	attachmentStrategy?: "newest" | "zotero" | "skip";
 	recheckStartedAt?: number;
+	uncertain?: boolean;
+	uncertainReason?: string;
+	awaitingAcknowledgement?: boolean;
 }
 
 export interface ReviewBatch {
@@ -69,6 +73,8 @@ export interface ReviewBatch {
 }
 
 const pending = new Map<string, PendingReview>();
+const acknowledgedUncertain = new Map<string, { itemkey: string; libraryURI: string }>();
+const activeReviews = new Map<string, number>();
 let batch: ReviewBatch | undefined;
 let onChange: ((reviews: PendingReview[], batch?: ReviewBatch) => void) | undefined;
 
@@ -98,6 +104,9 @@ export function queueReview(item: ZoteroItemPayload, reason: string, notePath?: 
 		requested: pending.get(key)?.requested ?? false,
 		operation: pending.get(key)?.operation,
 		recheckStartedAt: pending.get(key)?.recheckStartedAt,
+		uncertain: pending.get(key)?.uncertain,
+		uncertainReason: pending.get(key)?.uncertainReason,
+		awaitingAcknowledgement: pending.get(key)?.awaitingAcknowledgement,
 	});
 	notify();
 }
@@ -111,7 +120,8 @@ export function requestAttachmentBatch(
 	if (!keys.length || new Set(keys).size !== keys.length) throw new Error("No matching attachments are available for bulk correction.");
 	const entries = keys.map((key) => pending.get(key));
 	if (entries.some((entry, index) => !entry || !entry.attachmentMove ||
-		JSON.stringify(entry.attachmentMove) !== JSON.stringify(selected[index].candidate) || entry.requested)) {
+		JSON.stringify(entry.attachmentMove) !== JSON.stringify(selected[index].candidate) || entry.requested ||
+		entry.uncertain || acknowledgedUncertain.has(entry.key))) {
 		throw new Error("The review list changed. Select the group again.");
 	}
 	batch = { kind: "attachment-move", label: strategy, total: entries.length, completed: 0, succeeded: 0, rechecking: 0, recheckFailed: 0 };
@@ -129,7 +139,8 @@ export function requestLibraryBatch(libraryURI: string, selected: Array<{ key: s
 	const keys = selected.map((entry) => entry.key);
 	if (!keys.length || new Set(keys).size !== keys.length) throw new Error("No matching notes are available for bulk correction.");
 	const entries = keys.map((key) => pending.get(key));
-	if (entries.some((entry, index) => !entry || entry.libraryURI !== libraryURI || entry.libraryNotePath !== selected[index].notePath || entry.requested)) {
+	if (entries.some((entry, index) => !entry || entry.libraryURI !== libraryURI || entry.libraryNotePath !== selected[index].notePath ||
+		entry.requested || entry.uncertain || acknowledgedUncertain.has(entry.key))) {
 		throw new Error("The review list changed. Select the group again.");
 	}
 	batch = { kind: "library-uri", label: libraryURI, total: entries.length, completed: 0, succeeded: 0, rechecking: 0, recheckFailed: 0 };
@@ -147,7 +158,8 @@ export function requestNoteBatch(summary: string, selected: Array<{ key: string;
 	if (!keys.length || new Set(keys).size !== keys.length) throw new Error("No matching notes are available for bulk correction.");
 	const entries = keys.map((key) => pending.get(key));
 	if (entries.some((entry, index) => !entry || entry.proposal?.summary !== summary ||
-		JSON.stringify(entry.proposal) !== JSON.stringify(selected[index].proposal) || entry.requested)) {
+		JSON.stringify(entry.proposal) !== JSON.stringify(selected[index].proposal) || entry.requested ||
+		entry.uncertain || acknowledgedUncertain.has(entry.key))) {
 		throw new Error("The review list changed. Select the group again.");
 	}
 	batch = { kind: "note-update", label: summary, total: entries.length, completed: 0, succeeded: 0, rechecking: 0, recheckFailed: 0 };
@@ -186,7 +198,7 @@ export function finishLibraryCorrection(key: string, error?: string): void {
 export function finishLibraryRecheck(key: string, resolved: boolean, error?: string): void {
 	const entry = pending.get(key);
 	if (!entry || entry.operation !== "library-recheck" || !batch) return;
-	if (resolved) pending.delete(key);
+	if (resolved && !entry.uncertain) pending.delete(key);
 	else {
 		entry.requested = false;
 		entry.operation = undefined;
@@ -211,7 +223,7 @@ export function finishNoteCorrection(key: string, error?: string): void {
 		entry.reason = error;
 		entry.proposal = undefined;
 	} else {
-		pending.delete(key);
+		if (!entry.uncertain) pending.delete(key);
 		batch.succeeded++;
 	}
 	batch.completed++;
@@ -233,7 +245,7 @@ export function finishAttachmentCorrection(key: string, error?: string): void {
 		entry.attachmentMove = undefined;
 	}
 	else {
-		pending.delete(key);
+		if (!entry.uncertain) pending.delete(key);
 		batch.succeeded++;
 	}
 	batch.completed++;
@@ -247,7 +259,66 @@ export function finishAttachmentCorrection(key: string, error?: string): void {
 export function requestReview(key: string): void {
 	const entry = pending.get(key);
 	if (!entry) throw new Error("This review is no longer pending.");
+	if (entry.uncertain) throw new Error("Check both apps and acknowledge the interrupted operation first.");
+	if (acknowledgedUncertain.has(key)) throw new Error("Wait for Zotero to acknowledge the checked operation.");
 	entry.requested = true;
+	notify();
+}
+
+export function beginReviewOperation(key: string): void {
+	activeReviews.set(key, (activeReviews.get(key) ?? 0) + 1);
+}
+
+export function endReviewOperation(key: string): void {
+	const count = activeReviews.get(key) ?? 0;
+	if (count <= 1) activeReviews.delete(key);
+	else activeReviews.set(key, count - 1);
+}
+
+export function markReviewUncertain(item: { itemkey: string; libraryURI: string; error?: string }): void {
+	const key = reviewKey(item);
+	if (acknowledgedUncertain.has(key)) return;
+	let entry = pending.get(key);
+	if (!entry) {
+		queueReview({ ...item, title: item.itemkey, citekey: item.itemkey }, "Interrupted operation needs checking");
+		entry = pending.get(key);
+	}
+	if (!entry) throw new Error("Could not record the interrupted review.");
+	if (entry.uncertain && (!item.error || entry.uncertainReason === item.error)) return;
+	entry.uncertain = true;
+	if (item.error) entry.uncertainReason = item.error;
+	notify();
+}
+
+export function acknowledgeUncertainReview(key: string): void {
+	const entry = pending.get(key);
+	if (!entry?.uncertain) throw new Error("This interrupted operation is no longer pending.");
+	if (activeReviews.has(key)) throw new Error("Obsidian is still processing this review. Wait for it to finish before checking both apps.");
+	if (entry.operation === "library-uri") finishLibraryCorrection(key, "Operation interrupted; check both apps.");
+	else if (entry.operation === "library-recheck") finishLibraryRecheck(key, false, "Operation interrupted; check both apps.");
+	else if (entry.operation === "attachment-move") finishAttachmentCorrection(key, "Operation interrupted; check both apps.");
+	else if (entry.operation === "note-update") finishNoteCorrection(key, "Operation interrupted; check both apps.");
+	entry.uncertain = false;
+	entry.awaitingAcknowledgement = true;
+	entry.requested = false;
+	entry.operation = undefined;
+	acknowledgedUncertain.set(key, { itemkey: entry.itemkey, libraryURI: entry.libraryURI });
+	notify();
+}
+
+export function acknowledgedUncertainReviews(): Array<{ itemkey: string; libraryURI: string }> {
+	return [...acknowledgedUncertain.values()];
+}
+
+export function isReviewBlocked(key: string): boolean {
+	const entry = pending.get(key);
+	return !!(entry?.uncertain || entry?.awaitingAcknowledgement);
+}
+
+export function consumeUncertainAcknowledgement(item: { itemkey: string; libraryURI: string }): void {
+	const key = reviewKey(item);
+	if (!acknowledgedUncertain.delete(key)) return;
+	if (pending.get(key)?.awaitingAcknowledgement) pending.delete(key);
 	notify();
 }
 
@@ -270,6 +341,7 @@ export function resetReviewRequest(key: string): void {
 export function failReview(item: Pick<ZoteroItemPayload, "itemkey" | "libraryURI">, reason: string): void {
 	const entry = pending.get(reviewKey(item));
 	if (entry) {
+		if (entry.uncertain || entry.awaitingAcknowledgement) return;
 		if (entry.operation === "library-uri") {
 			finishLibraryCorrection(entry.key, reason);
 			return;
@@ -293,12 +365,13 @@ export function failReview(item: Pick<ZoteroItemPayload, "itemkey" | "libraryURI
 }
 
 export function removeReview(key: string): void {
-	if (pending.get(key)?.operation) return;
+	if (pending.get(key)?.operation || pending.get(key)?.uncertain || pending.get(key)?.awaitingAcknowledgement) return;
 	if (pending.delete(key)) notify();
 }
 
 export function clearReviews(): void {
 	pending.clear();
+	acknowledgedUncertain.clear();
 	batch = undefined;
 	notify();
 }

@@ -16,6 +16,7 @@
 import path from "path";
 import { htmlToMarkdown, App, FileSystemAdapter, Notice, TFile } from "obsidian";
 import type { ZoteroItemPayload } from "./types";
+import { getNoteZoteroSelectUri } from "./zoteroUri";
 import { findLitNoteForCitekey } from "../zotero/matcher";
 import { normalizeTranscriptHeading } from "commons/youtube";
 
@@ -159,20 +160,7 @@ const ATTACHMENT_LABELS: Record<string, string> = {
  * Ported from `build_info_callout_links()`.
  */
 export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: string[] = [], managed = false): string {
-	let zoteroUri = "";
-
-	if (item.itemkey) {
-		zoteroUri = `zotero://select/library/items/${item.itemkey}`;
-	} else if (item.desktopURI) {
-		const match = item.desktopURI.match(/items\/([A-Za-z0-9]+)/);
-		if (match) {
-			zoteroUri = `zotero://select/library/items/${match[1]}`;
-		} else {
-			zoteroUri = item.desktopURI;
-		}
-	}
-
-	const links: string[] = [`[**Zotero**](${encodeURI(zoteroUri)})`];
+	const links: string[] = [`[**Zotero**](${encodeURI(getNoteZoteroSelectUri(item))})`];
 
 	if (item.DOI) {
 		links.push(`[**DOI**](https://doi.org/${item.DOI})`);

@@ -110,10 +110,17 @@ export interface LitNoteReviewFailureRequest {
 	error: string;
 }
 
+export interface LitNoteUncertainReviewRequest {
+	action: "review-uncertain" | "review-uncertain-acknowledged";
+	itemkey: string;
+	libraryURI: string;
+	error?: string;
+}
+
 export interface LitNoteAttachmentMoveCompleteRequest {
 	action: "attachment-move-complete";
 	data: [ZoteroItemPayload];
-	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean }>;
+	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean; preservedSource?: boolean; copied?: boolean }>;
 	linked?: Array<{ path: string; newKey: string }>;
 }
 
@@ -122,7 +129,7 @@ export interface LitNoteBulkLibraryRequest {
 	data: [ZoteroItemPayload];
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteBulkLibraryRequest;
+export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteBulkLibraryRequest;
 
 export type LitNoteItemStatus =
 	| "created"
@@ -161,7 +168,8 @@ export interface LitNoteResponse {
 		attachmentMove?: AttachmentMoveCandidate;
 		strategy?: "newest" | "zotero" | "skip";
 	}>;
-	pending?: Array<{ itemkey: string; libraryURI: string }>;
+	pending?: Array<{ itemkey: string; libraryURI: string; uncertain?: boolean }>;
+	acknowledgedUncertain?: Array<{ itemkey: string; libraryURI: string }>;
 	results?: LitNoteItemResult[];
 	path?: string;
 	error?: string;

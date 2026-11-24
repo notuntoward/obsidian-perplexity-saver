@@ -123,6 +123,12 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   refreshes Zotero-owned metadata as well.
 - `{ action: "apply-sync" | "validate-zotero-key", token, data: [ZoteroItemPayload] }`
   revalidates an approved, single-use plan against the current item and note.
+- The companion journals each requested review before executing it. On an
+  unknown outcome it posts `{ action: "review-uncertain", itemkey, libraryURI }`;
+  Saver blocks further automatic work for that identity until the user checks
+  both apps. After the user's acknowledgement, the review-requests endpoint
+  exposes `acknowledgedUncertain`; the companion clears its journal and posts
+  `review-uncertain-acknowledged` before that identity can be requested again.
 - `GET /lit-note-identities` returns indexed item keys, Obsidian note paths,
   library identities, and citation keys for reconciliation.
 - When citation keys differ, the companion sends `citationKeyCheck` for the

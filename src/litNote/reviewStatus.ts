@@ -3,10 +3,12 @@ import { ItemSuggestModal } from "commons/modal";
 import { raiseWindow } from "commons/os";
 import { getMainWindow } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
-import { requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, setReviewListener } from "./pendingReviews";
+import { acknowledgeUncertainReview, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, setReviewListener } from "./pendingReviews";
 import type { PendingReview } from "./pendingReviews";
 
 type ReviewGroup =
+	| { kind: "uncertain"; title: string; reviews: PendingReview[] }
+	| { kind: "awaiting-ack"; title: string; reviews: PendingReview[] }
 	| { kind: "library"; title: string; uri: string; reviews: PendingReview[] }
 	| { kind: "bulk-update"; title: string; summary: string; reviews: PendingReview[] }
 	| { kind: "attachment-move"; title: string; baseDirectory: string; conflict: boolean; reviews: PendingReview[] }
@@ -17,7 +19,17 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 	const updates = new Map<string, PendingReview[]>();
 	const attachmentMoves = new Map<string, { baseDirectory: string; conflict: boolean; reviews: PendingReview[] }>();
 	const reasons = new Map<string, PendingReview[]>();
+	const uncertain: PendingReview[] = [];
+	const awaitingAck: PendingReview[] = [];
 	for (const review of reviews) {
+		if (review.uncertain) {
+			uncertain.push(review);
+			continue;
+		}
+		if (review.awaitingAcknowledgement) {
+			awaitingAck.push(review);
+			continue;
+		}
 		if (review.libraryNotePath && !review.requested) {
 			const group = libraries.get(review.libraryURI) ?? [];
 			group.push(review);
@@ -44,6 +56,8 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 		reasons.set(review.reason, group);
 	}
 	return [
+		...(uncertain.length ? [{ kind: "uncertain" as const, reviews: uncertain, title: `Check interrupted operations (${uncertain.length})` }] : []),
+		...(awaitingAck.length ? [{ kind: "awaiting-ack" as const, reviews: awaitingAck, title: `Waiting for Zotero to confirm checks (${awaitingAck.length})` }] : []),
 		...[...libraries].map(([uri, entries]): ReviewGroup => ({
 			kind: "library", uri, reviews: entries, title: `Add missing Zotero library URI (${entries.length})`,
 		})),
@@ -92,18 +106,24 @@ async function approveAttachmentBatch(app: App, group: Extract<ReviewGroup, { ki
 		strategy = choice === "keep-zotero" ? "zotero" : "newest";
 	} else {
 		const details = [
-			duplicates ? `${duplicates} identical duplicate${duplicates === 1 ? "" : "s"} will go to the trash; the copy named closest to Zotero's renaming pattern is kept.` : "",
-			mismatched ? `${mismatched} note${mismatched === 1 ? "" : "s"} and Zotero item${mismatched === 1 ? "" : "s"} have files the other lacks. Those files are moved into the vault and linked from both; nothing is trashed. Each note gets a red mismatch line and the zotero_note_file_mismatch property.` : "",
-			"When a note and Zotero have different files with the same name, the newest non-empty file is kept.",
+			duplicates ? `- Move up to ${duplicates} duplicate or replaced empty file${duplicates === 1 ? "" : "s"} to Trash after safety checks.` : "",
+			mismatched ? `- Mark ${mismatched} note${mismatched === 1 ? "" : "s"} with unmatched or missing links. Extra files are kept and linked in both apps.` : "",
+			attachments.some((attachment) => attachment.resolution === "newest")
+				? "- For same-name copies, keep the newest non-empty file." : "",
 		].filter(Boolean).join("\n");
 		const choice = await askNoteDecision(app, "Move Zotero attachments into the vault?",
-			`Move ${fileCount} attachment${fileCount === 1 ? "" : "s"} for ${count} note${count === 1 ? "" : "s"} into the vault (${group.baseDirectory}) and link them from Zotero and the notes.\n${details}`,
-			[{ label: "Continue", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
+			[
+				`Move ${fileCount} attachment${fileCount === 1 ? "" : "s"} for ${count} note${count === 1 ? "" : "s"} and link them in Zotero and Obsidian.`,
+				`Destination: ${group.baseDirectory}`,
+				details,
+				"Continue to the backup confirmation. No files will move yet.",
+			].filter(Boolean).join("\n\n"),
+			[{ label: "Continue to backup", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 		if (choice !== "create") return;
 	}
 	const confirm = await askNoteDecision(app, "Back up the vault and attachment files",
-		`Back up your vault before continuing. Any unselected conflicting file will also be kept as a backup beside the attachment. Confirm moving and relinking the files for ${count} note${count === 1 ? "" : "s"}.`,
-		[{ label: "Move and update links", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
+		`Back up your vault and Zotero attachment files first.\n\nConfirm to start moving and relinking attachments for ${count} note${count === 1 ? "" : "s"}. Conflicting copies are kept as backups.`,
+		[{ label: "Move attachments now", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
 	if (confirm !== "create") return;
 	try {
 		const selected = group.reviews.map((review) => {
@@ -166,6 +186,37 @@ async function approveNoteBatch(app: App, group: Extract<ReviewGroup, { kind: "b
 }
 
 function openGroup(app: App, group: ReviewGroup): void {
+	if (group.kind === "awaiting-ack") {
+		new Notice("Start Zotero to finish confirming the checked operations.", 10000);
+		return;
+	}
+	if (group.kind === "uncertain") {
+		new ItemSuggestModal(app, group.reviews, (entry) => {
+			void (async () => {
+				const choice = await askNoteDecision(app, "Check the interrupted operation",
+					`Check the Zotero item and Obsidian note before continuing.${entry.uncertainReason ? `\n\nError: ${entry.uncertainReason}` : ""}\n\nZotero item key: ${entry.itemkey}${entry.notePath ? `\nObsidian note: ${entry.notePath}` : ""}\n\nThe operation may have changed files or links. Confirm only after checking both apps. The old operation will not be repeated.`,
+					[{ label: "I checked both apps", value: "create", cta: true }, { label: "Cancel", value: "cancel" }],
+					{
+						title: entry.title,
+						itemkey: entry.itemkey,
+						libraryURI: entry.libraryURI,
+						notePath: entry.notePath,
+					});
+				if (choice !== "create") return;
+				try {
+					acknowledgeUncertainReview(entry.key);
+					new Notice("Waiting for Zotero to acknowledge the check. The note will be rechecked.", 10000);
+				} catch (error) {
+					new Notice(error instanceof Error ? error.message : String(error), 10000);
+				}
+			})();
+		}, {
+			placeholder: group.title,
+			getTitle: (entry) => entry.title,
+			getSubtitle: (entry) => entry.notePath || entry.itemkey,
+		}).open();
+		return;
+	}
 	if (group.kind === "library") {
 		void approveLibraryBatch(app, group);
 		return;
@@ -205,9 +256,12 @@ export function setupReviewStatus(app: App, status: HTMLElement): () => void {
 	let progress: Notice | undefined;
 	setReviewListener((reviews, batch) => {
 		status.hidden = reviews.length === 0;
-		button.setText(batch
-			? `Zotero reviews: ${reviews.length} (${batch.completed}/${batch.total} checked${batch.rechecking ? `, ${batch.rechecking} rechecking` : ""})`
-			: `Zotero reviews: ${reviews.length}`);
+		const interrupted = batch ? reviews.filter((entry) => entry.uncertain &&
+			(entry.operation === batch.kind || (batch.kind === "library-uri" && entry.operation === "library-recheck"))).length : 0;
+		button.setText(`Zotero reviews: ${reviews.length}`);
+		button.title = batch
+			? `${batch.completed}/${batch.total} checked${batch.rechecking ? `, ${batch.rechecking} rechecking` : ""}${interrupted ? `, ${interrupted} interrupted` : ""}`
+			: "Open Zotero reviews";
 		if (reviews.length && !announced) {
 			arrival = new Notice("Zotero reviews need attention. Click Zotero reviews in the status bar to see them.", 0);
 			announced = true;
@@ -219,7 +273,9 @@ export function setupReviewStatus(app: App, status: HTMLElement): () => void {
 		}
 		count = reviews.length;
 		if (batch) {
-			const message = `${batch.kind === "attachment-move" ? "Moving and relinking" : "Correcting"} ${batch.total} note${batch.total === 1 ? "" : "s"}: ${batch.completed} of ${batch.total} checked${batch.rechecking ? `; ${batch.rechecking} awaiting recheck` : ""}. Keep the updated Zotero companion running.`;
+			const message = interrupted
+				? `Check ${interrupted} interrupted operation${interrupted === 1 ? "" : "s"} using Zotero reviews in the status bar. ${batch.completed} of ${batch.total} notes checked; other operations may still be running.`
+				: `${batch.kind === "attachment-move" ? "Moving and relinking" : "Correcting"} ${batch.total} note${batch.total === 1 ? "" : "s"}: ${batch.completed} of ${batch.total} checked${batch.rechecking ? `; ${batch.rechecking} awaiting recheck` : ""}. Keep the updated Zotero companion running.`;
 			if (!progress) progress = new Notice(message, 0);
 			else progress.setMessage(message);
 			if (batch.completed === batch.total && !batch.rechecking) {

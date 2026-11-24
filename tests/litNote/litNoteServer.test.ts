@@ -9,7 +9,7 @@ import { askAuthorFormatDecision } from "../../src/litNote/authorFormatModal";
 import { syncLitNote } from "../../src/litNote/syncLitNote";
 import { findIdenticalAttachments } from "../../src/litNote/attachmentIdentity";
 import { assertAttachmentsUnshared } from "../../src/litNote/attachmentSharing";
-import { allReviews, clearReviews, queueReview, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, requestedReviews, reviewKey, setReviewListener } from "../../src/litNote/pendingReviews";
+import { acknowledgeUncertainReview, allReviews, clearReviews, queueReview, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, requestedReviews, reviewKey, setReviewListener } from "../../src/litNote/pendingReviews";
 import { TFile } from "obsidian";
 import { FileSystemAdapter } from "obsidian";
 import path from "path";
@@ -157,6 +157,14 @@ async function post(app: any, bodyObj: any, settings: any = { litNotesFolder: FO
 	return JSON.parse((res.end as any).mock.calls[0][0]);
 }
 
+async function getReviews(app: any) {
+	startLitNoteServer(app, { litNotesFolder: FOLDER });
+	const { res, endPromise } = createMockRes();
+	requestHandler(createMockReq("GET", "/lit-note-review-requests?bulk=1", {}), res);
+	await endPromise;
+	return JSON.parse((res.end as any).mock.calls[0][0]);
+}
+
 describe("Lit Note Server", () => {
 	beforeEach(() => {
 		setReviewListener();
@@ -189,6 +197,91 @@ describe("Lit Note Server", () => {
 		const reviews: string[] = [];
 		setReviewListener((entries) => reviews.splice(0, reviews.length, ...entries.map((entry) => entry.itemkey)));
 		expect(reviews).toEqual(["ONE", "TWO"]);
+	});
+
+	it("holds an interrupted review until the running request finishes and the user checks both apps", async () => {
+		const { app } = makeApp();
+		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		queueReview(item, "Attachment links differ");
+		requestReview(reviewKey(item));
+		let release!: () => void;
+		let started!: () => void;
+		const running = new Promise<void>((resolve) => { release = resolve; });
+		const startedPromise = new Promise<void>((resolve) => { started = resolve; });
+		vi.mocked(syncLitNote).mockImplementationOnce(async () => {
+			started();
+			await running;
+			return { citekey: item.citekey, status: "skipped" };
+		});
+		const original = post(app, { action: "review-sync", data: [item] });
+		await startedPromise;
+		await post(app, { action: "review-uncertain", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		expect((await getReviews(app)).requests).toEqual([]);
+		expect((await getReviews(app)).pending).toMatchObject([{ itemkey: "ABC", uncertain: true }]);
+		const listener = vi.fn();
+		setReviewListener(listener);
+		await post(app, { action: "review-uncertain", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		expect(listener).toHaveBeenCalledTimes(1);
+		await post(app, { action: "review-failed", itemkey: item.itemkey, libraryURI: item.libraryURI, error: "Request timed out after 120000 ms" });
+		expect(allReviews()[0].reason).toBe("Attachment links differ");
+		expect(() => acknowledgeUncertainReview(reviewKey(item))).toThrow("still processing");
+		release();
+		await original;
+		expect(allReviews()).toMatchObject([{ itemkey: "ABC", uncertain: true }]);
+		const blockedSync = await post(app, { action: "sync", data: [item] });
+		const blockedUpdate = await post(app, { action: "update", data: [item] });
+		expect(blockedSync.results[0].status).toBe("pending-review");
+		expect(blockedUpdate.results[0].error).toContain("Check the interrupted operation");
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
+		acknowledgeUncertainReview(reviewKey(item));
+		expect((await getReviews(app)).acknowledgedUncertain).toEqual([{ itemkey: "ABC", libraryURI: "library" }]);
+		await post(app, { action: "review-uncertain", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		expect(allReviews()).toMatchObject([{ itemkey: "ABC", awaitingAcknowledgement: true }]);
+		expect(() => requestReview(reviewKey(item))).toThrow("Wait for Zotero");
+		expect((await post(app, { action: "sync", data: [item] })).results[0].status).toBe("pending-review");
+		await post(app, { action: "review-uncertain-acknowledged", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		expect(allReviews()).toEqual([]);
+		queueReview(item, "Attachment links differ");
+		requestReview(reviewKey(item));
+		await post(app, { action: "review-uncertain", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		expect(allReviews()).toMatchObject([{ itemkey: "ABC", uncertain: true }]);
+	});
+
+	it("recreates an interrupted review reported after Obsidian restarts", async () => {
+		const { app } = makeApp();
+		const identity = { itemkey: "ABC", libraryURI: "library" };
+		await post(app, { action: "review-uncertain", ...identity, error: "Could not relink paper.pdf" });
+		clearReviews();
+		await post(app, { action: "review-uncertain", ...identity, error: "Could not relink paper.pdf" });
+		const state = await getReviews(app);
+		expect(state.pending).toEqual([{ ...identity, uncertain: true }]);
+		expect(state.requests).toEqual([]);
+		expect(allReviews()[0].uncertainReason).toBe("Could not relink paper.pdf");
+	});
+
+	it("keeps other requested reviews available while one outcome is unknown", async () => {
+		const { app } = makeApp();
+		const first = { title: "First", citekey: "first", itemkey: "FIRST", libraryURI: "library" };
+		const second = { title: "Second", citekey: "second", itemkey: "SECOND", libraryURI: "library" };
+		queueReview(first, "Review first");
+		queueReview(second, "Review second");
+		requestReview(reviewKey(first));
+		requestReview(reviewKey(second));
+		await post(app, { action: "review-uncertain", itemkey: first.itemkey, libraryURI: first.libraryURI });
+		expect((await getReviews(app)).requests).toEqual([{ itemkey: "SECOND", libraryURI: "library" }]);
+	});
+
+	it("does not apply an earlier prepared plan while the item has an unknown outcome", async () => {
+		const { app } = makeApp();
+		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "prepared", snapshot: "note" });
+		const prepared = await post(app, { action: "sync", data: [item] });
+		await post(app, { action: "review-uncertain", itemkey: item.itemkey, libraryURI: item.libraryURI });
+		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [item] });
+		expect(applied.results[0]).toMatchObject({
+			status: "error", error: expect.stringContaining("Check the interrupted operation"),
+		});
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports an automatic apply failure without opening a dialog", async () => {
@@ -264,7 +357,13 @@ describe("Lit Note Server", () => {
 
 		const result = await post(app, { action: "attachment-move-complete", data: [item], moved, linked });
 		expect(result.results[0].status).toBe("updated");
-		expect(finishAttachmentMove).toHaveBeenCalledWith(app, expect.anything(), item, candidate);
+		expect(finishAttachmentMove).toHaveBeenCalledWith(
+			app,
+			{ litNotesFolder: "lit/lit_notes" },
+			item,
+			candidate,
+			[],
+		);
 		expect(allReviews()).toEqual([]);
 	});
 

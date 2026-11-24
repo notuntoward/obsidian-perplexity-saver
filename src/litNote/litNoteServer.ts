@@ -36,7 +36,7 @@ import { raiseWindow } from "commons/os";
 import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession } from "./decisionModal";
 import { getLitNoteFiles } from "commons/litnote";
 import { finishAttachmentMove, syncLitNote, type SyncResult } from "./syncLitNote";
-import { allReviews, clearReviews, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, queueReview, removeReview, requestedReviews, resetReviewRequest, reviewKey } from "./pendingReviews";
+import { acknowledgedUncertainReviews, allReviews, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, endReviewOperation, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, queueReview, removeReview, requestedReviews, resetReviewRequest, reviewKey } from "./pendingReviews";
 import type { BulkProposal } from "./pendingReviews";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
@@ -921,7 +921,7 @@ async function handleRequest(
 		const supportsBulk = req.url.endsWith("?bulk=1");
 		sendJson(res, 200, {
 			success: true,
-			requests: requestedReviews().filter((entry) => supportsBulk || !entry.operation)
+			requests: requestedReviews().filter((entry) => !entry.uncertain && (supportsBulk || !entry.operation))
 				.map((entry) => ({
 					...identity(entry),
 					...(entry.operation ? { operation: entry.operation } : {}),
@@ -930,7 +930,8 @@ async function handleRequest(
 						strategy: entry.attachmentStrategy,
 					} : {}),
 				})),
-			pending: allReviews().map(identity),
+			pending: allReviews().map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}) })),
+			acknowledgedUncertain: acknowledgedUncertainReviews(),
 		});
 		return;
 	}
@@ -982,8 +983,28 @@ async function handleRequest(
 		return;
 	}
 
+	let activeReviews: string[] = [];
+	if (parsed.action === "apply-sync" || parsed.action === "validate-zotero-key" ||
+		parsed.action === "sync" || parsed.action === "update" ||
+		parsed.action === "review-sync" || parsed.action === "bulk-review-sync" ||
+		parsed.action === "review-recheck" || parsed.action === "bulk-library-uri" ||
+		parsed.action === "attachment-move-complete") {
+		activeReviews = Array.isArray(parsed.data) ? [...new Set(parsed.data
+			.filter((item) => item?.itemkey && item.libraryURI)
+			.map((item) => reviewKey(item)))] : [];
+	}
+	for (const key of activeReviews) beginReviewOperation(key);
 	try {
-		if (parsed.action === "review-failed") {
+		if (parsed.action === "review-uncertain" || parsed.action === "review-uncertain-acknowledged") {
+			if (typeof parsed.itemkey !== "string" || !parsed.itemkey || typeof parsed.libraryURI !== "string" || !parsed.libraryURI ||
+				(parsed.error !== undefined && typeof parsed.error !== "string")) {
+				sendJson(res, 400, { success: false, error: "Invalid interrupted review identity" });
+				return;
+			}
+			if (parsed.action === "review-uncertain") markReviewUncertain(parsed);
+			else consumeUncertainAcknowledgement(parsed);
+			sendJson(res, 200, { success: true });
+		} else if (parsed.action === "review-failed") {
 			if (typeof parsed.itemkey !== "string" || typeof parsed.libraryURI !== "string" || typeof parsed.error !== "string") {
 				sendJson(res, 400, { success: false, error: "Invalid review failure" });
 				return;
@@ -1018,6 +1039,13 @@ async function handleRequest(
 						!item.attachments?.some((current) => current.itemkey === attachment.itemkey);
 				}
 				if (result.trashed || !samePath(result.to, attachment.destinationPath)) return false;
+				if (result.preservedSource) {
+					const original = item.attachments?.find((current) => current.itemkey === attachment.itemkey);
+					return result.oldKey === undefined && !!result.newKey &&
+						linkedAt(result.newKey, attachment.destinationPath) &&
+						original?.mode === attachment.mode && samePath(original.path, attachment.sourcePath);
+				}
+				if (result.copied) return false;
 				if (attachment.mode === "stored") {
 					return result.oldKey === attachment.itemkey && !!result.newKey && linkedAt(result.newKey, attachment.destinationPath);
 				}
@@ -1031,7 +1059,15 @@ async function handleRequest(
 			const outcome = await runSerialized(async (): Promise<LitNoteItemResult> => {
 				try {
 					await ensureWorkspaceReady(app);
-					await finishAttachmentMove(app, settings, item, candidate);
+					const preservedSources = moved
+						.filter((move) => move.preservedSource)
+						.map((move) => ({
+							itemkey: move.itemkey!,
+							from: move.from,
+							to: move.to,
+							...(move.copied ? { copied: true } : {}),
+						}));
+					await finishAttachmentMove(app, settings, item, candidate, preservedSources);
 					finishAttachmentCorrection(entry.key);
 					return { citekey: item.citekey, status: "updated" };
 				} catch (error) {
@@ -1147,6 +1183,12 @@ async function handleRequest(
 				let cancelled = false;
 				for (const item of items) {
 					try {
+						if (item.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
+							entries.push(automatic
+								? { citekey: item.citekey, status: "pending-review" }
+								: { citekey: item.citekey, status: "error", error: "Check the interrupted operation in Obsidian before updating this note." });
+							continue;
+						}
 						const decisions: SyncPlan["decisions"] = [];
 						const entry = await syncLitNote(app, settings, item, mode, async (title, message, buttons, review, conflict, bulkSummary) => {
 							if (automatic) throw new ReviewNeeded(title, conflict?.notePath, bulkSummary
@@ -1268,6 +1310,12 @@ async function handleRequest(
 			const plan = syncPlans.get(parsed.token);
 			syncPlans.delete(parsed.token);
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			if (item?.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
+				sendJson(res, 200, resultsResponse([{
+					citekey: item.citekey, status: "error", error: "Check the interrupted operation in Obsidian before updating this note.",
+				}]));
+				return;
+			}
 			const reportFailure = async (failure: SyncResult): Promise<LitNoteItemResult> => {
 				if (item && (plan?.bulk || requestedReviews().some((review) => review.key === reviewKey(item) && review.operation === "note-update"))) {
 					finishNoteCorrection(reviewKey(item), failure.error ?? "The update failed; review this note individually.");
@@ -1429,6 +1477,8 @@ async function handleRequest(
 		const msg = errorMessage(err);
 		console.error("[LitNoteServer] Unhandled error:", err);
 		sendJson(res, 500, { success: false, error: msg });
+	} finally {
+		for (const key of activeReviews) endReviewOperation(key);
 	}
 }
 

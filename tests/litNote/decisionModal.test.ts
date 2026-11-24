@@ -240,7 +240,8 @@ describe("askNoteDecision", () => {
 
 	it("links to the correct Zotero library and copies each key from the modal's window", async () => {
 		state.doc = document.implementation.createHTMLDocument("pop-out");
-		const popoutWindow = { name: "pop-out" };
+		const openExternal = vi.fn().mockResolvedValue(undefined);
+		const popoutWindow = { name: "pop-out", electron: { shell: { openExternal } } };
 		Object.defineProperty(state.doc, "defaultView", { value: popoutWindow });
 		const copy = vi.spyOn(windows, "writeClipboardIn").mockResolvedValue(true);
 		const openLinkText = vi.fn().mockResolvedValue(undefined);
@@ -255,6 +256,9 @@ describe("askNoteDecision", () => {
 		const modal = latestModal();
 		const zotero = modal.contentEl.querySelector<HTMLAnchorElement>("a.external-link")!;
 		expect(zotero.getAttribute("href")).toBe("zotero://select/groups/42/items/ITEM1234");
+		zotero.click();
+		await settleMicrotasks();
+		expect(openExternal).toHaveBeenCalledWith("zotero://select/groups/42/items/ITEM1234");
 		expect(Array.from(modal.contentEl.querySelectorAll("a")).find((el) => el.textContent === "note.md")).toBeDefined();
 		expect(modal.contentEl.querySelector('button[aria-label="Copy Zotero item title"]')).toBeNull();
 		expect(modal.contentEl.querySelector('button[aria-label="Copy Obsidian note name"]')).toBeNull();
@@ -267,6 +271,24 @@ describe("askNoteDecision", () => {
 		findButton("Cancel").click();
 		await expect(promise).resolves.toBe("cancel");
 		copy.mockRestore();
+	});
+
+	it("opens a personal Zotero item using the note callout URI", async () => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const openExternal = vi.fn().mockRejectedValue(new Error("Zotero is unavailable"));
+		Object.defineProperty(state.doc, "defaultView", { value: { electron: { shell: { openExternal } } } });
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		const promise = withNoteDecisionSession({} as App, (session) => session.ask("Review", "", [
+			{ label: "Cancel", value: "cancel" },
+		], undefined, { title: "Paper", itemkey: "ITEM1234", libraryURI: "http://zotero.org/users/1", zoteroCitekey: "key" }));
+		await settleMicrotasks();
+		latestModal().contentEl.querySelector<HTMLAnchorElement>("a.external-link")!.click();
+		await settleMicrotasks();
+		expect(openExternal).toHaveBeenCalledWith("zotero://select/library/items/ITEM1234");
+		expect(createdNotices.at(-1)?.message).toContain("Zotero is unavailable");
+		findButton("Cancel").click();
+		await expect(promise).resolves.toBe("cancel");
+		errors.mockRestore();
 	});
 
 	it.each([

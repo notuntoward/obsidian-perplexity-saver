@@ -5,7 +5,7 @@ import { buildAliases, buildAttachmentLinks, buildLitNoteFrontmatter } from "./b
 import type { AttachmentProblem } from "./buildLitNote";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
-import { buildAttachmentMoveCandidate } from "./attachmentMove";
+import { buildAttachmentMoveCandidate, validateTrashNoteFile } from "./attachmentMove";
 import type { NoteAttachmentLink } from "./attachmentMove";
 import type { AttachmentMoveCandidate } from "./pendingReviews";
 import type { AttachmentReviewRow, CitekeyConflictDetails, DecisionButton, NoteDecision } from "./decisionModal";
@@ -185,6 +185,18 @@ export async function syncLitNote(
 	const file = candidates[0];
 	const fm = app.metadataCache.getFileCache(file)?.frontmatter;
 	const noteKey = typeof fm?.citekey === "string" ? fm.citekey.trim() : "";
+	const preservedAttachmentKeys = new Set(
+		fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI &&
+			Array.isArray(fm.zotero_attachment_preserved_keys)
+			? fm.zotero_attachment_preserved_keys.filter((key): key is string => typeof key === "string")
+			: [],
+	);
+	const attachmentItem = preservedAttachmentKeys.size
+		? {
+			...item,
+			attachments: item.attachments?.filter((attachment) => !preservedAttachmentKeys.has(attachment.itemkey ?? "")),
+		}
+		: item;
 	identity = {
 		title: item.title, itemkey: item.itemkey, libraryURI: item.libraryURI,
 		notePath: file.path, noteCitekey: noteKey || "(not set)", zoteroCitekey: citekey,
@@ -200,7 +212,28 @@ export async function syncLitNote(
 	}
 	const oldHeader = header(content);
 	if (!oldHeader) return failure("Zotero info callout is missing", "The note has no Zotero info callout; attachment links were not changed. Restore the info callout or update the note manually.", "Restore the info callout or update the note manually. Attachment links were not changed.");
-	if (noteKey && noteKey !== citekey) {
+	const filenameMatchesZotero = file.path === target && !legacy && !reassociating;
+	if (noteKey && noteKey !== citekey && filenameMatchesZotero && mode === "auto" && !item.zoteroChanges) {
+		if (options.prepareOnly) {
+			return { status: "prepared", citekey, snapshot: content, notePath: file.path, identicalAttachments: [] };
+		}
+		await options.beforeApply?.();
+		try {
+			if (await app.vault.read(file) !== content) throw new Error("The note changed while the update was pending; retry.");
+			await app.fileManager.processFrontMatter(file, (current: Record<string, unknown>) => {
+				for (const key of ["citekey", "zotero_item_key", "zotero_library_uri"]) {
+					if (value(current[key]) !== (originalValues[key] ?? value(undefined))) {
+						throw new Error(`The note's ${key} changed while the update was pending; retry.`);
+					}
+				}
+				current.citekey = citekey;
+			});
+			return result("updated");
+		} catch (error) {
+			return failure("Citation key could not be updated", error instanceof Error ? error.message : String(error));
+		}
+	}
+	if (noteKey && noteKey !== citekey && !filenameMatchesZotero) {
 		const check = item.citationKeyCheck;
 		if (!check || check.citekey !== noteKey || !Array.isArray(check.matches) ||
 			check.matches.some((match) => !match || typeof match.title !== "string" ||
@@ -243,7 +276,7 @@ export async function syncLitNote(
 	const collision = app.vault.getAbstractFileByPath(target);
 	if (collision && collision !== file) return failure("Note filename already exists", `Cannot rename note: ${target} already exists. Check the existing note and resolve the filename conflict before retrying.`, `${target}\n\nResolve the filename conflict, then retry.`);
 	let unavailable: AttachmentProblem[] = [];
-	const attachmentLinks = await buildAttachmentLinks(app, item, target, (details) => { unavailable = details; });
+	const attachmentLinks = await buildAttachmentLinks(app, attachmentItem, target, (details) => { unavailable = details; });
 	if (unavailable.length) {
 		let attachmentMove: AttachmentMoveCandidate | undefined;
 		if (mode === "auto" && !item.zoteroChanges &&
@@ -262,7 +295,7 @@ export async function syncLitNote(
 						...(linkExtension(link) ? { extension: linkExtension(link) } : {}),
 					};
 				});
-				attachmentMove = await buildAttachmentMoveCandidate(item, noteKey, links, unavailable, vaultRoot);
+				attachmentMove = await buildAttachmentMoveCandidate(attachmentItem, noteKey, links, unavailable, vaultRoot);
 			} catch (error) {
 				console.warn("Could not check whether Zotero attachments can be moved safely", error);
 			}
@@ -280,22 +313,53 @@ export async function syncLitNote(
 	} catch (error) {
 		return failure("Managed attachment markers are invalid", error instanceof Error ? error.message : String(error), "Check the note's managed attachment markers, then retry. Attachment links were not changed.");
 	}
-	if (!oldHeader.includes(START) && !legacy && mode === "auto") {
-		return failure("Managed attachment markers are missing", "The Obsidian note has no managed attachment markers. Run an update to review and adopt its attachment links.", "Run an update to review and adopt the note's attachment links.");
-	}
-	const noteOnlyLinks = subtractLinks(oldLinks, attachmentLinks);
-	const zoteroOnlyLinks = subtractLinks(attachmentLinks, oldLinks);
 	const resolveAttachment = (link: string, sourcePath: string): TFile | null => {
-		const path = attachmentLinkPath(link);
-		const candidate = path ? app.metadataCache.getFirstLinkpathDest(path, sourcePath) : null;
+		const linkPath = attachmentLinkPath(link);
+		const candidate = linkPath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkPath).path, sourcePath) : null;
 		return candidate instanceof TFile ? candidate : null;
 	};
-	const noteOnlyFiles = [...new Map(noteOnlyLinks.flatMap((link) => {
+	const zoteroOnlyLinks = [...attachmentLinks];
+	const noteOnlyLinks = oldLinks.filter((link) => {
+		const resolved = !legacy ? resolveAttachment(link, file.path) : null;
+		const index = zoteroOnlyLinks.findIndex((other) => other === link ||
+			(resolved && resolveAttachment(other, target)?.path === resolved.path));
+		if (index < 0) return true;
+		zoteroOnlyLinks.splice(index, 1);
+		return false;
+	});
+	const repairedLinks: Array<{ note: string; zotero: string }> = [];
+	if (mode === "auto" && !legacy && !reassociating && !item.zoteroChanges &&
+		noteKey === citekey && file.path === target) {
+		try {
+			for (const link of noteOnlyLinks) {
+				const ext = linkExtension(link);
+				if (!ext || noteOnlyLinks.filter((other) => linkExtension(other) === ext).length !== 1) continue;
+				const candidates = zoteroOnlyLinks.filter((other) => linkExtension(other) === ext);
+				if (candidates.length !== 1) continue;
+				const noteFile = resolveAttachment(link, file.path);
+				const zoteroFile = resolveAttachment(candidates[0], target);
+				if (!zoteroFile) continue;
+				const [noteStat, zoteroStat] = await Promise.all([
+					noteFile ? app.vault.adapter.stat(noteFile.path) : Promise.resolve(null),
+					app.vault.adapter.stat(zoteroFile.path),
+				]);
+				if ((!noteFile || (noteStat?.type === "file" && noteStat.size === 0)) &&
+					zoteroStat?.type === "file" && zoteroStat.size > 0) {
+					repairedLinks.push({ note: link, zotero: candidates[0] });
+				}
+			}
+		} catch (error) {
+			return failure("Attachment files could not be checked", `Could not check attachment files: ${error instanceof Error ? error.message : String(error)}. Check the files and their permissions, then retry.`);
+		}
+	}
+	const unmatchedNoteLinks = subtractLinks(noteOnlyLinks, repairedLinks.map((entry) => entry.note));
+	const unmatchedZoteroLinks = subtractLinks(zoteroOnlyLinks, repairedLinks.map((entry) => entry.zotero));
+	const noteOnlyFiles = [...new Map(unmatchedNoteLinks.flatMap((link) => {
 		const candidate = resolveAttachment(link, file.path);
 		return candidate ? [[candidate.path, candidate] as const] : [];
 	})).values()];
 	const noteOnlyPaths = new Set(noteOnlyFiles.map((candidate) => candidate.path));
-	const noteOnlyLinkPaths = new Set(noteOnlyLinks.flatMap((link) => {
+	const noteOnlyLinkPaths = new Set(unmatchedNoteLinks.flatMap((link) => {
 		const linkPath = attachmentLinkPath(link);
 		return linkPath ? [parseLinktext(linkPath).path] : [];
 	}));
@@ -317,12 +381,12 @@ export async function syncLitNote(
 	}
 	const identicalNotePaths = new Set(identicalAttachments.map((pair) => pair.note.path));
 	const identicalZoteroPaths = new Set(identicalAttachments.map((pair) => pair.zotero.path));
-	const automaticRemoved = noteOnlyLinks.filter((link) => {
+	const automaticRemoved = unmatchedNoteLinks.filter((link) => {
 		const candidate = resolveAttachment(link, file.path);
 		return candidate && identicalNotePaths.has(candidate.path);
 	});
-	const removedLinks = subtractLinks(noteOnlyLinks, automaticRemoved);
-	const addedLinks = zoteroOnlyLinks.filter((link) => {
+	const removedLinks = subtractLinks(unmatchedNoteLinks, automaticRemoved);
+	const addedLinks = unmatchedZoteroLinks.filter((link) => {
 		const candidate = resolveAttachment(link, target);
 		return !candidate || !identicalZoteroPaths.has(candidate.path);
 	});
@@ -379,7 +443,7 @@ export async function syncLitNote(
 		bodyChoices.push({ reference, eligible, existing });
 	}
 	const selectedAdditions: string[] = [];
-	const removedSelected: string[] = [...automaticRemoved];
+	const removedSelected: string[] = [...automaticRemoved, ...repairedLinks.map((entry) => entry.note)];
 	const reviewFile = (link: string, sourcePath: string, role: string): Array<{ path: string; modified?: number; role: string }> => {
 		const path = attachmentLinkPath(link);
 		const candidate = path ? app.metadataCache.getFirstLinkpathDest(path, sourcePath) : null;
@@ -499,6 +563,9 @@ export async function syncLitNote(
 	}
 	if (legacy && mode === "auto" && !item.zoteroChanges && noteKey === citekey && file.path === target &&
 		!removedLinks.length && !addedLinks.length && !automaticRemoved.length && !bodyEdits.length && !headerEdits.length && !keptLinks.length) return result("skipped");
+	if (!legacy && mode === "auto" && !item.zoteroChanges && noteKey === citekey && file.path === target &&
+		!removedLinks.length && !addedLinks.length && !automaticRemoved.length && !repairedLinks.length &&
+		!bodyEdits.length && !headerEdits.length && !keptLinks.length) return result("skipped");
 	let editedHeader = oldHeader;
 	for (const edit of headerEdits.sort((a, b) => b.start - a.start)) {
 		const start = edit.start - headerStart;
@@ -507,7 +574,7 @@ export async function syncLitNote(
 	}
 	let newHeader: string;
 	try {
-		newHeader = managedHeader(editedHeader, [...subtractLinks(attachmentLinks, addedLinks), ...selectedAdditions, ...keptManagedLinks], legacy || mode === "metadata");
+		newHeader = managedHeader(editedHeader, [...subtractLinks(attachmentLinks, addedLinks), ...selectedAdditions, ...keptManagedLinks], true);
 	} catch (error) {
 		return failure("Managed attachment markers could not be updated", error instanceof Error ? error.message : String(error), `${error instanceof Error ? error.message : String(error)} Check the note's attachment markers, then retry.`);
 	}
@@ -559,7 +626,7 @@ export async function syncLitNote(
 		oldHeader !== newHeader || bodyEdits.length ? "Update attachment links" : "",
 		duplicateFiles ? "Move duplicate files to Trash after shared-reference checks" : "",
 	].filter(Boolean).join("; ") : undefined;
-	if (legacy || mode === "metadata" || !oldHeader.includes(START) || file.path !== target ||
+	if (legacy || mode === "metadata" || (!oldHeader.includes(START) && !repairedLinks.length) || file.path !== target ||
 		review.length || item.zoteroChanges || duplicateFiles) {
 		const alreadyChanged = item.zoteroChanges
 			? `Already changed in Zotero:\n- Item citekey: ${item.zoteroChanges.previousCitekey} → ${citekey}\n- ${item.zoteroChanges.attachmentMoves.length} verified attachment file move(s) or rename(s)${item.zoteroChanges.attachmentMoves.length ? " (shown in the attachment review)" : ""}.`
@@ -648,6 +715,7 @@ export async function syncLitNote(
 }
 
 export const MISMATCH_PROPERTY = "zotero_note_file_mismatch";
+const PRESERVED_ATTACHMENT_KEYS_PROPERTY = "zotero_attachment_preserved_keys";
 const MISMATCH_PREFIX = "==🔴Zotero/note attachment mismatch:";
 
 function mismatchLine(extras: AttachmentMoveCandidate["extras"]): string {
@@ -694,6 +762,7 @@ export async function finishAttachmentMove(
 	settings: LitNoteWriterSettings,
 	item: ZoteroItemPayload,
 	candidate: AttachmentMoveCandidate,
+	preservedSources: Array<{ itemkey: string; from: string; to: string; copied?: boolean }> = [],
 ): Promise<{ trashed: string[] }> {
 	const notes = getLitNoteFiles(app, settings.litNotesFolder).filter((note) => {
 		const fm = app.metadataCache.getFileCache(note)?.frontmatter;
@@ -704,11 +773,18 @@ export async function finishAttachmentMove(
 	if (app.metadataCache.getFileCache(file)?.frontmatter?.citekey !== item.citekey) {
 		throw new Error("The note's citation key changed; review it individually.");
 	}
+	const preservedKeys = new Set(preservedSources.map((source) => source.itemkey));
+	const attachmentItem = preservedKeys.size
+		? {
+			...item,
+			attachments: item.attachments?.filter((attachment) => !preservedKeys.has(attachment.itemkey ?? "")),
+		}
+		: item;
 	let problems: AttachmentProblem[] = [];
 	let links: string[] = [];
 	for (let attempt = 0; attempt < 40; attempt++) {
 		problems = [];
-		links = await buildAttachmentLinks(app, item, file.path, (details) => { problems = details; });
+		links = await buildAttachmentLinks(app, attachmentItem, file.path, (details) => { problems = details; });
 		if (!problems.length) break;
 		await new Promise<void>((resolve) => setTimeoutIn(getMainWindow(app) ?? window, resolve, 250));
 	}
@@ -737,15 +813,34 @@ export async function finishAttachmentMove(
 		if (candidate.extras.length) updated = withMismatchLine(updated, mismatchLine(candidate.extras));
 		return updated;
 	});
-	if (candidate.extras.length) {
+	if (candidate.extras.length || preservedKeys.size) {
 		await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-			fm[MISMATCH_PROPERTY] = true;
+			if (candidate.extras.length) fm[MISMATCH_PROPERTY] = true;
+			if (preservedKeys.size) {
+				const existing = Array.isArray(fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY])
+					? fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY].filter((key): key is string => typeof key === "string")
+					: [];
+				fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY] = [...new Set([...existing, ...preservedKeys])];
+			}
 		});
+	}
+	if (preservedSources.length) {
+		const names = preservedSources.map((source) => path.basename(source.to)).join(", ");
+		const action = preservedSources.some((source) => source.copied)
+			? `Copied ${names} into the vault and linked the copies in Obsidian and Zotero.`
+			: `Linked the existing vault copies of ${names} in Obsidian and Zotero.`;
+		new Notice(`${action} The Zotero originals remain because another attachment references them. Verify those references before manually deleting an original.`, 15000);
 	}
 	const trashed: string[] = [];
 	for (const target of trashable) {
 		const duplicate = app.vault.getAbstractFileByPath(target);
 		if (duplicate instanceof TFile) {
+			const snapshot = candidate.trashNoteSnapshots?.find((entry) => entry.path === target);
+			const adapter = app.vault.adapter;
+			if (!snapshot || !(adapter instanceof FileSystemAdapter)) {
+				throw new Error(`Attachment ${target} could not be verified and was not trashed.`);
+			}
+			await validateTrashNoteFile(adapter.getBasePath(), snapshot);
 			await app.fileManager.trashFile(duplicate);
 			trashed.push(target);
 		}

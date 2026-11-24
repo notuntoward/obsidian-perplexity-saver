@@ -2,19 +2,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, utimes, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
-import { buildAttachmentMoveCandidate } from "../../src/litNote/attachmentMove";
+import { buildAttachmentMoveCandidate, validateTrashNoteFile } from "../../src/litNote/attachmentMove";
 import type { AttachmentProblem } from "../../src/litNote/buildLitNote";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
 
-let root = "";
+const roots: string[] = [];
 
 afterEach(async () => {
-	if (root) await rm(root, { recursive: true, force: true });
-	root = "";
+	await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
 async function fixture(files: Record<string, string> = { "paper.html": "zotero copy" }) {
-	root = await mkdtemp(path.join(tmpdir(), "saver-attachment-move-"));
+	const root = await mkdtemp(path.join(tmpdir(), "saver-attachment-move-"));
+	roots.push(root);
 	const vault = path.join(root, "vault");
 	const base = path.join(vault, "attachments");
 	const zotero = path.join(root, "zotero");
@@ -25,6 +25,7 @@ async function fixture(files: Record<string, string> = { "paper.html": "zotero c
 		itemkey: "ITEM1",
 		libraryURI: "library",
 		libraryType: "user",
+		attachmentBaseName: "Paper2024",
 		linkedAttachmentBaseDirectory: base,
 		linkedAttachmentBaseDirectoryValidated: true,
 		attachments: [],
@@ -83,6 +84,15 @@ describe("buildAttachmentMoveCandidate", () => {
 		expect(candidate?.extras).toEqual([]);
 	});
 
+	it("does not guess a filename when Zotero's renaming format is unavailable", async () => {
+		const f = await fixture();
+		f.item.attachmentBaseName = undefined;
+		const reasons: string[] = [];
+		expect(await buildAttachmentMoveCandidate(f.item, "Paper2024", [],
+			f.problems, f.vault, (reason) => reasons.push(reason))).toBeUndefined();
+		expect(reasons).toEqual([expect.stringContaining("naming format")]);
+	});
+
 	it("lets Zotero files replace unresolved or placeholder links of the same type without markers", async () => {
 		const f = await fixture({ "arxiv.pdf": "pdf", "snapshot.html": "html" });
 		// Like [[arXiv Fulltext PDF|PDF]] and [[arXiv.org Snapshot|HTM]], which resolve to no file.
@@ -104,13 +114,14 @@ describe("buildAttachmentMoveCandidate", () => {
 		expect(candidate?.extras).toEqual([]);
 	});
 
-	it("pairs a note file already named by Zotero's renaming format with the Zotero file", async () => {
+	it("keeps different files with different original names even when the note uses Zotero's rename format", async () => {
 		const f = await fixture({ "zotero-generated-name.pdf": "zotero" });
 		const note = await f.inVault("Paper2024.pdf", "note", 2_000_000_000);
 		const candidate = await buildAttachmentMoveCandidate(f.item, "Paper2024",
 			[{ absolutePath: note, extension: ".pdf" }], f.problems, f.vault);
-		expect(candidate?.attachments[0]).toMatchObject({ destinationPath: note, resolution: "newest" });
-		expect(candidate?.extras).toEqual([]);
+		expect(candidate?.attachments[0]).toMatchObject({ destinationPath: path.join(f.base, "Paper2024 2.pdf"), resolution: "move" });
+		expect(candidate?.linkNoteFiles).toEqual([note]);
+		expect(candidate?.extras).toHaveLength(2);
 	});
 
 	it("pairs same-named note and Zotero files for a newest-wins replacement", async () => {
@@ -120,6 +131,19 @@ describe("buildAttachmentMoveCandidate", () => {
 			[{ absolutePath: note, extension: ".html" }], f.problems, f.vault);
 		expect(candidate?.attachments[0]).toMatchObject({ destinationPath: note, resolution: "newest", conflict: false });
 		expect(candidate?.extras).toEqual([]);
+	});
+
+	it("does not replace another Zotero attachment when an outside file has the same basename", async () => {
+		const f = await fixture({ "paper.pdf": "outside" });
+		const inside = await f.inVault("paper.pdf", "already attached");
+		f.item.attachments!.push({ itemkey: "INVAULT", path: inside, mode: "linked", isFile: true });
+		const candidate = await buildAttachmentMoveCandidate(f.item, "Paper2024",
+			[{ absolutePath: inside, extension: ".pdf" }], f.problems, f.vault);
+		expect(candidate?.attachments).toHaveLength(1);
+		expect(candidate?.attachments[0]).toMatchObject({
+			itemkey: "ATTACH1", resolution: "move", destinationPath: path.join(f.base, "Paper2024.pdf"),
+		});
+		expect(candidate?.trashNoteFiles).toEqual([]);
 	});
 
 	it("separates unrelated overwrite conflicts from identical destination files", async () => {
@@ -147,6 +171,38 @@ describe("buildAttachmentMoveCandidate", () => {
 			[{ absolutePath: named, extension: ".pdf" }], g.problems, g.vault);
 		expect(relinked?.attachments[0]).toMatchObject({ resolution: "keep-destination", destinationPath: named });
 		expect(relinked?.trashNoteFiles).toEqual([]);
+	});
+
+	it("refuses to trash a duplicate that changed after review", async () => {
+		const f = await fixture({ "Paper2024.pdf": "same" });
+		const note = await f.inVault("download.pdf", "same");
+		const candidate = await buildAttachmentMoveCandidate(f.item, "Paper2024",
+			[{ absolutePath: note, extension: ".pdf" }], f.problems, f.vault);
+		const snapshot = candidate?.trashNoteSnapshots?.[0];
+		expect(snapshot?.path).toBe("attachments/download.pdf");
+		if (!snapshot) throw new Error("Missing duplicate snapshot");
+		await validateTrashNoteFile(f.vault, snapshot);
+		await writeFile(note, "user edited this file");
+		await expect(validateTrashNoteFile(f.vault, snapshot)).rejects.toThrow("changed since review");
+	});
+
+	it("does not consolidate identical content across different file types", async () => {
+		const f = await fixture({ "paper.pdf": "same" });
+		const note = await f.inVault("paper.html", "same");
+		const candidate = await buildAttachmentMoveCandidate(f.item, "Paper2024",
+			[{ absolutePath: note, extension: ".html" }], f.problems, f.vault);
+		expect(candidate?.trashNoteFiles).toEqual([]);
+		expect(candidate?.linkNoteFiles).toEqual([note]);
+		expect(candidate?.attachments).toHaveLength(1);
+	});
+
+	it("does not discard an empty placeholder when the Zotero file is also empty", async () => {
+		const f = await fixture({ "paper.pdf": "" });
+		const note = await f.inVault("empty.pdf", "");
+		const candidate = await buildAttachmentMoveCandidate(f.item, "Paper2024",
+			[{ absolutePath: note, extension: ".pdf" }], f.problems, f.vault);
+		expect(candidate?.trashNoteFiles).toEqual([]);
+		expect(candidate?.extras).toContainEqual({ path: "attachments/empty.pdf", origin: "missing" });
 	});
 
 	it("reports files present only in Zotero or only in the note as extras", async () => {

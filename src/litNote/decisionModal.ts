@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter, Modal, Notice, TFile } from "obsidian";
 import { applyModalAppearance } from "commons/modal";
 import { ownerWindow, writeClipboardIn } from "commons/windows";
+import { getNoteZoteroSelectUri } from "./zoteroUri";
 import type { AttachmentProblem } from "./buildLitNote";
 
 /**
@@ -43,7 +44,7 @@ export interface CitekeyConflictDetails {
 	libraryURI: string;
 	notePath?: string;
 	noteCitekey?: string;
-	zoteroCitekey: string;
+	zoteroCitekey?: string;
 	attachmentProblems?: AttachmentProblem[];
 	compact?: boolean;
 }
@@ -76,9 +77,10 @@ export function askNoteDecision(
 	app: App,
 	title: string,
 	message: string,
-	buttons: DecisionButton[]
+	buttons: DecisionButton[],
+	conflict?: CitekeyConflictDetails
 ): Promise<NoteDecision> {
-	return withNoteDecisionSession(app, (session) => session.ask(title, message, buttons));
+	return withNoteDecisionSession(app, (session) => session.ask(title, message, buttons, undefined, conflict));
 }
 
 export function withNoteDecisionSession<T>(
@@ -133,7 +135,10 @@ export function withNoteDecisionSession<T>(
 						const trimmed = p.trim();
 						if (!trimmed) continue;
 						const lines = trimmed.split("\n");
-						if (lines.length === 1) {
+						if (lines.every((line) => line.startsWith("- "))) {
+							const list = messageEl.createEl("ul");
+							for (const line of lines) list.createEl("li", { text: line.slice(2) });
+						} else if (lines.length === 1) {
 							messageEl.createEl("p", { text: trimmed });
 						} else {
 							const pEl = messageEl.createEl("p");
@@ -151,11 +156,27 @@ export function withNoteDecisionSession<T>(
 					if (conflict.compact) details.createEl("summary", { text: "Item and note details" });
 					const grid = details.createDiv({ cls: "lit-note-identity-grid" });
 					const group = conflict.libraryURI.match(/\/groups\/(\d+)(?:\/|$)/);
-					const library = group ? `groups/${group[1]}` : "library";
-					const zoteroURI = `zotero://select/${library}/items/${encodeURIComponent(conflict.itemkey)}`;
+					const zoteroURI = group
+						? `zotero://select/groups/${group[1]}/items/${encodeURIComponent(conflict.itemkey)}`
+						: getNoteZoteroSelectUri({ itemkey: conflict.itemkey });
 					grid.createEl("strong", { text: "Zotero item:" });
 					const item = grid.createDiv({ cls: "lit-note-identity-value" });
-					item.createEl("a", { text: conflict.title, cls: "external-link", attr: { href: zoteroURI, title: "Open in Zotero" } });
+					const zoteroLink = item.createEl("a", { text: conflict.title, cls: "external-link", attr: { href: zoteroURI, title: "Open in Zotero" } });
+					zoteroLink.addEventListener("click", (event) => {
+						event.preventDefault();
+						void (async () => {
+							try {
+								type ElectronModule = { shell?: { openExternal?: (url: string) => Promise<void> } };
+								const win: (Window & { electron?: ElectronModule; require?: (name: string) => ElectronModule }) | null = ownerWindow(zoteroLink);
+								const openExternal = win?.electron?.shell?.openExternal ?? win?.require?.("electron").shell?.openExternal;
+								if (!openExternal) throw new Error("The system link opener is unavailable.");
+								await openExternal(zoteroURI);
+							} catch (error) {
+								console.error("Could not open Zotero item", error);
+								new Notice(`Could not open Zotero item: ${error instanceof Error ? error.message : String(error)}`);
+							}
+						})();
+					});
 					if (conflict.notePath) {
 						const notePath = conflict.notePath;
 						grid.createEl("strong", { text: "Obsidian note:" });
