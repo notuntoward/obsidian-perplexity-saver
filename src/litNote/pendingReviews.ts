@@ -1,4 +1,4 @@
-import type { ZoteroItemPayload } from "./types";
+import type { ZoteroAttachment, ZoteroItemPayload } from "./types";
 import type { CitekeyConflictDetails, DecisionButton } from "./decisionModal";
 
 export interface BulkProposal {
@@ -59,6 +59,11 @@ export interface PendingReview {
 	recheckStartedAt?: number;
 	uncertain?: boolean;
 	uncertainReason?: string;
+	uncertainOperation?: string;
+	uncertainAttachments?: ZoteroAttachment[];
+	uncertainAttachmentsCheckedAt?: number;
+	uncertainAttachmentCheckError?: string;
+	uncertainAttachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string }>;
 	awaitingAcknowledgement?: boolean;
 }
 
@@ -106,6 +111,11 @@ export function queueReview(item: ZoteroItemPayload, reason: string, notePath?: 
 		recheckStartedAt: pending.get(key)?.recheckStartedAt,
 		uncertain: pending.get(key)?.uncertain,
 		uncertainReason: pending.get(key)?.uncertainReason,
+		uncertainOperation: pending.get(key)?.uncertainOperation,
+		uncertainAttachments: pending.get(key)?.uncertainAttachments,
+		uncertainAttachmentsCheckedAt: pending.get(key)?.uncertainAttachmentsCheckedAt,
+		uncertainAttachmentCheckError: pending.get(key)?.uncertainAttachmentCheckError,
+		uncertainAttachmentPaths: pending.get(key)?.uncertainAttachmentPaths,
 		awaitingAcknowledgement: pending.get(key)?.awaitingAcknowledgement,
 	});
 	notify();
@@ -275,16 +285,33 @@ export function endReviewOperation(key: string): void {
 	else activeReviews.set(key, count - 1);
 }
 
-export function markReviewUncertain(item: { itemkey: string; libraryURI: string; error?: string }): void {
+export function markReviewUncertain(item: { itemkey: string; libraryURI: string; error?: string; title?: string; notePath?: string; operation?: string; attachments?: ZoteroAttachment[]; attachmentCheckError?: string; attachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string }> }): void {
 	const key = reviewKey(item);
 	if (acknowledgedUncertain.has(key)) return;
 	let entry = pending.get(key);
 	if (!entry) {
-		queueReview({ ...item, title: item.itemkey, citekey: item.itemkey }, "Interrupted operation needs checking");
+		queueReview({ ...item, title: item.title || item.itemkey, citekey: item.itemkey }, "Interrupted operation needs checking", item.notePath);
 		entry = pending.get(key);
 	}
 	if (!entry) throw new Error("Could not record the interrupted review.");
-	if (entry.uncertain && (!item.error || entry.uncertainReason === item.error)) return;
+	const title = item.title && entry.title === entry.itemkey ? item.title : entry.title;
+	const notePath = entry.notePath || item.notePath;
+	const operation = item.operation || entry.uncertainOperation || entry.operation;
+	const attachments = item.operation === "attachment-move" ? item.attachments : entry.uncertainAttachments;
+	const attachmentPaths = item.attachmentPaths ?? entry.uncertainAttachmentPaths;
+	if (item.attachments) entry.uncertainAttachmentsCheckedAt = Date.now();
+	else if (item.attachmentCheckError || item.operation === "attachment-move") entry.uncertainAttachmentsCheckedAt = undefined;
+	if (entry.uncertain && (!item.error || entry.uncertainReason === item.error) &&
+		entry.title === title && entry.notePath === notePath && entry.uncertainOperation === operation &&
+		JSON.stringify(entry.uncertainAttachments) === JSON.stringify(attachments) &&
+		entry.uncertainAttachmentCheckError === item.attachmentCheckError &&
+		JSON.stringify(entry.uncertainAttachmentPaths) === JSON.stringify(attachmentPaths)) return;
+	entry.title = title;
+	entry.notePath = notePath;
+	entry.uncertainOperation = operation;
+	entry.uncertainAttachments = attachments;
+	entry.uncertainAttachmentCheckError = item.attachmentCheckError;
+	entry.uncertainAttachmentPaths = attachmentPaths;
 	entry.uncertain = true;
 	if (item.error) entry.uncertainReason = item.error;
 	notify();

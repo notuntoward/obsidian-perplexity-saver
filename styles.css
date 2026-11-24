@@ -88,6 +88,15 @@
 	overflow-wrap: anywhere;
 }
 
+.lit-note-recovery-path code {
+	min-width: 0;
+	max-width: 100%;
+}
+
+.lit-note-recovery-path .lit-note-edit-hint {
+	flex-basis: 100%;
+}
+
 .lit-note-attachment-review {
 	max-height: min(45vh, 360px);
 	overflow-y: auto;

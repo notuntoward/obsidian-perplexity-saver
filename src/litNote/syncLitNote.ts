@@ -762,7 +762,7 @@ export async function finishAttachmentMove(
 	settings: LitNoteWriterSettings,
 	item: ZoteroItemPayload,
 	candidate: AttachmentMoveCandidate,
-	preservedSources: Array<{ itemkey: string; from: string; to: string; copied?: boolean }> = [],
+	preservedSources: Array<{ itemkey: string; from: string; to: string; copied?: boolean; referenceCheckFailed?: boolean }> = [],
 ): Promise<{ trashed: string[] }> {
 	const notes = getLitNoteFiles(app, settings.litNotesFolder).filter((note) => {
 		const fm = app.metadataCache.getFileCache(note)?.frontmatter;
@@ -803,7 +803,7 @@ export async function finishAttachmentMove(
 	}
 	const incoming = (target: string): number => Object.values(app.metadataCache.resolvedLinks ?? {})
 		.reduce((total, destinations) => total + (destinations[target] ?? 0), 0);
-	const trashable = candidate.trashNoteFiles.filter((target) =>
+	const trashable = preservedSources.some((source) => source.referenceCheckFailed) ? [] : candidate.trashNoteFiles.filter((target) =>
 		(headerTargets.get(target) ?? 0) > 0 && incoming(target) === headerTargets.get(target));
 
 	const newHeader = managedHeader(oldHeader, links, true);
@@ -825,11 +825,16 @@ export async function finishAttachmentMove(
 		});
 	}
 	if (preservedSources.length) {
-		const names = preservedSources.map((source) => path.basename(source.to)).join(", ");
-		const action = preservedSources.some((source) => source.copied)
-			? `Copied ${names} into the vault and linked the copies in Obsidian and Zotero.`
-			: `Linked the existing vault copies of ${names} in Obsidian and Zotero.`;
-		new Notice(`${action} The Zotero originals remain because another attachment references them. Verify those references before manually deleting an original.`, 15000);
+		const copied = preservedSources.filter((source) => source.copied).map((source) => path.basename(source.to));
+		const linked = preservedSources.filter((source) => !source.copied).map((source) => path.basename(source.to));
+		const actions = [
+			copied.length ? `Copied ${copied.join(", ")} into the vault and linked the copies in Obsidian and Zotero.` : "",
+			linked.length ? `Linked the existing vault copies of ${linked.join(", ")} in Obsidian and Zotero.` : "",
+		].filter(Boolean).join(" ");
+		const reason = preservedSources.some((source) => source.referenceCheckFailed)
+			? "Zotero could not check for other references."
+			: "Another attachment references them.";
+		new Notice(`${actions} The Zotero originals remain. ${reason} Verify the references before manually deleting an original.`, 15000);
 	}
 	const trashed: string[] = [];
 	for (const target of trashable) {

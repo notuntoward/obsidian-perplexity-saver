@@ -997,12 +997,47 @@ async function handleRequest(
 	try {
 		if (parsed.action === "review-uncertain" || parsed.action === "review-uncertain-acknowledged") {
 			if (typeof parsed.itemkey !== "string" || !parsed.itemkey || typeof parsed.libraryURI !== "string" || !parsed.libraryURI ||
-				(parsed.error !== undefined && typeof parsed.error !== "string")) {
+				(parsed.error !== undefined && typeof parsed.error !== "string") ||
+				(parsed.operation !== undefined && typeof parsed.operation !== "string") ||
+				(parsed.title !== undefined && typeof parsed.title !== "string") ||
+				(parsed.attachmentCheckError !== undefined && typeof parsed.attachmentCheckError !== "string") ||
+				(parsed.attachments !== undefined && (!Array.isArray(parsed.attachments) || parsed.attachments.some((attachment) =>
+					!attachment || typeof attachment !== "object" || typeof attachment.itemkey !== "string" ||
+					(attachment.path !== undefined && typeof attachment.path !== "string") ||
+					(attachment.title !== undefined && typeof attachment.title !== "string") ||
+					(attachment.mode !== undefined && attachment.mode !== "linked" && attachment.mode !== "stored")))) ||
+				(parsed.attachmentPaths !== undefined && (!Array.isArray(parsed.attachmentPaths) || parsed.attachmentPaths.some((attachment) =>
+					!attachment || typeof attachment !== "object" || typeof attachment.itemkey !== "string" ||
+					typeof attachment.sourcePath !== "string" || typeof attachment.destinationPath !== "string")))) {
 				sendJson(res, 400, { success: false, error: "Invalid interrupted review identity" });
 				return;
 			}
-			if (parsed.action === "review-uncertain") markReviewUncertain(parsed);
-			else consumeUncertainAcknowledgement(parsed);
+			if (parsed.action === "review-uncertain") {
+				markReviewUncertain(parsed);
+				const entry = allReviews().find((review) => review.key === reviewKey(parsed));
+				if (entry && (!entry.notePath || entry.title === entry.itemkey)) {
+					try {
+						const folderError = litNotesFolderError(settings.litNotesFolder);
+						if (folderError) throw new Error(folderError);
+						await ensureWorkspaceReady(app);
+						const matches = getLitNoteFiles(app, settings.litNotesFolder).filter((file) => {
+							const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+							return fm?.zotero_item_key === parsed.itemkey && fm?.zotero_library_uri === parsed.libraryURI;
+						});
+						if (matches.length === 1) {
+							const file = matches[0];
+							const title: unknown = app.metadataCache.getFileCache(file)?.frontmatter?.title;
+							markReviewUncertain({
+								...parsed,
+								title: typeof title === "string" && title.trim() ? title.trim() : file.basename,
+								notePath: file.path,
+							});
+						}
+					} catch (error) {
+						console.error("Could not find the note for a Zotero review", error);
+					}
+				}
+			} else consumeUncertainAcknowledgement(parsed);
 			sendJson(res, 200, { success: true });
 		} else if (parsed.action === "review-failed") {
 			if (typeof parsed.itemkey !== "string" || typeof parsed.libraryURI !== "string" || typeof parsed.error !== "string") {
@@ -1034,17 +1069,19 @@ async function handleRequest(
 			const verified = candidate.attachments.every((attachment) => {
 				const result = moved.find((move) => move.itemkey === attachment.itemkey);
 				if (!result || !samePath(result.from, attachment.sourcePath)) return false;
+				if (result.referenceCheckFailed && !result.preservedSource) return false;
+				if (result.preservedSource) {
+					const original = item.attachments?.find((current) => current.itemkey === attachment.itemkey);
+					return !result.trashed && samePath(result.to, attachment.destinationPath) &&
+						result.oldKey === undefined && !!result.newKey &&
+						linkedAt(result.newKey, attachment.destinationPath) &&
+						original?.mode === attachment.mode && samePath(original.path, attachment.sourcePath);
+				}
 				if (attachment.resolution === "trash") {
 					return result.trashed === true &&
 						!item.attachments?.some((current) => current.itemkey === attachment.itemkey);
 				}
 				if (result.trashed || !samePath(result.to, attachment.destinationPath)) return false;
-				if (result.preservedSource) {
-					const original = item.attachments?.find((current) => current.itemkey === attachment.itemkey);
-					return result.oldKey === undefined && !!result.newKey &&
-						linkedAt(result.newKey, attachment.destinationPath) &&
-						original?.mode === attachment.mode && samePath(original.path, attachment.sourcePath);
-				}
 				if (result.copied) return false;
 				if (attachment.mode === "stored") {
 					return result.oldKey === attachment.itemkey && !!result.newKey && linkedAt(result.newKey, attachment.destinationPath);
@@ -1066,6 +1103,7 @@ async function handleRequest(
 							from: move.from,
 							to: move.to,
 							...(move.copied ? { copied: true } : {}),
+							...(move.referenceCheckFailed ? { referenceCheckFailed: true } : {}),
 						}));
 					await finishAttachmentMove(app, settings, item, candidate, preservedSources);
 					finishAttachmentCorrection(entry.key);

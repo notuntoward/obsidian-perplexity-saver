@@ -125,6 +125,10 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   revalidates an approved, single-use plan against the current item and note.
 - The companion journals each requested review before executing it. On an
   unknown outcome it posts `{ action: "review-uncertain", itemkey, libraryURI }`;
+  optional `operation` and `title` identify the attempted update and item.
+  Attachment-move reports can include the current `attachments`, an
+  `attachmentCheckError`, and journaled `attachmentPaths` (source and planned
+  destination). Older journal entries may lack those paths; do not infer them.
   Saver blocks further automatic work for that identity until the user checks
   both apps. After the user's acknowledgement, the review-requests endpoint
   exposes `acknowledgedUncertain`; the companion clears its journal and posts

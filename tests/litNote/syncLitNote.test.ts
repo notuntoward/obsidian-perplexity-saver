@@ -258,10 +258,10 @@ describe("literature note reconciliation", () => {
 			"Copied new.pdf into the vault and linked the copies in Obsidian and Zotero.",
 		);
 		expect(createdNotices.at(-1)?.message).toContain(
-			"The Zotero originals remain because another attachment references them.",
+			"The Zotero originals remain. Another attachment references them.",
 		);
 		expect(createdNotices.at(-1)?.message).toContain(
-			"Verify those references before manually deleting an original.",
+			"Verify the references before manually deleting an original.",
 		);
 
 		const next = await syncLitNote(
@@ -272,6 +272,33 @@ describe("literature note reconciliation", () => {
 			vi.fn(),
 		);
 		expect(next.status).toBe("skipped");
+	});
+
+	it("keeps note duplicates and explains why originals remain when Zotero reference checking fails", async () => {
+		const f = fixture();
+		f.item.citekey = "old";
+		const vaultRoot = (f.app.vault.adapter as FileSystemAdapter).getBasePath();
+		const sourcePath = path.resolve("zotero-storage", "shared.pdf");
+		const destination = path.join(vaultRoot, "attachments", "new.pdf");
+		f.item.attachments = [
+			{ itemkey: "ATT-SOURCE", isFile: true, mode: "stored", path: sourcePath },
+			{ itemkey: "ATT-COPY", isFile: true, mode: "linked", path: destination },
+		];
+		const trashFile = vi.fn();
+		(f.app.fileManager as unknown as { trashFile: unknown }).trashFile = trashFile;
+		f.addHeaderLink(" | [[attachments/new.pdf]]", "attachments/new.pdf");
+		(f.app.metadataCache as { resolvedLinks: unknown }).resolvedLinks = { "lit/old.md": { "attachments/new.pdf": 1 } };
+
+		await finishAttachmentMove(f.app, { litNotesFolder: "lit" }, f.item, {
+			baseDirectory: "attachments", attachments: [], linkNoteFiles: [],
+			trashNoteFiles: ["attachments/new.pdf"], extras: [],
+		}, [{ itemkey: "ATT-SOURCE", from: sourcePath, to: destination, copied: true, referenceCheckFailed: true }]);
+
+		expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
+		expect(trashFile).not.toHaveBeenCalled();
+		expect(createdNotices.at(-1)?.message).toContain("Copied new.pdf into the vault and linked the copies in Obsidian and Zotero.");
+		expect(createdNotices.at(-1)?.message).toContain("Zotero could not check for other references.");
+		expect(createdNotices.at(-1)?.message).toContain("Verify the references before manually deleting an original.");
 	});
 
 	it("offers a bulk category for a simple rename confirmation", async () => {

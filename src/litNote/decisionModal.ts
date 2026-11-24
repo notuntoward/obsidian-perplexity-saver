@@ -47,6 +47,8 @@ export interface CitekeyConflictDetails {
 	zoteroCitekey?: string;
 	attachmentProblems?: AttachmentProblem[];
 	compact?: boolean;
+	noteOpenFollowUp?: string;
+	recoveryPaths?: Array<{ label: string; path: string; status: string }>;
 }
 
 export interface DecisionButton {
@@ -190,10 +192,10 @@ export function withNoteDecisionSession<T>(
 							resolve?.(buttons.length === 1 && buttons[0].value === "skip" ? "skip" : "cancel");
 							this.close();
 							void app.workspace.openLinkText(notePath, "", false).then(() => {
-								new Notice("After editing, retry the update from Zotero.", 10000);
+								new Notice(conflict.noteOpenFollowUp ?? "After editing, retry the update from Zotero.", 10000);
 							}).catch((error: unknown) => {
 								console.error("Could not open the Obsidian note", error);
-								new Notice("Could not open the Obsidian note. Open it manually, then retry the update from Zotero.", 10000);
+								new Notice(`Could not open the Obsidian note. Open it manually. ${conflict.noteOpenFollowUp ?? "After editing, retry the update from Zotero."}`, 10000);
 							});
 						});
 					}
@@ -207,6 +209,13 @@ export function withNoteDecisionSession<T>(
 						const row = grid.createDiv({ cls: "lit-note-copyable-key lit-note-identity-value" });
 						row.createEl("code", { text: value });
 						addCopyButton(row, label, value);
+					}
+					for (const entry of conflict.recoveryPaths ?? []) {
+						grid.createEl("strong", { text: `${entry.label}:` });
+						const row = grid.createDiv({ cls: "lit-note-copyable-key lit-note-identity-value lit-note-recovery-path" });
+						row.createEl("code", { text: entry.path });
+						addCopyButton(row, `${entry.label} ${entry.path}`, entry.path);
+						row.createDiv({ cls: "lit-note-edit-hint", text: entry.status });
 					}
 				}
 				const selections: string[] = [];

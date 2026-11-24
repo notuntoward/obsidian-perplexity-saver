@@ -5,12 +5,19 @@ import { setupReviewStatus } from "../../src/litNote/reviewStatus";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import type { App } from "obsidian";
 
-const state = vi.hoisted(() => ({ groups: [] as Array<{ kind: string; uri?: string }>, select: undefined as ((group: unknown) => void) | undefined }));
+const state = vi.hoisted(() => ({
+	groups: [] as Array<{ kind: string; title: string; uri?: string; itemkey?: string }>,
+	select: undefined as ((group: unknown) => void) | undefined,
+	getSubtitle: undefined as ((group: { kind: string; title: string; uri?: string }) => string) | undefined,
+	getTitle: undefined as ((group: { kind: string; title: string; uri?: string; itemkey?: string }) => string) | undefined,
+}));
 vi.mock("commons/modal", () => ({
 	ItemSuggestModal: class {
-		constructor(_app: unknown, items: typeof state.groups, select: (group: unknown) => void) {
+		constructor(_app: unknown, items: typeof state.groups, select: (group: unknown) => void, options: { getSubtitle: typeof state.getSubtitle; getTitle: typeof state.getTitle }) {
 			state.groups = items;
 			state.select = select;
+			state.getSubtitle = options.getSubtitle;
+			state.getTitle = options.getTitle;
 		}
 		open(): void {}
 	},
@@ -18,6 +25,12 @@ vi.mock("commons/modal", () => ({
 vi.mock("commons/workspace", () => ({ getMainWindow: () => undefined }));
 vi.mock("commons/os", () => ({ raiseWindow: vi.fn() }));
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
+vi.mock("../../src/litNote/uncertainAttachments", () => ({
+	inspectUncertainAttachments: vi.fn(async () => ({
+		message: "Current attachment state",
+		paths: [{ label: "Zotero attachment: PDF", path: "C:\\storage\\paper.pdf", status: "File exists." }],
+	})),
+}));
 
 const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
 
@@ -54,30 +67,97 @@ describe("review status", () => {
 		expect(createdNotices.at(-1)?.message).toContain("All Zotero reviews are complete");
 	});
 
+	it("explains why multiple updates need checking without acknowledging them", () => {
+		const { button } = setup();
+		for (const itemkey of ["ABC", "DEF", "GHI"]) {
+			const entry = { ...item, itemkey };
+			queueReview(entry, "Attachment links differ");
+			markReviewUncertain(entry);
+		}
+		button.onclick?.();
+		expect(state.groups[0].title).toBe("Check Zotero items (3)");
+		expect(state.getSubtitle?.(state.groups[0])).toContain("couldn't confirm");
+		expect(state.getSubtitle?.(state.groups[0])).toContain("check each item and note in both apps");
+		expect(allReviews()).toHaveLength(3);
+		expect(allReviews().every((entry) => entry.uncertain && !entry.awaitingAcknowledgement)).toBe(true);
+	});
+
+	it("labels a missing title and explains how to find the Zotero item", async () => {
+		const { button } = setup();
+		markReviewUncertain({ itemkey: "ABC", libraryURI: "library" });
+		button.onclick?.();
+		state.select?.(state.groups[0]);
+		expect(state.getTitle?.(state.groups[0])).toBe("Zotero item (key ABC)");
+		expect(state.getSubtitle?.(state.groups[0])).toContain("Select to open the item in Zotero and find its note");
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
+		state.select?.(allReviews()[0]);
+		await settle();
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Obsidian could not identify a matching note");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).not.toContain("ABC");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][4]).toMatchObject({ title: "Open item in Zotero", itemkey: "ABC" });
+		expect(allReviews()[0].uncertain).toBe(true);
+	});
+
 	it("requires an explicit check before clearing an interrupted operation", async () => {
 		const { button } = setup();
 		queueReview(item, "Attachment links differ", "lit/note.md");
 		markReviewUncertain({ ...item, error: "Could not relink paper.pdf" });
 		button.onclick?.();
 		expect(state.groups.map((group) => group.kind)).toEqual(["uncertain"]);
+		expect(state.groups[0].title).toBe("Check Zotero items (1)");
+		expect(state.getSubtitle?.(state.groups[0])).toBe("Zotero couldn't confirm that changes finished. Select to check each item and note in both apps.");
 		state.select?.(state.groups[0]);
+		expect(state.getTitle?.(state.groups[0])).toBe("Work");
+		expect(state.getSubtitle?.(state.groups[0])).toBe("lit/note.md");
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
 		state.select?.(allReviews()[0]);
 		await settle();
 		expect(allReviews()).toHaveLength(1);
-		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("The operation may have changed files or links");
-		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Error: Could not relink paper.pdf");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Zotero could not confirm that an update finished");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Check that the files open");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Check that the links open the correct files");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Opening the note closes this dialog; return to Zotero reviews afterward.");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Confirming does not fix files or links; it allows normal updates to resume.");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Error details: Could not relink paper.pdf");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).not.toContain("Zotero item key:");
 		expect(vi.mocked(askNoteDecision).mock.calls[0][4]).toEqual({
 			title: "Work",
 			itemkey: "ABC",
 			libraryURI: "library",
 			notePath: "lit/note.md",
+			noteOpenFollowUp: "Return to Zotero reviews after checking the note.",
 		});
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("create");
 		state.select?.(allReviews()[0]);
 		await settle();
 		expect(allReviews()).toMatchObject([{ awaitingAcknowledgement: true }]);
 		expect(createdNotices.at(-1)?.message).toContain("Waiting for Zotero to acknowledge");
+	});
+
+	it("explains an unconfirmed attachment move and the checks before confirmation", async () => {
+		const { button } = setup();
+		queueReview(item, "Attachment links differ", "lit/note.md");
+		markReviewUncertain({ ...item, operation: "attachment-move" });
+		button.onclick?.();
+		expect(state.groups[0].title).toBe("Check attachment repairs (1)");
+		expect(state.getSubtitle?.(state.groups[0])).toContain("Zotero tried to put attachments in the vault");
+		state.select?.(state.groups[0]);
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
+		state.select?.(allReviews()[0]);
+		await settle();
+		const [, title, message, buttons] = vi.mocked(askNoteDecision).mock.calls[0];
+		expect(title).toBe("Check the attachment move");
+		expect(message).toContain("Zotero tried to move attachments to the vault");
+		expect(message).toContain("Current attachment state");
+		expect(message).toContain("Check that the files open");
+		expect(message).toContain("Check that the links open the correct files");
+		expect(message).toContain("Do not delete copies until you have checked them");
+		expect(message).not.toContain("Zotero item key:");
+		expect(buttons[0].label).toBe("I've checked the item and note");
+		expect(vi.mocked(askNoteDecision).mock.calls[0][4]?.recoveryPaths).toEqual([
+			{ label: "Zotero attachment: PDF", path: "C:\\storage\\paper.pdf", status: "File exists." },
+		]);
+		expect(allReviews()[0].uncertain).toBe(true);
 	});
 
 	it("requires both library approval and backup confirmation before requesting corrections", async () => {
@@ -186,7 +266,7 @@ describe("review status", () => {
 			attachmentStrategy: "zotero",
 		}]);
 		finishAttachmentCorrection(reviewKey(item));
-		expect(createdNotices.at(-1)?.message).toContain("Moved Zotero attachment files");
+		expect(createdNotices.at(-1)?.message).toContain("Linked Zotero attachments and Obsidian notes");
 	});
 
 	it("explains the move and starts it only after the backup confirmation", async () => {
@@ -222,8 +302,8 @@ describe("review status", () => {
 		expect(requestedReviews()).toMatchObject([{ operation: "attachment-move" }]);
 		markReviewUncertain({ ...item, error: "Could not relink paper.pdf" });
 		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
-		expect(button.title).toBe("0/1 checked, 1 interrupted");
-		expect(createdNotices.at(-1)?.message).toContain("Check 1 interrupted operation");
+		expect(button.title).toBe("0/1 checked, 1 needs checking");
+		expect(createdNotices.at(-1)?.message).toContain("1 update may be incomplete");
 		expect(createdNotices.at(-1)?.message).toContain("Zotero reviews in the status bar");
 	});
 });

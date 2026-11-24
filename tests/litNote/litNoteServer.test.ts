@@ -96,8 +96,10 @@ function makeApp(existingPaths: string[] = [], workspaceOverrides: any = {}) {
 				modified.push({ path: file.path, body });
 			}),
 			getFiles: vi.fn(() => Array.from(files.values())),
+			getMarkdownFiles: vi.fn(() => Array.from(files.values())),
 			getName: vi.fn(() => "TestVault"),
 		},
+		metadataCache: { getFileCache: vi.fn(() => undefined) },
 		fileManager: {
 			trashFile: vi.fn(async () => {}),
 			processFrontMatter: vi.fn(async (file: any, cb: (fm: any) => void) => {
@@ -259,6 +261,62 @@ describe("Lit Note Server", () => {
 		expect(allReviews()[0].uncertainReason).toBe("Could not relink paper.pdf");
 	});
 
+	it("restores the title and note link for an unknown outcome using its Zotero identity", async () => {
+		const notePath = `${FOLDER}/paper.md`;
+		const { app } = makeApp([notePath]);
+		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {
+			category: ["literaturenote"], title: "A useful paper", zotero_item_key: "ABC", zotero_library_uri: "library",
+		} });
+		await post(app, { action: "review-uncertain", itemkey: "ABC", libraryURI: "library" });
+		expect(allReviews()).toMatchObject([{
+			itemkey: "ABC", title: "A useful paper", notePath, uncertain: true,
+		}]);
+		expect(requestedReviews()).toEqual([]);
+		clearReviews();
+		await post(app, { action: "review-uncertain", itemkey: "ABC", libraryURI: "library" });
+		expect(allReviews()).toMatchObject([{ title: "A useful paper", notePath, uncertain: true }]);
+	});
+
+	it("does not associate a note from another library or an ambiguous match", async () => {
+		const first = `${FOLDER}/first.md`;
+		const second = `${FOLDER}/second.md`;
+		const { app } = makeApp([first, second]);
+		const frontmatter = new Map([
+			[first, { category: ["literaturenote"], title: "First", zotero_item_key: "ABC", zotero_library_uri: "other" }],
+			[second, { category: ["literaturenote"], title: "Second", zotero_item_key: "ABC", zotero_library_uri: "other" }],
+		]);
+		app.metadataCache.getFileCache.mockImplementation((file: TFile) => ({ frontmatter: frontmatter.get(file.path) }));
+		await post(app, { action: "review-uncertain", itemkey: "ABC", libraryURI: "library" });
+		expect(allReviews()).toMatchObject([{ title: "ABC", notePath: undefined, uncertain: true }]);
+		frontmatter.get(first)!.zotero_library_uri = "library";
+		frontmatter.get(second)!.zotero_library_uri = "library";
+		await post(app, { action: "review-uncertain", itemkey: "ABC", libraryURI: "library" });
+		expect(allReviews()).toMatchObject([{ title: "ABC", notePath: undefined, uncertain: true }]);
+	});
+
+	it("updates a blocked review when Zotero supplies its title and attempted action later", async () => {
+		const { app } = makeApp();
+		const identity = { itemkey: "ABC", libraryURI: "library" };
+		await post(app, { action: "review-uncertain", ...identity });
+		await post(app, { action: "review-uncertain", ...identity, title: "A useful paper", operation: "attachment-move" });
+		expect(allReviews()).toMatchObject([{
+			title: "A useful paper", uncertainOperation: "attachment-move", uncertain: true,
+		}]);
+		expect(requestedReviews()).toEqual([]);
+	});
+
+	it("refreshes attachment evidence without unblocking an uncertain review", async () => {
+		const { app } = makeApp();
+		const identity = { itemkey: "ABC", libraryURI: "library" };
+		const attachmentPaths = [{ itemkey: "A", sourcePath: "C:\\storage\\a.pdf", destinationPath: "C:\\vault\\a.pdf" }];
+		const attachments = [{ itemkey: "A", mode: "stored", isFile: true, path: "C:\\storage\\a.pdf" }];
+		await post(app, { action: "review-uncertain", ...identity, operation: "attachment-move", attachments, attachmentPaths });
+		expect(allReviews()).toMatchObject([{ uncertain: true, uncertainAttachments: attachments, uncertainAttachmentPaths: attachmentPaths }]);
+		await post(app, { action: "review-uncertain", ...identity, operation: "attachment-move", attachmentCheckError: "Zotero unavailable" });
+		expect(allReviews()).toMatchObject([{ uncertain: true, uncertainAttachments: undefined, uncertainAttachmentCheckError: "Zotero unavailable", uncertainAttachmentPaths: attachmentPaths }]);
+		expect(requestedReviews()).toEqual([]);
+	});
+
 	it("keeps other requested reviews available while one outcome is unknown", async () => {
 		const { app } = makeApp();
 		const first = { title: "First", citekey: "first", itemkey: "FIRST", libraryURI: "library" };
@@ -365,6 +423,48 @@ describe("Lit Note Server", () => {
 			[],
 		);
 		expect(allReviews()).toEqual([]);
+	});
+
+	it("verifies and accepts preserved originals for both move and duplicate operations", async () => {
+		const { app } = makeApp();
+		const base = path.resolve("vault", "attachments");
+		const destination = path.join(base, "a.pdf");
+		const candidate = {
+			baseDirectory: base,
+			attachments: [
+				{ itemkey: "S1", mode: "stored" as const, basename: "a.pdf", sourcePath: path.resolve("zotero", "a.pdf"), destinationPath: destination, resolution: "move" as const, conflict: false, identical: false, sourceMtime: 1 },
+				{ itemkey: "L2", mode: "linked" as const, basename: "copy.pdf", sourcePath: path.resolve("zotero", "copy.pdf"), destinationPath: destination, resolution: "trash" as const, conflict: false, identical: true, sourceMtime: 1 },
+			],
+			linkNoteFiles: [], trashNoteFiles: [], extras: [],
+		};
+		const item: ZoteroItemPayload = {
+			title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", libraryType: "user",
+			linkedAttachmentBaseDirectory: base, linkedAttachmentBaseDirectoryValidated: true,
+			attachments: [
+				{ itemkey: "S1", mode: "stored", path: candidate.attachments[0].sourcePath },
+				{ itemkey: "L2", mode: "linked", path: candidate.attachments[1].sourcePath },
+				{ itemkey: "NEW1", mode: "linked", path: destination },
+				{ itemkey: "NEW2", mode: "linked", path: destination },
+			],
+		};
+		const moved = candidate.attachments.map((entry, index) => ({
+			itemkey: entry.itemkey, from: entry.sourcePath, to: destination, newKey: `NEW${index + 1}`,
+			preservedSource: true, referenceCheckFailed: true, ...(index === 0 ? { copied: true } : {}),
+		}));
+		const { finishAttachmentMove } = await import("../../src/litNote/syncLitNote");
+		vi.mocked(finishAttachmentMove).mockClear();
+		queueReview(item, "Zotero attachment is outside the Obsidian vault", "lit/note.md", undefined, undefined, candidate);
+		requestAttachmentBatch([{ key: reviewKey(item), candidate }], "newest");
+
+		const missingOriginal = { ...item, attachments: item.attachments?.filter((attachment) => attachment.itemkey !== "L2") };
+		expect((await post(app, { action: "attachment-move-complete", data: [missingOriginal], moved, linked: [] })).success).toBe(false);
+		expect(finishAttachmentMove).not.toHaveBeenCalled();
+		const result = await post(app, { action: "attachment-move-complete", data: [item], moved, linked: [] });
+		expect(result.results[0].status).toBe("updated");
+		expect(finishAttachmentMove).toHaveBeenCalledWith(app, { litNotesFolder: "lit/lit_notes" }, item, candidate,
+			moved.map(({ itemkey, from, to, copied, referenceCheckFailed }) => ({
+				itemkey, from, to, ...(copied ? { copied: true } : {}), referenceCheckFailed,
+			})));
 	});
 
 	it("does not send bulk operations to an older companion", async () => {

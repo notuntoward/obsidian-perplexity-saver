@@ -44,6 +44,30 @@ async function settleMicrotasks(): Promise<void> {
 }
 
 describe("askNoteDecision", () => {
+	it("shows and copies each recovery path from the modal's window", async () => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const popoutWindow = { name: "pop-out" };
+		Object.defineProperty(state.doc, "defaultView", { value: popoutWindow });
+		const copy = vi.spyOn(windows, "writeClipboardIn").mockResolvedValue(true);
+		const promise = askNoteDecision({} as App, "Check attachments", "", [{ label: "Close", value: "cancel" }], {
+			title: "Paper", itemkey: "ABC", libraryURI: "library",
+			recoveryPaths: [
+				{ label: "Original", path: "C:\\storage\\paper.pdf", status: "File exists." },
+				{ label: "Planned location", path: "C:\\vault\\paper.pdf", status: "File is missing." },
+			],
+		});
+		await settleMicrotasks();
+		expect(latestModal().contentEl.textContent).toContain("File is missing.");
+		const button = Array.from(latestModal().contentEl.querySelectorAll("button"))
+			.find((entry) => entry.getAttribute("aria-label") === "Copy Original C:\\storage\\paper.pdf")!;
+		button.click();
+		await settleMicrotasks();
+		expect(copy).toHaveBeenCalledWith(popoutWindow, "C:\\storage\\paper.pdf");
+		findButton("Close").click();
+		await expect(promise).resolves.toBe("cancel");
+		copy.mockRestore();
+	});
+
 	it("preserves multiline messages and warning actions inside the shared frame", async () => {
 		const promise = askNoteDecision({} as App, "Lit note already exists", "Overwrite?\nExisting note.md\n\nChoose an action.", [
 			{ label: "Overwrite", value: "overwrite", warning: true },
@@ -316,6 +340,23 @@ describe("askNoteDecision", () => {
 			if (!modal.closed) modal.close();
 			await promise;
 		}
+	});
+
+	it("directs a checked-note review back to the review list instead of retrying the update", async () => {
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const app = { workspace: { openLinkText } } as unknown as App;
+		const promise = askNoteDecision(app, "Check the note", "Check both apps.", [
+			{ label: "Cancel", value: "cancel" },
+		], {
+			title: "Paper", itemkey: "ABC", libraryURI: "library", notePath: "lit/note.md",
+			noteOpenFollowUp: "Return to Zotero reviews after checking the note.",
+		});
+		await settleMicrotasks();
+		latestModal().contentEl.querySelector<HTMLAnchorElement>('a[href="#"]')!.click();
+		await expect(promise).resolves.toBe("cancel");
+		await settleMicrotasks();
+		expect(openLinkText).toHaveBeenCalledWith("lit/note.md", "", false);
+		expect(createdNotices.at(-1)?.message).toBe("Return to Zotero reviews after checking the note.");
 	});
 
 	it("shows the affected path first in a pop-out error dialog", async () => {

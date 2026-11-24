@@ -80,6 +80,28 @@ test("review status fits its text and the status bar", async ({ page }) => {
 	expect(dimensions.height).toBeLessThanOrEqual(dimensions.barHeight);
 });
 
+test("multiple recovery paths remain readable at narrow widths", async ({ page }) => {
+	await page.setViewportSize({ width: 360, height: 900 });
+	await page.evaluate(() => {
+		const api = (window as Window & { AttachmentReview?: {
+			askNoteDecision: (...args: unknown[]) => Promise<string>;
+		} }).AttachmentReview;
+		if (!api) throw new Error("Attachment review bundle is unavailable.");
+		void api.askNoteDecision({}, "Check attachments", "Check both apps.", [{ label: "Close", value: "cancel" }], {
+			title: "Paper", itemkey: "ABC", libraryURI: "library",
+			recoveryPaths: [
+				{ label: "Zotero attachment", path: "C:\\storage\\" + "a".repeat(120) + ".pdf", status: "File exists." },
+				{ label: "Planned vault location", path: "C:\\vault\\missing.pdf", status: "File is missing." },
+			],
+		});
+	});
+	await expect(page.locator(".lit-note-recovery-path")).toHaveCount(2);
+	await expect(page.getByText("File is missing.")).toBeVisible();
+	const overflows = await page.locator(".modal").evaluate((element) => element.scrollWidth > element.clientWidth);
+	expect(overflows).toBe(false);
+	await expect(page.locator(".lit-note-recovery-path button")).toHaveCount(2);
+});
+
 test("attachment review exposes file roles and choices at desktop and narrow widths", async ({ page }) => {
 	await page.evaluate(() => {
 		const api = (window as Window & { AttachmentReview?: {

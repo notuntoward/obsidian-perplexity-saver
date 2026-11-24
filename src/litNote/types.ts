@@ -115,12 +115,17 @@ export interface LitNoteUncertainReviewRequest {
 	itemkey: string;
 	libraryURI: string;
 	error?: string;
+	operation?: string;
+	title?: string;
+	attachments?: ZoteroAttachment[];
+	attachmentCheckError?: string;
+	attachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string }>;
 }
 
 export interface LitNoteAttachmentMoveCompleteRequest {
 	action: "attachment-move-complete";
 	data: [ZoteroItemPayload];
-	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean; preservedSource?: boolean; copied?: boolean }>;
+	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean; preservedSource?: boolean; copied?: boolean; referenceCheckFailed?: boolean }>;
 	linked?: Array<{ path: string; newKey: string }>;
 }
 
