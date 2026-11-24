@@ -190,20 +190,47 @@ export function buildInfoCalloutLinks(item: ZoteroItemPayload, attachmentLinks: 
 	return links.join(" | ");
 }
 
-export async function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string): Promise<string[]> {
+export interface AttachmentProblem {
+	path?: string;
+	itemkey?: string;
+	mode?: "linked" | "stored" | "url";
+	label?: string;
+	title: string;
+	problem: string;
+	dialogProblem?: string;
+	action: string;
+}
+
+export async function buildAttachmentLinks(app: App, item: ZoteroItemPayload, sourcePath: string, onUnavailable?: (details: AttachmentProblem[]) => void): Promise<string[]> {
 	const links: string[] = [];
-	const unavailable: string[] = [];
+	const unavailable: AttachmentProblem[] = [];
 	for (const attachment of item.attachments ?? []) {
 		const attachmentPath = attachment.path;
+		const pathAdvice = attachment.mode === "stored"
+			? "Check the stored attachment in Zotero; the Linked Attachment Base Directory does not apply to stored files."
+			: attachment.mode === "linked" && attachment.usesRelativePath
+				? item.linkedAttachmentBaseDirectory === ""
+					? "Zotero's Linked Attachment Base Directory is unset. Set it to the folder containing the linked file and check the attachment. Changing the directory does not move files."
+					: `Check the linked attachment in Zotero and its Linked Attachment Base Directory${item.linkedAttachmentBaseDirectory ? ` (${item.linkedAttachmentBaseDirectory})` : ""}. Changing the directory does not move files.`
+				: attachment.mode === "linked"
+					? "Check the linked attachment's file location in Zotero."
+					: "Check the attachment's file location in Zotero.";
 		if (!attachmentPath) {
 			if (attachment.isFile || !attachment.url) {
 				links.push("**Attachment unavailable in vault**");
-				unavailable.push(`${attachment.title || "Attachment"}: Zotero could not resolve a file path. Check the attachment in Zotero and its Linked Attachment Base Directory if it uses a relative path.`);
+				unavailable.push({
+					label: attachment.title || "Attachment",
+					itemkey: attachment.itemkey,
+					mode: attachment.mode,
+					title: "Zotero attachment path could not be resolved",
+					problem: "Zotero could not resolve a file path.",
+					action: pathAdvice,
+				});
 			}
 			continue;
 		}
 		const label = ATTACHMENT_LABELS[path.extname(attachmentPath).toLowerCase()];
-		if (!label) continue;
+		if (!label && !attachment.isFile && attachment.mode !== "linked" && attachment.mode !== "stored") continue;
 
 		const adapter = app.vault.adapter;
 		const vaultRoot = adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
@@ -215,36 +242,59 @@ export async function buildAttachmentLinks(app: App, item: ZoteroItemPayload, so
 		const relativePath = insideVault ? relative.split(path.sep).join("/") : "";
 		const file = relativePath ? app.vault.getAbstractFileByPath(relativePath) : null;
 		let problem = "";
+		let dialogProblem: string | undefined;
+		let action = "";
+		let title = "";
 		if (!vaultRoot) {
-			problem = "The open vault does not expose a local filesystem path; Saver cannot verify this attachment.";
+			title = "Obsidian vault path is unavailable";
+			problem = "This vault does not expose a local filesystem path, so Saver cannot verify the attachment.";
+			action = "Use a local filesystem vault to link this attachment.";
 		} else if (!path.isAbsolute(attachmentPath)) {
-			problem = "Zotero did not provide an absolute file path. Check the attachment and Zotero's Linked Attachment Base Directory.";
+			title = "Zotero attachment path is not absolute";
+			problem = "Zotero did not provide an absolute file path.";
+			action = pathAdvice;
 		} else if (!insideVault) {
-			problem = `The attachment is outside the open Obsidian vault (${vaultRoot}). Check the Zotero attachment and Linked Attachment Base Directory, or confirm that the intended vault is open.`;
+			title = attachment.mode === "stored"
+				? "Stored Zotero attachment has not been moved into the vault"
+				: "Zotero attachment is outside the Obsidian vault";
+			problem = `This attachment is outside the Obsidian vault (${vaultRoot}). Note attachment links can only target files inside the vault.`;
+			dialogProblem = `Vault: ${vaultRoot}. Attachment links can only target files inside it.`;
+			action = attachment.mode === "stored"
+				? "Move the attachment into the vault and link it in Zotero, then update the note. The Linked Attachment Base Directory does not move stored files."
+				: `Link the attachment to a file inside the vault in Zotero, then retry.${attachment.mode === "linked" && attachment.usesRelativePath ? " Changing the Linked Attachment Base Directory does not move files." : ""}`;
 		} else {
 			try {
 				const info = await adapter.stat(relativePath);
 				if (!info) {
-					problem = "The file is missing from this location. Check the attachment in Zotero and its Linked Attachment Base Directory if it uses a relative path.";
+					title = "Zotero attachment file is missing";
+					problem = "The file is missing from this location.";
+					action = pathAdvice;
 				} else if (info.type !== "file") {
-					problem = "This path is not a file. Check the attachment location in Zotero.";
+					title = "Zotero attachment path is not a file";
+					problem = "This path is not a file.";
+					action = "Check the attachment location in Zotero.";
 				} else if (!(file instanceof TFile)) {
-					problem = "The file exists inside the vault but is not indexed by Obsidian. Check that Obsidian can see the file and let it finish indexing.";
+					title = "Zotero attachment is not indexed by Obsidian";
+					problem = "The file exists inside the vault but is not indexed by Obsidian.";
+					action = "Check that Obsidian can see the file and let it finish indexing.";
 				}
 			} catch (error: unknown) {
-				problem = `Obsidian could not check this file: ${error instanceof Error ? error.message : String(error)}. Check the file and its permissions.`;
+				title = "Zotero attachment could not be checked";
+				problem = `Obsidian could not check this file: ${error instanceof Error ? error.message : String(error)}.`;
+				action = "Check the file and its permissions.";
 			}
 		}
 		if (!problem && file instanceof TFile) {
-			links.push(`**${app.fileManager.generateMarkdownLink(file, sourcePath, "", label)}**`);
+			if (label) links.push(`**${app.fileManager.generateMarkdownLink(file, sourcePath, "", label)}**`);
 		} else {
-			links.push(`**${label} unavailable in vault**`);
-			unavailable.push(`${attachment.title || label}: ${attachmentPath}\n${problem}`);
+			if (label) links.push(`**${label} unavailable in vault**`);
+			unavailable.push({ path: attachmentPath, itemkey: attachment.itemkey, mode: attachment.mode, title, problem, ...(dialogProblem ? { dialogProblem } : {}), action });
 		}
 	}
 	if (unavailable.length) {
-		new Notice(
-			`Zotero attachments unavailable for "${item.title}":\n${unavailable.join("\n\n")}`,
+		if (onUnavailable) onUnavailable(unavailable);
+		else new Notice(
+			`Zotero attachments unavailable for "${item.title}":\n${unavailable.map((entry) => `${entry.path ?? entry.label}: ${entry.problem} ${entry.action}`).join("\n\n")}`,
 			15000
 		);
 	}

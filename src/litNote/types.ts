@@ -4,6 +4,8 @@
  * open_obsidian_note_sender.js in refwrangle.
  */
 
+import type { AttachmentMoveCandidate } from "./pendingReviews";
+
 export interface ZoteroCreator {
 	firstName?: string;
 	lastName?: string;
@@ -17,6 +19,8 @@ export interface ZoteroAttachment {
 	path?: string;
 	url?: string;
 	isFile?: boolean;
+	mode?: "linked" | "stored" | "url";
+	usesRelativePath?: boolean;
 }
 
 export interface ZoteroRelation {
@@ -44,6 +48,7 @@ export interface ZoteroItemPayload {
 	itemkey?: string;
 	libraryURI?: string;
 	libraryName?: string;
+	libraryType?: "user" | "group";
 	itemType?: string;
 	publicationTitle?: string;
 	volume?: string;
@@ -55,6 +60,10 @@ export interface ZoteroItemPayload {
 	allTags?: string[];
 	notes?: string[]; // HTML strings
 	attachments?: ZoteroAttachment[];
+	linkedAttachmentBaseDirectory?: string;
+	linkedAttachmentBaseDirectoryValidated?: boolean;
+	/** Filename (without extension) Zotero's renaming template produces for this item. */
+	attachmentBaseName?: string;
 	relations?: ZoteroRelation[];
 	citationKeyCheck?: CitationKeyCheck;
 	zoteroChanges?: {
@@ -78,7 +87,7 @@ export interface LitNoteOpenRequest {
 }
 
 export interface LitNoteSyncRequest {
-	action: "sync" | "update";
+	action: "sync" | "update" | "review-sync" | "bulk-review-sync" | "review-recheck";
 	data: ZoteroItemPayload[];
 }
 
@@ -89,7 +98,31 @@ export interface LitNoteApplySyncRequest {
 	zoteroAttachmentPaths?: string[];
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest;
+export interface LitNoteCheckAttachmentBaseRequest {
+	action: "check-attachment-base";
+	baseDirectory: string;
+}
+
+export interface LitNoteReviewFailureRequest {
+	action: "review-failed";
+	itemkey: string;
+	libraryURI: string;
+	error: string;
+}
+
+export interface LitNoteAttachmentMoveCompleteRequest {
+	action: "attachment-move-complete";
+	data: [ZoteroItemPayload];
+	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean }>;
+	linked?: Array<{ path: string; newKey: string }>;
+}
+
+export interface LitNoteBulkLibraryRequest {
+	action: "bulk-library-uri";
+	data: [ZoteroItemPayload];
+}
+
+export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteBulkLibraryRequest;
 
 export type LitNoteItemStatus =
 	| "created"
@@ -98,6 +131,8 @@ export type LitNoteItemStatus =
 	| "updated"
 	| "set-zotero-key"
 	| "prepared"
+	| "pending-review"
+	| "waiting-index"
 	| "skipped"
 	| "missing"
 	| "error";
@@ -115,8 +150,18 @@ export interface LitNoteItemResult {
 
 export interface LitNoteResponse {
 	success: boolean;
+	relationship?: "unset" | "inside" | "outside";
+	vaultPath?: string;
 	citekeys?: string[];
 	identities?: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string; modifiedAt?: number; size?: number }>;
+	requests?: Array<{
+		itemkey: string;
+		libraryURI: string;
+		operation?: "library-uri" | "library-recheck" | "note-update" | "attachment-move";
+		attachmentMove?: AttachmentMoveCandidate;
+		strategy?: "newest" | "zotero" | "skip";
+	}>;
+	pending?: Array<{ itemkey: string; libraryURI: string }>;
 	results?: LitNoteItemResult[];
 	path?: string;
 	error?: string;

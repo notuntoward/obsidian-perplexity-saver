@@ -1,10 +1,17 @@
-import { App, normalizePath, Notice, parseLinktext, TFile } from "obsidian";
+import path from "path";
+import { App, FileSystemAdapter, normalizePath, Notice, parseLinktext, TFile } from "obsidian";
 import type { ReferenceCache } from "obsidian";
 import { buildAliases, buildAttachmentLinks, buildLitNoteFrontmatter } from "./buildLitNote";
+import type { AttachmentProblem } from "./buildLitNote";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
+import { buildAttachmentMoveCandidate } from "./attachmentMove";
+import type { NoteAttachmentLink } from "./attachmentMove";
+import type { AttachmentMoveCandidate } from "./pendingReviews";
 import type { AttachmentReviewRow, CitekeyConflictDetails, DecisionButton, NoteDecision } from "./decisionModal";
 import { getLitNoteFiles } from "commons/litnote";
+import { getMainWindow } from "commons/workspace";
+import { setTimeoutIn } from "commons/windows";
 import type { ZoteroItemPayload } from "./types";
 import type { LitNoteWriterSettings } from "./writeLitNote";
 import { litNotesFolderError } from "./writeLitNote";
@@ -20,17 +27,30 @@ export interface SyncResult {
 	status: "updated" | "skipped" | "missing" | "error" | "set-zotero-key" | "prepared";
 	citekey: string;
 	error?: string;
+	errorTitle?: string;
+	dialogMessage?: string;
 	noteCitekey?: string;
 	expectedZoteroKey?: string;
 	snapshot?: string;
 	notePath?: string;
 	identicalAttachments?: IdenticalAttachment[];
 	deferUntilChanged?: boolean;
+	identity?: CitekeyConflictDetails;
+	attachmentProblems?: AttachmentProblem[];
+	attachmentMove?: AttachmentMoveCandidate;
 }
 
-type Prompt = (title: string, message: string, buttons: DecisionButton[], review?: AttachmentReviewRow[], conflict?: CitekeyConflictDetails) => Promise<NoteDecision>;
+type Prompt = (title: string, message: string, buttons: DecisionButton[], review?: AttachmentReviewRow[], conflict?: CitekeyConflictDetails, bulkSummary?: string) => Promise<NoteDecision>;
 
-const ATTACHMENT = /^\*\*(?:\[\[[^\]]+\|(?:PDF|HTM|DOC|PPT|EPUB|TXT)\]\]|\[(?:PDF|HTM|DOC|PPT|EPUB|TXT)\]\([^)]+\)|(?:PDF|HTM|DOC|PPT|EPUB|TXT|Attachment) unavailable in vault)\*\*$/;
+const ATTACHMENT = /^(?:\[\[[^\]]+\|(?:PDF|HTM|DOC|PPT|EPUB|TXT)\]\]|\[(?:PDF|HTM|DOC|PPT|EPUB|TXT)\]\([^)]+\)|(?:PDF|HTM|DOC|PPT|EPUB|TXT|Attachment) unavailable in vault)$/;
+
+function withoutBold(link: string): string {
+	return link.startsWith("**") && link.endsWith("**") ? link.slice(2, -2) : link;
+}
+
+function isAttachment(link: string): boolean {
+	return ATTACHMENT.test(withoutBold(link));
+}
 
 function value(value: unknown): string {
 	return JSON.stringify(value) ?? "(absent)";
@@ -55,7 +75,7 @@ function managedHeader(line: string, links: string[], allowLegacy: boolean): str
 		throw new Error("The note has no managed attachment markers; update it manually to confirm adoption.");
 	}
 	const segments = line.split(" | ");
-	const kept = segments.filter((segment, index) => index === 0 || !ATTACHMENT.test(segment));
+	const kept = segments.filter((segment, index) => index === 0 || !isAttachment(segment));
 	return kept.join(" | ") + START + (links.length ? ` | ${links.join(" | ")}` : "") + END;
 }
 
@@ -69,7 +89,7 @@ function existingAttachmentLinks(line: string): string[] {
 		}
 		return line.slice(start + START.length, end).split(" | ").filter(Boolean);
 	}
-	return line.split(" | ").slice(1).filter((segment) => ATTACHMENT.test(segment));
+	return line.split(" | ").slice(1).filter(isAttachment);
 }
 
 function subtractLinks(left: string[], right: string[]): string[] {
@@ -83,8 +103,18 @@ function subtractLinks(left: string[], right: string[]): string[] {
 }
 
 function attachmentLinkPath(link: string): string | undefined {
-	const match = link.match(/^\*\*(?:\[\[([^|\]]+)(?:\|[^\]]*)?\]\]|\[[^\]]+\]\(([^)]+)\))\*\*$/);
+	const match = withoutBold(link).match(/^(?:\[\[([^|\]]+)(?:\|[^\]]*)?\]\]|\[[^\]]+\]\(([^)]+)\))$/);
 	return match?.[1] ?? (match?.[2] ? decodeURIComponent(match[2]) : undefined);
+}
+
+const LABEL_EXTENSIONS: Record<string, string> = {
+	PDF: ".pdf", HTM: ".html", DOC: ".docx", PPT: ".pptx", EPUB: ".epub", TXT: ".txt",
+};
+
+/** The file type a header attachment link stands for, from its label or placeholder text. */
+function linkExtension(link: string): string | undefined {
+	const label = withoutBold(link).match(/^(?:\[\[[^\]]+\|(\w+)\]\]|\[(\w+)\]\(|(\w+) unavailable in vault$)/);
+	return LABEL_EXTENSIONS[label?.[1] ?? label?.[2] ?? label?.[3] ?? ""];
 }
 
 function backlinkWarning(app: App, filePath: string): string {
@@ -123,12 +153,15 @@ export async function syncLitNote(
 	} = {}
 ): Promise<SyncResult> {
 	const citekey = item.citekey?.trim() ?? "";
+	let identity: CitekeyConflictDetails | undefined;
 	const result = (status: SyncResult["status"], error?: string): SyncResult =>
-		({ status, citekey, ...(error ? { error } : {}) });
+		({ status, citekey, ...(error ? { error } : {}), ...(status === "error" && identity ? { identity } : {}) });
+	const failure = (errorTitle: string, error: string, dialogMessage?: string): SyncResult =>
+		({ ...result("error", error), errorTitle, ...(dialogMessage ? { dialogMessage } : {}) });
 	const folderError = litNotesFolderError(settings.litNotesFolder);
-	if (folderError) return result("error", folderError);
+	if (folderError) return failure("Literature notes folder is invalid", folderError);
 	if (!validKey(citekey) || !item.itemkey || !item.libraryURI) {
-		return result("error", "A valid citation key, Zotero item key, and library identity are required.");
+		return failure("Zotero item identity is incomplete or invalid", "A valid citation key, Zotero item key, and library identity are required. Check the item in Zotero, then retry.");
 	}
 
 	const matchingKey = getLitNoteFiles(app, settings.litNotesFolder).filter((file) => {
@@ -145,31 +178,35 @@ export async function syncLitNote(
 		reassociating = true;
 	}
 	if (!candidates.length && mode === "metadata" && matchingKey.length > 1) {
-		return result("error", "More than one literature note has this Zotero item key; no association was changed.");
+		return failure("Multiple notes have this Zotero item key", `More than one literature note has this Zotero item key:\n${matchingKey.map((note) => `- ${note.path}`).join("\n")}\n\nCheck the notes' Zotero identities before retrying. No association was changed.`);
 	}
 	if (!candidates.length) return result("missing");
-	if (candidates.length !== 1) return result("error", "More than one literature note matches this Zotero item.");
+	if (candidates.length !== 1) return failure("Multiple notes match this Zotero item", `More than one literature note matches this Zotero item:\n${candidates.map((note) => `- ${note.path}`).join("\n")}\n\nCheck the notes' Zotero identities before retrying.`);
 	const file = candidates[0];
 	const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-	if (!fm) return result("error", "The note's frontmatter is not indexed yet.");
+	const noteKey = typeof fm?.citekey === "string" ? fm.citekey.trim() : "";
+	identity = {
+		title: item.title, itemkey: item.itemkey, libraryURI: item.libraryURI,
+		notePath: file.path, noteCitekey: noteKey || "(not set)", zoteroCitekey: citekey,
+	};
+	if (!fm) return failure("Note frontmatter is not indexed", "The note's frontmatter is not indexed yet. Wait for Obsidian to finish indexing, then retry.", "Wait for Obsidian to finish indexing, then retry.");
 	const originalValues = Object.fromEntries(Object.entries(fm).map(([key, current]) => [key, value(current)]));
 	const legacy = !fm.zotero_library_uri;
 	const folder = file.parent?.path ?? "";
 	const target = normalizePath(folder ? `${folder}/${citekey}.md` : `${citekey}.md`);
 	const content = await app.vault.read(file);
 	if (options.expectedContent !== undefined && content !== options.expectedContent) {
-		return result("error", "The note changed while the update was pending; retry.");
+		return failure("Note changed during update", "The note changed while the update was pending; retry.", "Retry the update.");
 	}
 	const oldHeader = header(content);
-	if (!oldHeader) return result("error", "The note has no Zotero info callout; attachment links were not changed.");
-	const noteKey = typeof fm.citekey === "string" ? fm.citekey.trim() : "";
+	if (!oldHeader) return failure("Zotero info callout is missing", "The note has no Zotero info callout; attachment links were not changed. Restore the info callout or update the note manually.", "Restore the info callout or update the note manually. Attachment links were not changed.");
 	if (noteKey && noteKey !== citekey) {
 		const check = item.citationKeyCheck;
 		if (!check || check.citekey !== noteKey || !Array.isArray(check.matches) ||
 			check.matches.some((match) => !match || typeof match.title !== "string" ||
 				typeof match.citekey !== "string" || typeof match.libraryURI !== "string" ||
 				typeof match.itemkey !== "string")) {
-			return result("error", "Could not verify whether the Obsidian citation key is already used in Zotero. Retry the update.");
+			return failure("Obsidian citation key could not be checked in Zotero", "Could not verify whether the Obsidian citation key is already used in Zotero. Retry the update.", "Retry the update to check whether the key is already used.");
 		}
 		const association = reassociating
 			? `\n\nThe note records a different Zotero library. Confirm both describe the same work.`
@@ -184,36 +221,67 @@ export async function syncLitNote(
 			{ label: "Cancel", value: "cancel" },
 		];
 		const choice = await prompt("Citekeys differ",
-			`Search Zotero for the item key.\n\nUse Zotero: review changes to the note and its links. ${validKey(noteKey) ? "Use Obsidian: Zotero changes now, possibly renaming files; later cancellation won't undo it." : ""}${association}${duplicates}`,
-			buttons, undefined, { title: item.title, itemkey: item.itemkey, libraryURI: item.libraryURI, notePath: file.path, noteCitekey: noteKey, zoteroCitekey: citekey });
+			`Choose which citation key to keep.\n\nUse Zotero: review changes to the note and its links.${validKey(noteKey) ? "\nUse Obsidian: Zotero changes now and may rename files; canceling later will not undo those changes." : ""}${association}${duplicates}`,
+			buttons, undefined, identity);
 		if (choice === "use-obsidian") {
 			const noteTarget = normalizePath(folder ? `${folder}/${noteKey}.md` : `${noteKey}.md`);
 			const noteCollision = app.vault.getAbstractFileByPath(noteTarget);
-			if (noteCollision && noteCollision !== file) return result("error", `Cannot rename note: ${noteTarget} already exists. Zotero was not changed.`);
+			if (noteCollision && noteCollision !== file) return failure("Note filename already exists", `Cannot rename note: ${noteTarget} already exists. Zotero was not changed. Check the existing note and resolve the filename conflict before retrying.`, `${noteTarget}\n\nResolve the filename conflict, then retry. Zotero was not changed.`);
 			if (reassociating) {
 				const confirmed = await prompt("Confirm Zotero item",
 					`This Obsidian note records a different Zotero library. Confirm that it and "${item.title}" (Zotero item key ${item.itemkey}, ${item.libraryName || item.libraryURI}) describe the same work before changing Zotero.`,
-					[{ label: "Continue", value: "create" }, { label: "Cancel", value: "cancel" }]);
+					[{ label: "Continue", value: "create" }, { label: "Cancel", value: "cancel" }], undefined, identity);
 				if (confirmed !== "create") return result("skipped");
 			}
 			if (await app.vault.read(file) !== content) {
-				return result("error", "The note changed while the decision was pending; retry.");
+				return failure("Note changed during decision", "The note changed while the decision was pending; retry.", "Retry the update.");
 			}
 			return { status: "set-zotero-key", citekey, noteCitekey: noteKey, expectedZoteroKey: citekey, snapshot: content };
 		}
 		if (choice !== "use-zotero") return result("skipped");
 	}
 	const collision = app.vault.getAbstractFileByPath(target);
-	if (collision && collision !== file) return result("error", `Cannot rename note: ${target} already exists.`);
-	const attachmentLinks = await buildAttachmentLinks(app, item, target);
-	if (attachmentLinks.some((link) => link.includes("unavailable in vault"))) {
-		return result("error", "Some Zotero attachments are unavailable in the vault; existing note links were preserved. Retry when the files are available.");
+	if (collision && collision !== file) return failure("Note filename already exists", `Cannot rename note: ${target} already exists. Check the existing note and resolve the filename conflict before retrying.`, `${target}\n\nResolve the filename conflict, then retry.`);
+	let unavailable: AttachmentProblem[] = [];
+	const attachmentLinks = await buildAttachmentLinks(app, item, target, (details) => { unavailable = details; });
+	if (unavailable.length) {
+		let attachmentMove: AttachmentMoveCandidate | undefined;
+		if (mode === "auto" && !item.zoteroChanges &&
+			fm?.zotero_item_key === item.itemkey &&
+			fm.zotero_library_uri === item.libraryURI &&
+			fm.citekey === citekey && file.path === target &&
+			app.vault.adapter instanceof FileSystemAdapter) {
+			try {
+				const vaultRoot = app.vault.adapter.getBasePath();
+				const links = existingAttachmentLinks(oldHeader).map((link): NoteAttachmentLink => {
+					const linkpath = attachmentLinkPath(link);
+					const resolved = linkpath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkpath).path, file.path) : null;
+					return {
+						...(linkpath ? { target: parseLinktext(linkpath).path } : {}),
+						...(resolved ? { absolutePath: path.join(vaultRoot, resolved.path) } : {}),
+						...(linkExtension(link) ? { extension: linkExtension(link) } : {}),
+					};
+				});
+				attachmentMove = await buildAttachmentMoveCandidate(item, noteKey, links, unavailable, vaultRoot);
+			} catch (error) {
+				console.warn("Could not check whether Zotero attachments can be moved safely", error);
+			}
+		}
+		return {
+			...failure(unavailable.every((entry) => entry.title === unavailable[0].title) ? unavailable[0].title : "Zotero attachments need attention",
+				`${unavailable.map((entry) => `Zotero attachment: ${entry.path ?? entry.label}\n${entry.problem} ${entry.action}`).join("\n\n")}\n\nExisting note links were preserved.`),
+			attachmentProblems: unavailable,
+			...(attachmentMove ? { attachmentMove } : {}),
+		};
 	}
 	let oldLinks: string[];
 	try {
 		oldLinks = existingAttachmentLinks(oldHeader);
 	} catch (error) {
-		return result("error", error instanceof Error ? error.message : String(error));
+		return failure("Managed attachment markers are invalid", error instanceof Error ? error.message : String(error), "Check the note's managed attachment markers, then retry. Attachment links were not changed.");
+	}
+	if (!oldHeader.includes(START) && !legacy && mode === "auto") {
+		return failure("Managed attachment markers are missing", "The Obsidian note has no managed attachment markers. Run an update to review and adopt its attachment links.", "Run an update to review and adopt the note's attachment links.");
 	}
 	const noteOnlyLinks = subtractLinks(oldLinks, attachmentLinks);
 	const zoteroOnlyLinks = subtractLinks(attachmentLinks, oldLinks);
@@ -241,11 +309,11 @@ export async function syncLitNote(
 			? await findIdenticalAttachments(app, noteOnlyFiles, zoteroFiles)
 			: [];
 	} catch (error) {
-		return result("error", `Could not compare attachment files: ${error instanceof Error ? error.message : String(error)}`);
+		return failure("Attachment files could not be compared", `Could not compare attachment files: ${error instanceof Error ? error.message : String(error)}. Check the files and their permissions, then retry.`, `${error instanceof Error ? error.message : String(error)}. Check the files and their permissions, then retry.`);
 	}
 	if (options.expectedIdenticalAttachments &&
 		JSON.stringify(identicalAttachments) !== JSON.stringify(options.expectedIdenticalAttachments)) {
-		return result("error", "Attachment files changed while the update was pending; retry.");
+		return failure("Attachment files changed during update", "Attachment files changed while the update was pending; retry.", "Retry the update.");
 	}
 	const identicalNotePaths = new Set(identicalAttachments.map((pair) => pair.note.path));
 	const identicalZoteroPaths = new Set(identicalAttachments.map((pair) => pair.zotero.path));
@@ -273,7 +341,7 @@ export async function syncLitNote(
 	} else {
 		let offset = headerStart;
 		for (const segment of oldHeader.split(" | ")) {
-			if (ATTACHMENT.test(segment)) managedRanges.push({ start: offset, end: offset + segment.length });
+			if (isAttachment(segment)) managedRanges.push({ start: offset, end: offset + segment.length });
 			offset += segment.length + 3;
 		}
 	}
@@ -299,7 +367,7 @@ export async function syncLitNote(
 			const start = reference.position.start.offset;
 			const end = reference.position.end.offset;
 			if (content.slice(start, end) !== reference.original) {
-				return result("error", "Obsidian's link index is out of date; retry after the note is indexed.");
+				return failure("Obsidian link index is out of date", "Obsidian's link index is out of date; retry after the note is indexed.", "Wait for the note to be indexed, then retry.");
 			}
 			const { subpath } = parseLinktext(reference.link);
 			const replacement = app.fileManager.generateMarkdownLink(survivor, target, subpath, reference.displayText);
@@ -318,27 +386,47 @@ export async function syncLitNote(
 		return candidate instanceof TFile ? [{ path: candidate.path, modified: candidate.stat?.mtime, role }] : [];
 	};
 	const review: AttachmentReviewRow[] = [
-		...removedLinks.map((link): AttachmentReviewRow => ({
-			kind: "note", label: `Only in the note: ${attachmentLinkPath(link) ?? "unavailable attachment"}`,
-			options: [{ label: "Keep this link in the note", value: "keep" }, { label: "Remove this link from the note", value: "remove" }],
-			defaultValue: "keep",
-			files: reviewFile(link, file.path, "Note attachment"),
-		})),
+		...removedLinks.map((link): AttachmentReviewRow => {
+			const linkPath = attachmentLinkPath(link);
+			const resolved = resolveAttachment(link, file.path);
+			const filename = linkPath ? parseLinktext(linkPath).path.split("/").pop() : undefined;
+			const sameName = filename && zoteroFiles.some((candidate) => candidate.path.split("/").pop() === filename);
+			const description = !resolved
+				? sameName
+					? "A Zotero item attachment has the same filename, but the Obsidian note link could not be resolved. Saver cannot determine whether they refer to the same file."
+					: "Obsidian could not resolve this link to a file in the vault, so Saver cannot compare the files."
+				: zoteroFiles.length
+					? sameName
+						? "A Zotero item attachment has the same filename, but the file contents differ."
+						: "The file contents differ from the available Zotero item attachments."
+					: undefined;
+			return {
+				kind: "note", label: `Obsidian note link target: ${linkPath ?? "unavailable attachment"}`,
+				copyValue: linkPath,
+				description,
+				options: [{ label: "Keep this link in the Obsidian note", value: "keep" }, { label: "Remove this link from the Obsidian note", value: "remove" }],
+				defaultValue: "keep",
+				files: reviewFile(link, file.path, "Obsidian note attachment"),
+			};
+		}),
 		...addedLinks.map((link): AttachmentReviewRow => ({
-			kind: "add", label: `Only in Zotero: ${attachmentLinkPath(link) ?? "unavailable attachment"}`,
-			options: [{ label: "Add a link to the note", value: "add" }, { label: "Do not add a link", value: "skip" }],
+			kind: "add", label: `Zotero item attachment: ${attachmentLinkPath(link) ?? "unavailable attachment"}`,
+			description: "No matching resolved attachment link was identified in the Obsidian note's info header.",
+			copyValue: attachmentLinkPath(link),
+			options: [{ label: "Add a link to the Obsidian note", value: "add" }, { label: "Do not add a link", value: "skip" }],
 			defaultValue: "add",
-			files: reviewFile(link, target, "Zotero attachment"),
+			files: reviewFile(link, target, "Zotero item attachment"),
 		})),
 		...bodyChoices.map(({ reference, eligible, existing }): AttachmentReviewRow => ({
-			kind: "body", label: `Another note link to ${parseLinktext(reference.link).path}`,
-			options: [{ label: "Keep this note link unchanged", value: "keep" }, ...eligible.map((candidate, index) => ({
-				label: `Change this note link to ${candidate.path}`, value: String(index),
+			kind: "body", label: `Another Obsidian note link: ${parseLinktext(reference.link).path}`,
+			copyValue: reference.link,
+			options: [{ label: "Keep this Obsidian note link unchanged", value: "keep" }, ...eligible.map((candidate, index) => ({
+				label: `Change this Obsidian note link to ${candidate.path}`, value: String(index),
 			}))],
 			defaultValue: "keep",
 			files: [
-				...(existing instanceof TFile ? [{ path: existing.path, modified: existing.stat?.mtime, role: "Current note link" }] : []),
-				...eligible.map((candidate) => ({ path: candidate.path, modified: candidate.stat?.mtime, role: "Zotero attachment" })),
+				...(existing instanceof TFile ? [{ path: existing.path, modified: existing.stat?.mtime, role: "Current Obsidian note link" }] : []),
+				...eligible.map((candidate) => ({ path: candidate.path, modified: candidate.stat?.mtime, role: "Zotero item attachment" })),
 			],
 		})),
 		...(item.zoteroChanges?.attachmentMoves ?? []).map((move): AttachmentReviewRow => ({
@@ -347,29 +435,37 @@ export async function syncLitNote(
 			defaultValue: "changed",
 		})),
 	];
-	const cancelNote = item.zoteroChanges ? "\n\nCancel leaves the Zotero changes in place; no proposed Obsidian note changes are applied." : "\n\nCancel makes no changes.";
+	const cancelNote = item.zoteroChanges ? "Cancel will not undo the changes already made in Zotero." : "";
 	if (review.length) {
-		const alreadyChanged = item.zoteroChanges
-			? `Already changed in Zotero: citekey ${item.zoteroChanges.previousCitekey} → ${citekey}; ${item.zoteroChanges.attachmentMoves.length} verified attachment file move(s) or rename(s). These are not undone if you cancel.\n\n`
-			: "";
-		const summary = await prompt("Attachment links differ",
-			`${alreadyChanged}Obsidian note: ${file.path}\n\n${oldLinks.length - removedLinks.length} attachment link(s) match; ${removedLinks.length} link(s) are only in the Obsidian note; ${addedLinks.length} Zotero attachment(s) are not linked in the note. ${bodyChoices.length} other note link(s) need review.\n\nReview the differences before changing the Obsidian note. Attachment files in Zotero are not changed by this review.${cancelNote}`,
-			[{ label: "Review differences", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
-		if (summary !== "create") return result("skipped");
-		const choice = await prompt("Review attachment links",
-			`Choose how to update the note's links. These choices do not change files or Zotero attachments. Unrelated links are left alone.${cancelNote}`,
-			[{ label: "Continue", value: "create", cta: true }, { label: "Cancel", value: "cancel" }], review);
-		if (choice === "cancel") return result("skipped");
-		if (!choice.startsWith("review:")) return result("error", "The attachment review was not completed; no note changes were made.");
 		let selections: unknown;
-		try {
-			selections = JSON.parse(choice.slice("review:".length));
-		} catch {
-			return result("error", "The attachment review was invalid; no note changes were made.");
+		{
+			const alreadyChanged = item.zoteroChanges
+				? `Zotero already changed the citekey from ${item.zoteroChanges.previousCitekey} to ${citekey} and moved or renamed ${item.zoteroChanges.attachmentMoves.length} verified attachment file(s).`
+				: "";
+			const differences = removedLinks.length || addedLinks.length || bodyChoices.length;
+			const duplicateNotice = identicalAttachments.some((pair) => pair.note.path !== pair.zotero.path)
+				? "Identical duplicate files may be moved to Trash after the next confirmation."
+				: "";
+			const diagnosis = [
+				removedLinks.length ? `${removedLinks.length} note attachment link(s) could not be matched to Zotero attachments.` : "",
+				addedLinks.length ? `${addedLinks.length} Zotero attachment(s) are not linked in the note.` : "",
+				bodyChoices.length ? `${bodyChoices.length} other note link(s) may need a different target.` : "",
+			].filter(Boolean).join(" ");
+			const choice = await prompt(differences ? "Attachment links differ" : "Zotero attachments changed",
+				[diagnosis, differences ? "Choose which links to keep, remove, add, or change below." : "Review the Zotero changes below.",
+					alreadyChanged, duplicateNotice, cancelNote].filter(Boolean).join("\n\n"),
+				[{ label: "Continue", value: "create", cta: true }, { label: "Cancel", value: "cancel" }], review, identity);
+			if (choice === "cancel") return result("skipped");
+			if (!choice.startsWith("review:")) return failure("Attachment review was not completed", "The attachment review was not completed; no note changes were made.", "Review the attachments again. No note changes were made.");
+			try {
+				selections = JSON.parse(choice.slice("review:".length));
+			} catch {
+				return failure("Attachment review is invalid", "The attachment review was invalid; no note changes were made.", "Review the attachments again. No note changes were made.");
+			}
 		}
 		if (!isStringArray(selections) || selections.length !== review.length ||
 			selections.some((selection, index) => !review[index].options.some((option) => option.value === selection))) {
-			return result("error", "The attachment review changed; no note changes were made.");
+			return failure("Attachment review changed", "The attachment review changed; no note changes were made.", "Review the attachments again. No note changes were made.");
 		}
 		removedLinks.forEach((link, index) => {
 			if (selections[index] === "keep") {
@@ -389,12 +485,12 @@ export async function syncLitNote(
 				continue;
 			}
 			const selected = eligible[Number(decision)];
-			if (!selected) return result("error", "The selected attachment is no longer available; retry.");
+			if (!selected) return failure("Selected attachment is no longer available", "The selected attachment is no longer available; retry.", "Review the attachments again.");
 			const { subpath } = parseLinktext(reference.link);
 			const start = reference.position.start.offset;
 			const end = reference.position.end.offset;
 			if (content.slice(start, end) !== reference.original) {
-				return result("error", "Obsidian's link index is out of date; retry after the note is indexed.");
+				return failure("Obsidian link index is out of date", "Obsidian's link index is out of date; retry after the note is indexed.", "Wait for the note to be indexed, then retry.");
 			}
 			const replacement = app.fileManager.generateMarkdownLink(selected, target, subpath, reference.displayText);
 			const edit = { start, end, original: reference.original, replacement: reference.original.startsWith("!") ? `!${replacement}` : replacement };
@@ -413,7 +509,7 @@ export async function syncLitNote(
 	try {
 		newHeader = managedHeader(editedHeader, [...subtractLinks(attachmentLinks, addedLinks), ...selectedAdditions, ...keptManagedLinks], legacy || mode === "metadata");
 	} catch (error) {
-		return result("error", error instanceof Error ? error.message : String(error));
+		return failure("Managed attachment markers could not be updated", error instanceof Error ? error.message : String(error), `${error instanceof Error ? error.message : String(error)} Check the note's attachment markers, then retry.`);
 	}
 	const generated = buildLitNoteFrontmatter(item, settings);
 	const changes: Record<string, unknown> = {
@@ -425,16 +521,18 @@ export async function syncLitNote(
 	}
 	const descriptions = Object.entries(changes)
 		.filter(([key, next]) => value(fm[key]) !== value(next))
-		.map(([key, next]) => `${key}: ${value(fm[key])} → ${value(next)}`);
+		.map(([key, next]) => key === "zotero_library_uri"
+			? `Set the note's Zotero library identity (zotero_library_uri): ${value(fm[key])} → ${value(next)}`
+			: `${key}: ${value(fm[key])} → ${value(next)}`);
 	if (mode === "metadata" && value(fm.aliases) !== value(changes.aliases)) {
 		descriptions.push("Links using an alias that is removed or changed may break.");
 	}
 	if (file.path !== target) descriptions.unshift(`Filename: ${file.path} → ${target}. ${backlinkWarning(app, file.path)}`);
 	if (removedSelected.length) descriptions.push(`Remove ${removedSelected.length} attachment link(s) from the Obsidian note.`);
 	if (identicalAttachments.length) {
-		descriptions.push(`Use ${identicalAttachments.length} byte-identical Zotero attachment(s) without asking which copy to keep.`);
+		descriptions.push(`Link to ${identicalAttachments.length} Zotero attachment ${identicalAttachments.length === 1 ? "file" : "files"} with identical contents.`);
 		const redundant = identicalAttachments.filter((pair) => pair.note.path !== pair.zotero.path);
-		if (redundant.length) descriptions.push(`Keep the Zotero files and move identical copies to Trash after checking for shared references:\n${redundant.map((pair) => `- ${pair.note.path} → ${pair.zotero.path}`).join("\n")}`);
+		if (redundant.length) descriptions.push(`Move the duplicate Obsidian files to Trash after checking for shared references; keep the Zotero files:\n${redundant.map((pair) => `- ${pair.note.path} → ${pair.zotero.path}`).join("\n")}`);
 	}
 	if (selectedAdditions.length) descriptions.push(`Add ${selectedAdditions.length} Zotero attachment link(s) to the Obsidian note.`);
 	if (keptLinks.length) descriptions.push(`Keep ${keptLinks.length} unresolved attachment difference(s) in the Obsidian note.`);
@@ -442,39 +540,62 @@ export async function syncLitNote(
 	if (oldHeader !== newHeader && !removedSelected.length && !selectedAdditions.length) descriptions.push("Update the note's managed attachment list.");
 	if (!descriptions.length && !item.zoteroChanges) {
 		return keptLinks.length
-			? { ...result("error", `Attachment differences remain: ${keptLinks.join(", ")}.`), deferUntilChanged: true }
+			? { ...failure("Attachment differences remain", `Attachment differences remain: ${keptLinks.join(", ")}.`, `${keptLinks.join(", ")}\n\nReview these links before reconciling the attachments.`), deferUntilChanged: true }
 			: result("skipped");
 	}
 
 	const adoption = reassociating
-		? `This Obsidian note records a different Zotero library. Confirm that it and "${item.title}" (Zotero item key ${item.itemkey}, ${item.libraryName || item.libraryURI}) describe the same work.`
+		? `The note records a different Zotero library. Confirm it matches the item in ${item.libraryName || item.libraryURI}.`
 		: legacy
-		? `This Obsidian note does not record its Zotero library. Confirm that it and "${item.title}" (Zotero item key ${item.itemkey}, ${item.libraryName || item.libraryURI}) describe the same work.`
+		? `The note has no Zotero library URI. Confirm it matches the item in ${item.libraryName || item.libraryURI}.`
 		: !oldHeader.includes(START)
 			? "The info header has no managed attachment markers. Matching attachment links in it will become Zotero-managed."
 			: "";
-	if (legacy || mode === "metadata" || !oldHeader.includes(START) || file.path !== target || review.length || item.zoteroChanges) {
+	const duplicateFiles = identicalAttachments.some((pair) => pair.note.path !== pair.zotero.path);
+	const bulkSummary = !legacy && mode === "auto" && !item.zoteroChanges ? [
+		file.path !== target ? "Rename notes" : "",
+		Object.entries(changes).some(([key, next]) => value(fm[key]) !== value(next)) ? "Update Zotero identifiers" : "",
+		!oldHeader.includes(START) ? "Adopt managed attachment links" : "",
+		oldHeader !== newHeader || bodyEdits.length ? "Update attachment links" : "",
+		duplicateFiles ? "Move duplicate files to Trash after shared-reference checks" : "",
+	].filter(Boolean).join("; ") : undefined;
+	if (legacy || mode === "metadata" || !oldHeader.includes(START) || file.path !== target ||
+		review.length || item.zoteroChanges || duplicateFiles) {
 		const alreadyChanged = item.zoteroChanges
 			? `Already changed in Zotero:\n- Item citekey: ${item.zoteroChanges.previousCitekey} → ${citekey}\n- ${item.zoteroChanges.attachmentMoves.length} verified attachment file move(s) or rename(s)${item.zoteroChanges.attachmentMoves.length ? " (shown in the attachment review)" : ""}.`
 			: "";
-		const message = [adoption, alreadyChanged, `Proposed Obsidian note changes:\n${descriptions.join("\n") || "None."}`, cancelNote.trim()].filter(Boolean).join("\n\n");
-		const decision = await prompt("Update literature note", message, [
+		const diagnosis = adoption || (file.path !== target
+			? `The note filename does not match the Zotero citation key ${citekey}.`
+			: item.zoteroChanges ? "Zotero has already changed this item; review the note changes."
+			: review.length ? "Your attachment choices require changes to the note."
+			: duplicateFiles ? "Identical attachment files can be consolidated."
+			: mode === "metadata" ? "The note's Zotero metadata needs updating."
+			: "The note's attachment links are not yet managed.");
+		const message = [diagnosis, alreadyChanged, `Saver will update the note:\n${descriptions.join("\n") || "No note changes."}`, cancelNote].filter(Boolean).join("\n\n");
+		const title = reassociating ? "Confirm the Zotero library change"
+			: legacy ? "Add the Zotero library and update the note"
+			: file.path !== target ? "Rename and update the note"
+			: review.length ? "Confirm attachment link changes"
+			: duplicateFiles ? "Remove duplicate attachment files"
+			: mode === "metadata" ? "Update Zotero metadata"
+			: "Adopt the note's attachment links";
+		const decision = await prompt(title, message, [
 			{ label: "Apply Obsidian note changes", value: "create", cta: true },
 			{ label: "Cancel", value: "cancel" },
-		]);
+		], undefined, identity, bulkSummary);
 		if (decision !== "create") return result("skipped");
 	}
 	if (!descriptions.length) return result("skipped");
 
 	if (options.prepareOnly) {
 		if (await app.vault.read(file) !== content) {
-			return result("error", "The note changed while the decision was pending; retry.");
+			return failure("Note changed during decision", "The note changed while the decision was pending; retry.", "Retry the update.");
 		}
 		return { status: "prepared", citekey, snapshot: content, identicalAttachments, notePath: file.path };
 	}
 	if (identicalAttachments.some((pair) => pair.note.path !== pair.zotero.path) &&
 		(!options.beforeApply || !options.trashIdenticalAttachments)) {
-		return result("error", "Cannot verify duplicate attachments safely; no note changes were made.");
+		return failure("Duplicate attachments could not be verified", "Cannot verify duplicate attachments safely; no note changes were made.", "Retry the update. No note changes were made.");
 	}
 	await options.beforeApply?.();
 	try {
@@ -506,6 +627,7 @@ export async function syncLitNote(
 		});
 		if (file.path !== target) {
 			await app.fileManager.renameFile(file, target);
+			identity.notePath = file.path;
 			new Notice("Literature note renamed.", 5000);
 		}
 		if (identicalAttachments.length && options.trashIdenticalAttachments) {
@@ -516,11 +638,117 @@ export async function syncLitNote(
 			}
 		}
 		if (keptLinks.length) return {
-			...result("error", `The note was updated, but attachment differences remain: ${keptLinks.join(", ")}. Review them before considering the attachments reconciled.`),
+			...failure("Attachment differences remain after update", `The note was updated, but attachment differences remain: ${keptLinks.join(", ")}. Review them before considering the attachments reconciled.`, `${keptLinks.join(", ")}\n\nThe note was updated. Review these links before considering the attachments reconciled.`),
 			deferUntilChanged: true,
 		};
 		return result("updated");
 	} catch (error) {
-		return result("error", `Update may be partial; retry after resolving: ${error instanceof Error ? error.message : String(error)}`);
+		return failure("Note update may be incomplete", `Update may be partial; retry after resolving: ${error instanceof Error ? error.message : String(error)}`, `${error instanceof Error ? error.message : String(error)}\n\nCheck the note and attachments, then retry.`);
 	}
+}
+
+export const MISMATCH_PROPERTY = "zotero_note_file_mismatch";
+const MISMATCH_PREFIX = "==🔴Zotero/note attachment mismatch:";
+
+function mismatchLine(extras: AttachmentMoveCandidate["extras"]): string {
+	const list = (origin: "zotero" | "note"): string => extras.filter((extra) => extra.origin === origin)
+		.map((extra) => `[[${extra.path}|${path.posix.basename(extra.path)}]]`).join(", ");
+	const zotero = list("zotero");
+	const note = list("note");
+	const missing = extras.filter((extra) => extra.origin === "missing").map((extra) => extra.path).join(", ");
+	const moved = zotero || note
+		? ` Saver moved ${zotero && note ? "these files" : zotero ? "the Zotero-only files" : "the note-only files"} into the vault and linked them from both the note and the Zotero item.`
+		: "";
+	const dropped = missing
+		? ` This note${zotero || note ? " also" : ""} linked ${missing}, which pointed to a missing or empty file that no Zotero attachment replaced; Saver removed ${missing.includes(", ") ? "those links" : "that link"}.`
+		: "";
+	return `${MISMATCH_PREFIX} ${[zotero ? `only the Zotero item had ${zotero}` : "", note ? `only this note linked ${note}` : ""]
+		.filter(Boolean).join("; ") || "the note's attachment links did not match the Zotero item"}.${moved}${dropped} Check that each file belongs to this work, then remove this line and the ${MISMATCH_PROPERTY} property.==`;
+}
+
+/** Adds or replaces the mismatch line directly below the info callout, separated by blank lines. */
+function withMismatchLine(content: string, line: string): string {
+	const eol = content.includes("\r\n") ? "\r\n" : "\n";
+	const lines = content.split(/\r?\n/);
+	const start = lines.findIndex((current) => /^> \[!info\]/i.test(current));
+	let end = start + 1;
+	while (end < lines.length && lines[end].startsWith(">")) end++;
+	let next = end;
+	while (next < lines.length && lines[next].trim() === "") next++;
+	if (lines[next]?.startsWith(MISMATCH_PREFIX)) {
+		lines[next] = line;
+		return lines.join(eol);
+	}
+	const after = next < lines.length ? [""] : [];
+	lines.splice(end, next - end, "", line, ...after);
+	return lines.join(eol);
+}
+
+/**
+ * Updates the note after the Zotero companion carried out a confirmed attachment move:
+ * relinks the header to the vault files Zotero now uses, records extras, and trashes
+ * duplicate or empty note files that nothing else links to.
+ */
+export async function finishAttachmentMove(
+	app: App,
+	settings: LitNoteWriterSettings,
+	item: ZoteroItemPayload,
+	candidate: AttachmentMoveCandidate,
+): Promise<{ trashed: string[] }> {
+	const notes = getLitNoteFiles(app, settings.litNotesFolder).filter((note) => {
+		const fm = app.metadataCache.getFileCache(note)?.frontmatter;
+		return fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI;
+	});
+	if (notes.length !== 1) throw new Error("The matching Obsidian note changed or is ambiguous; review it individually.");
+	const file = notes[0];
+	if (app.metadataCache.getFileCache(file)?.frontmatter?.citekey !== item.citekey) {
+		throw new Error("The note's citation key changed; review it individually.");
+	}
+	let problems: AttachmentProblem[] = [];
+	let links: string[] = [];
+	for (let attempt = 0; attempt < 40; attempt++) {
+		problems = [];
+		links = await buildAttachmentLinks(app, item, file.path, (details) => { problems = details; });
+		if (!problems.length) break;
+		await new Promise<void>((resolve) => setTimeoutIn(getMainWindow(app) ?? window, resolve, 250));
+	}
+	if (problems.length) {
+		throw new Error(`Obsidian has not indexed the moved files yet: ${problems.map((problem) => problem.path ?? problem.label).join(", ")}. Run the review again.`);
+	}
+
+	const content = await app.vault.read(file);
+	const oldHeader = header(content);
+	if (!oldHeader) throw new Error("The note has no Zotero info callout; restore it, then run the review again.");
+	const headerTargets = new Map<string, number>();
+	for (const link of existingAttachmentLinks(oldHeader)) {
+		const linkpath = attachmentLinkPath(link);
+		const target = linkpath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkpath).path, file.path) : null;
+		if (target) headerTargets.set(target.path, (headerTargets.get(target.path) ?? 0) + 1);
+	}
+	const incoming = (target: string): number => Object.values(app.metadataCache.resolvedLinks ?? {})
+		.reduce((total, destinations) => total + (destinations[target] ?? 0), 0);
+	const trashable = candidate.trashNoteFiles.filter((target) =>
+		(headerTargets.get(target) ?? 0) > 0 && incoming(target) === headerTargets.get(target));
+
+	const newHeader = managedHeader(oldHeader, links, true);
+	await app.vault.process(file, (current) => {
+		if (current !== content) throw new Error("The note changed while Zotero moved its attachments; run the review again.");
+		let updated = current.replace(oldHeader, newHeader);
+		if (candidate.extras.length) updated = withMismatchLine(updated, mismatchLine(candidate.extras));
+		return updated;
+	});
+	if (candidate.extras.length) {
+		await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+			fm[MISMATCH_PROPERTY] = true;
+		});
+	}
+	const trashed: string[] = [];
+	for (const target of trashable) {
+		const duplicate = app.vault.getAbstractFileByPath(target);
+		if (duplicate instanceof TFile) {
+			await app.fileManager.trashFile(duplicate);
+			trashed.push(target);
+		}
+	}
+	return { trashed };
 }

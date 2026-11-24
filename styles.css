@@ -25,6 +25,48 @@
 .lit-note-citekey-details {
 	overflow-wrap: anywhere;
 	user-select: text;
+	margin: 1em 0;
+}
+
+.lit-note-citekey-details summary {
+	cursor: pointer;
+	color: var(--text-muted);
+}
+
+.lit-note-identity-grid {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 0.4em 0.75em;
+	margin-top: 0.75em;
+}
+
+.lit-note-identity-value {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.lit-note-edit-hint {
+	color: var(--text-muted);
+	font-size: var(--font-small);
+	margin-top: 0.25em;
+}
+
+.lit-note-review-status {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	box-shadow: none;
+	color: inherit;
+}
+
+.lit-note-attachment-problem {
+	margin: 0.75em 0;
+	overflow-wrap: anywhere;
+	user-select: text;
+}
+
+.lit-note-attachment-problem p {
+	margin: 0.5em 0;
 }
 
 .lit-note-copyable-key {

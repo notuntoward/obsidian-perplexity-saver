@@ -1,6 +1,7 @@
 import { App, FileSystemAdapter, Modal, Notice, TFile } from "obsidian";
 import { applyModalAppearance } from "commons/modal";
 import { ownerWindow, writeClipboardIn } from "commons/windows";
+import type { AttachmentProblem } from "./buildLitNote";
 
 /**
  * A decision the user can make when a lit note already exists (create flow) or
@@ -17,6 +18,9 @@ export type NoteDecision =
 	| "rename"
 	| "use-obsidian"
 	| "use-zotero"
+	| "keep-newest"
+	| "keep-zotero"
+	| "skip-manual"
 	| "keep-link"
 	| "replace-link"
 	| `attachment:${number}`
@@ -26,6 +30,8 @@ export type NoteDecision =
 export interface AttachmentReviewRow {
 	kind: "note" | "add" | "body" | "zotero";
 	label: string;
+	description?: string;
+	copyValue?: string;
 	options: Array<{ label: string; value: string }>;
 	defaultValue: string;
 	files?: Array<{ path: string; modified?: number; role?: string }>;
@@ -35,9 +41,11 @@ export interface CitekeyConflictDetails {
 	title: string;
 	itemkey: string;
 	libraryURI: string;
-	notePath: string;
-	noteCitekey: string;
+	notePath?: string;
+	noteCitekey?: string;
 	zoteroCitekey: string;
+	attachmentProblems?: AttachmentProblem[];
+	compact?: boolean;
 }
 
 export interface DecisionButton {
@@ -86,63 +94,98 @@ export function withNoteDecisionSession<T>(
 				this.titleEl.setText(title);
 				this.contentEl.empty();
 				applyModalAppearance(this, { size: "standard" });
+				const addCopyButton = (container: HTMLElement, label: string, value: string): void => {
+					const copy = container.createEl("button", { text: "Copy", attr: { "aria-label": `Copy ${label}` } });
+					copy.addEventListener("click", () => {
+						const win = ownerWindow(copy);
+						if (!win) {
+							new Notice(`Could not copy ${label}.`);
+							return;
+						}
+						void writeClipboardIn(win, value).then((written) => {
+							new Notice(written ? `Copied ${label}.` : `Could not copy ${label}.`);
+						}).catch((error: unknown) => {
+							console.error(`Could not copy ${label}`, error);
+							new Notice(`Could not copy ${label}.`);
+						});
+					});
+				};
+				if (conflict?.attachmentProblems?.length) {
+					const issues = this.contentEl.createDiv({ cls: "lit-note-attachment-problems" });
+					for (const entry of conflict.attachmentProblems) {
+						const issue = issues.createDiv({ cls: "lit-note-attachment-problem" });
+						if (entry.path) {
+							const row = issue.createDiv({ cls: "lit-note-copyable-key" });
+							row.createEl("strong", { text: "Zotero attachment:" });
+							row.createEl("code", { text: entry.path });
+							addCopyButton(row, `attachment path ${entry.path}`, entry.path);
+						} else if (entry.label) {
+							issue.createEl("p").createEl("strong", { text: `Zotero attachment: ${entry.label}` });
+						}
+						if (conflict.attachmentProblems.length > 1) issue.createEl("strong", { text: entry.title });
+						issue.createEl("p", { text: entry.dialogProblem ?? entry.problem });
+						issue.createEl("p", { text: entry.action });
+					}
+				}
+				if (message.trim()) {
+					const messageEl = this.contentEl.createDiv({ cls: "commons-modal-intro lit-note-decision-message" });
+					for (const p of message.split("\n\n")) {
+						const trimmed = p.trim();
+						if (!trimmed) continue;
+						const lines = trimmed.split("\n");
+						if (lines.length === 1) {
+							messageEl.createEl("p", { text: trimmed });
+						} else {
+							const pEl = messageEl.createEl("p");
+							for (let i = 0; i < lines.length; i++) {
+								if (i > 0) pEl.createEl("br");
+								pEl.createSpan({ text: lines[i] });
+							}
+						}
+					}
+				}
 				if (conflict) {
-					const details = this.contentEl.createDiv({ cls: "lit-note-citekey-details" });
+					const details = conflict.compact
+						? this.contentEl.createEl("details", { cls: "lit-note-citekey-details" })
+						: this.contentEl.createDiv({ cls: "lit-note-citekey-details" });
+					if (conflict.compact) details.createEl("summary", { text: "Item and note details" });
+					const grid = details.createDiv({ cls: "lit-note-identity-grid" });
 					const group = conflict.libraryURI.match(/\/groups\/(\d+)(?:\/|$)/);
 					const library = group ? `groups/${group[1]}` : "library";
 					const zoteroURI = `zotero://select/${library}/items/${encodeURIComponent(conflict.itemkey)}`;
-					const item = details.createEl("p");
-					item.createSpan({ text: "Zotero item: " });
+					grid.createEl("strong", { text: "Zotero item:" });
+					const item = grid.createDiv({ cls: "lit-note-identity-value" });
 					item.createEl("a", { text: conflict.title, cls: "external-link", attr: { href: zoteroURI, title: "Open in Zotero" } });
-					const note = details.createEl("p");
-					note.createSpan({ text: "Obsidian note: " });
-					const noteLink = note.createEl("a", { text: conflict.notePath.split("/").pop() || conflict.notePath, attr: { href: "#" } });
-					noteLink.addEventListener("click", (event) => {
-						event.preventDefault();
-						void app.workspace.openLinkText(conflict.notePath, "", false).catch((error: unknown) => {
-							console.error("Could not open the Obsidian note", error);
-							new Notice("Could not open the Obsidian note.");
+					if (conflict.notePath) {
+						const notePath = conflict.notePath;
+						grid.createEl("strong", { text: "Obsidian note:" });
+						const note = grid.createDiv({ cls: "lit-note-identity-value" });
+						const noteLink = note.createEl("a", { text: notePath.split("/").pop() || notePath, attr: { href: "#" } });
+						note.createDiv({ cls: "lit-note-edit-hint", text: "Opening the note closes this dialog and cancels the current review." });
+						noteLink.addEventListener("click", (event) => {
+							event.preventDefault();
+							const resolve = resolveDecision;
+							resolveDecision = undefined;
+							resolve?.(buttons.length === 1 && buttons[0].value === "skip" ? "skip" : "cancel");
+							this.close();
+							void app.workspace.openLinkText(notePath, "", false).then(() => {
+								new Notice("After editing, retry the update from Zotero.", 10000);
+							}).catch((error: unknown) => {
+								console.error("Could not open the Obsidian note", error);
+								new Notice("Could not open the Obsidian note. Open it manually, then retry the update from Zotero.", 10000);
+							});
 						});
-					});
+					}
 					for (const [label, value] of [
 						["Obsidian citekey", conflict.noteCitekey],
 						["Zotero citekey", conflict.zoteroCitekey],
 						["Zotero item key", conflict.itemkey],
 					] as const) {
-						const row = details.createEl("p", { cls: "lit-note-copyable-key" });
-						row.createSpan({ text: `${label}: ` });
+						if (!value) continue;
+						grid.createEl("strong", { text: `${label}:` });
+						const row = grid.createDiv({ cls: "lit-note-copyable-key lit-note-identity-value" });
 						row.createEl("code", { text: value });
-						const copy = row.createEl("button", { text: "Copy", attr: { "aria-label": `Copy ${label}` } });
-						copy.addEventListener("click", () => {
-							const win = ownerWindow(copy);
-							if (!win) {
-								new Notice(`Could not copy ${label}.`);
-								return;
-							}
-							void writeClipboardIn(win, value).then((written) => {
-								new Notice(written ? `Copied ${label}.` : `Could not copy ${label}.`);
-							}).catch((error: unknown) => {
-								console.error(`Could not copy ${label}`, error);
-								new Notice(`Could not copy ${label}.`);
-							});
-						});
-					}
-				}
-				const messageEl = this.contentEl.createDiv({ cls: "commons-modal-intro lit-note-decision-message" });
-				for (const p of message.split("\n\n")) {
-					const trimmed = p.trim();
-					if (!trimmed) continue;
-					const lines = trimmed.split("\n");
-					if (lines.length === 1) {
-						messageEl.createEl("p", { text: trimmed });
-					} else {
-						const pEl = messageEl.createEl("p");
-						for (let i = 0; i < lines.length; i++) {
-							if (i > 0) {
-								pEl.createEl("br");
-							}
-							pEl.createSpan({ text: lines[i] });
-						}
+						addCopyButton(row, label, value);
 					}
 				}
 				const selections: string[] = [];
@@ -154,9 +197,9 @@ export function withNoteDecisionSession<T>(
 					const choices: HTMLInputElement[][] = [];
 					const bulk = this.contentEl.createDiv({ cls: "lit-note-attachment-review-bulk" });
 					for (const [label, kind, value] of [
-						["Add all Zotero attachments", "add", "add"],
-						["Keep all note-only links", "note", "keep"],
-						["Remove all note-only links", "note", "remove"],
+						["Add all Zotero item links", "add", "add"],
+						["Keep all Obsidian-only links", "note", "keep"],
+						["Remove all Obsidian-only links", "note", "remove"],
 					] as const) {
 						if (!review.some((entry) => entry.kind === kind)) continue;
 						const button = bulk.createEl("button", { text: label });
@@ -172,7 +215,9 @@ export function withNoteDecisionSession<T>(
 					const list = this.contentEl.createDiv({ cls: "lit-note-attachment-review" });
 					const rows = review.map((entry, index) => {
 						const row = list.createDiv({ cls: "lit-note-attachment-review-row" });
-						row.createDiv({ text: entry.label, cls: "lit-note-attachment-review-title" });
+						const heading = row.createDiv({ text: entry.label, cls: "lit-note-attachment-review-title" });
+						if (entry.copyValue) addCopyButton(heading, `link target ${entry.copyValue}`, entry.copyValue);
+						if (entry.description) row.createDiv({ text: entry.description });
 						selections.push(entry.defaultValue);
 						choices.push([]);
 						if (entry.files?.length) {
@@ -224,7 +269,7 @@ export function withNoteDecisionSession<T>(
 						const query = search.value.toLocaleLowerCase();
 						rows.forEach((row, index) => {
 							const entry = review[index];
-							row.hidden = ![entry.label, ...entry.options.map((option) => option.label), ...(entry.files ?? []).map((file) => file.path)]
+							row.hidden = ![entry.label, entry.description ?? "", ...entry.options.map((option) => option.label), ...(entry.files ?? []).map((file) => file.path)]
 								.some((text) => text.toLocaleLowerCase().includes(query));
 						});
 						searchStatus?.setText(`Showing ${rows.filter((row) => !row.hidden).length} of ${rows.length} items. Choices in hidden items still apply.`);

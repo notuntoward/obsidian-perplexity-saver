@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import path from "node:path";
 
-test("attachment review exposes file roles and choices at desktop and narrow widths", async ({ page }) => {
+test.beforeEach(async ({ page }) => {
 	const result = await build({
 		entryPoints: [path.resolve("src/litNote/decisionModal.ts")],
 		bundle: true, write: false, format: "iife", globalName: "AttachmentReview",
@@ -47,6 +47,9 @@ test("attachment review exposes file roles and choices at desktop and narrow wid
 		});
 	` });
 	await page.addScriptTag({ content: result.outputFiles[0].text });
+});
+
+test("attachment review exposes file roles and choices at desktop and narrow widths", async ({ page }) => {
 	await page.evaluate(() => {
 		const api = (window as Window & { AttachmentReview?: {
 			withNoteDecisionSession: (app: object, run: (session: {
@@ -68,13 +71,33 @@ test("attachment review exposes file roles and choices at desktop and narrow wid
 					{ path: "attachments/old.pdf", role: "Current note link" },
 					{ path: "attachments/new.pdf", role: "Zotero attachment" },
 				],
-			}]
+			}, {
+				kind: "note",
+				label: "Obsidian note link target: missing/paper.pdf",
+				copyValue: "missing/paper.pdf",
+				description: "The Obsidian note link could not be resolved.",
+				options: [
+					{ label: "Keep this link in the Obsidian note", value: "keep" },
+					{ label: "Remove this link from the Obsidian note", value: "remove" },
+				],
+				defaultValue: "keep",
+			}], {
+				title: "Paper title", itemkey: "ITEM1234", libraryURI: "http://zotero.org/users/1",
+				notePath: "lit/note.md", noteCitekey: "note-key", zoteroCitekey: "zotero-key",
+			}
 		)).then((decision) => { (window as Window & { decision?: string }).decision = decision; });
 	});
 	const modal = page.locator(".modal");
 	await expect(modal.getByRole("searchbox")).toHaveCount(0);
 	await expect(modal.getByText("Current note link:", { exact: false })).toBeVisible();
 	await expect(modal.getByText("Zotero attachment:", { exact: false })).toBeVisible();
+	await expect(modal.getByText("Obsidian note link target: missing/paper.pdf")).toBeVisible();
+	await expect(modal.getByText("The Obsidian note link could not be resolved.")).toBeVisible();
+	await expect(modal.getByRole("link", { name: "Paper title" })).toHaveAttribute("href", "zotero://select/library/items/ITEM1234");
+	await expect(modal.getByRole("link", { name: "note.md" })).toBeVisible();
+	await expect(modal.getByRole("button", { name: "Copy Zotero item key" })).toBeVisible();
+	await expect(modal.getByRole("button", { name: "Copy link target missing/paper.pdf" })).toBeVisible();
+	await expect(modal.getByRole("button", { name: "Copy attachment path attachments/new.pdf" })).toHaveCount(0);
 	const keep = modal.getByRole("radio", { name: "Keep this note link unchanged" });
 	const change = modal.getByRole("radio", { name: "Change this note link to attachments/new.pdf" });
 	await expect(keep).toBeChecked();
@@ -86,5 +109,44 @@ test("attachment review exposes file roles and choices at desktop and narrow wid
 	await change.check();
 	await modal.getByRole("button", { name: "Continue" }).click();
 	await expect.poll(() => page.evaluate(() => (window as Window & { decision?: string }).decision))
-		.toBe('review:["0"]');
+		.toBe('review:["0","keep"]');
+});
+
+test("attachment errors show the path first and align expandable details", async ({ page }) => {
+	await page.evaluate(() => {
+		const api = (window as Window & { AttachmentReview?: {
+			withNoteDecisionSession: (app: object, run: (session: {
+				ask: (...args: unknown[]) => Promise<string>;
+			}) => Promise<string>) => Promise<string>;
+		} }).AttachmentReview;
+		if (!api) throw new Error("Attachment review bundle is unavailable.");
+		void api.withNoteDecisionSession({}, (session) => session.ask(
+			"Zotero attachment is outside the Obsidian vault", "",
+			[{ label: "Close", value: "skip" }], undefined, {
+				title: "A long Zotero item title", itemkey: "ITEM1234", libraryURI: "http://zotero.org/users/1",
+				notePath: "lit/note.md", noteCitekey: "note-key", zoteroCitekey: "zotero-key", compact: true,
+				attachmentProblems: [{
+					path: "C:\\outside\\a-very-long-attachment-path-without-spaces\\paper.pdf",
+					title: "Zotero attachment is outside the Obsidian vault",
+					problem: "Attachment links require a file inside the vault.",
+					action: "Link the file inside the vault in Zotero, then retry.",
+				}],
+			},
+		));
+	});
+	const modal = page.locator(".modal");
+	await expect(modal.locator(".lit-note-attachment-problem").locator(":scope > :first-child")).toContainText("Zotero attachment:");
+	await expect(modal.locator("details")).not.toHaveAttribute("open");
+	await modal.getByText("Item and note details").click();
+	await expect(modal.getByRole("button", { name: "Copy Zotero item title" })).toHaveCount(0);
+	await expect(modal.getByRole("button", { name: "Copy Obsidian note name" })).toHaveCount(0);
+	for (const width of [1024, 320]) {
+		await page.setViewportSize({ width, height: 768 });
+		expect(await modal.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		const positions = await modal.locator(".lit-note-identity-value").evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left));
+		expect(positions.length).toBe(5);
+		expect(Math.max(...positions) - Math.min(...positions)).toBeLessThan(1);
+		await expect(modal.locator(".lit-note-identity-grid strong").first()).toHaveCSS("font-weight", /^(bold|[6-9]00)$/);
+	}
+	await modal.getByRole("button", { name: "Close" }).click();
 });

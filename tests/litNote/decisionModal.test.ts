@@ -99,7 +99,7 @@ describe("askNoteDecision", () => {
 					kind: "note" as const, label: `Note link ${index}`,
 					options: [{ label: "Keep", value: "keep" }, { label: "Remove", value: "remove" }],
 					defaultValue: "keep",
-					...(index === 99 ? { files: [{ path: "attachments/paper.pdf" }] } : {}),
+					...(index === 99 ? { description: "Unresolved link", files: [{ path: "attachments/paper.pdf" }] } : {}),
 				})),
 				{ kind: "add", label: "Zotero attachment", options: [{ label: "Add", value: "add" }, { label: "Skip", value: "skip" }], defaultValue: "skip" },
 			]));
@@ -113,8 +113,11 @@ describe("askNoteDecision", () => {
 		expect(rows.filter((row) => !row.hidden)).toHaveLength(1);
 		expect(modal.contentEl.querySelector(".lit-note-attachment-review-search-status")?.textContent)
 			.toContain("Showing 1 of 101 items. Choices in hidden items still apply.");
-		findButton("Remove all note-only links").click();
-		findButton("Add all Zotero attachments").click();
+		search.value = "unresolved";
+		search.dispatchEvent(new Event("input"));
+		expect(rows.filter((row) => !row.hidden)).toHaveLength(1);
+		findButton("Remove all Obsidian-only links").click();
+		findButton("Add all Zotero item links").click();
 		findButton("Continue").click();
 		await expect(promise).resolves.toBe(`review:${JSON.stringify([...Array(100).fill("remove"), "add"])}`);
 	});
@@ -141,6 +144,25 @@ describe("askNoteDecision", () => {
 		await settleMicrotasks();
 		expect(require).toHaveBeenCalledWith("electron");
 		expect(openPath).toHaveBeenCalledWith("C:\\vault\\attachments\\paper.pdf");
+		findButton("Cancel").click();
+		await expect(promise).resolves.toBe("cancel");
+	});
+
+	it("shows the unresolved-link explanation in the modal's document", async () => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const promise = withNoteDecisionSession({} as App, (session) =>
+			session.ask("Review attachment links", "Choose links.", [{ label: "Cancel", value: "cancel" }], [{
+				kind: "note",
+				label: "Obsidian note link target: missing/paper.pdf",
+				description: "The Obsidian note link could not be resolved.",
+				options: [{ label: "Keep", value: "keep" }],
+				defaultValue: "keep",
+			}]));
+		await settleMicrotasks();
+		const modal = latestModal();
+		expect(modal.contentEl.ownerDocument).toBe(state.doc);
+		expect(modal.contentEl.textContent).toContain("Obsidian note link target: missing/paper.pdf");
+		expect(modal.contentEl.textContent).toContain("The Obsidian note link could not be resolved.");
 		findButton("Cancel").click();
 		await expect(promise).resolves.toBe("cancel");
 	});
@@ -216,7 +238,7 @@ describe("askNoteDecision", () => {
 		errors.mockRestore();
 	});
 
-	it("opens the selected note, links to the correct Zotero library, and copies each key from the modal's window", async () => {
+	it("links to the correct Zotero library and copies each key from the modal's window", async () => {
 		state.doc = document.implementation.createHTMLDocument("pop-out");
 		const popoutWindow = { name: "pop-out" };
 		Object.defineProperty(state.doc, "defaultView", { value: popoutWindow });
@@ -233,13 +255,87 @@ describe("askNoteDecision", () => {
 		const modal = latestModal();
 		const zotero = modal.contentEl.querySelector<HTMLAnchorElement>("a.external-link")!;
 		expect(zotero.getAttribute("href")).toBe("zotero://select/groups/42/items/ITEM1234");
-		const note = Array.from(modal.contentEl.querySelectorAll("a")).find((el) => el.textContent === "note.md")!;
-		note.click();
-		expect(openLinkText).toHaveBeenCalledWith("lit/note.md", "", false);
+		expect(Array.from(modal.contentEl.querySelectorAll("a")).find((el) => el.textContent === "note.md")).toBeDefined();
+		expect(modal.contentEl.querySelector('button[aria-label="Copy Zotero item title"]')).toBeNull();
+		expect(modal.contentEl.querySelector('button[aria-label="Copy Obsidian note name"]')).toBeNull();
+		const labels = Array.from(modal.contentEl.querySelectorAll(".lit-note-identity-grid strong")).map((el) => el.textContent);
+		expect(labels).toEqual(["Zotero item:", "Obsidian note:", "Obsidian citekey:", "Zotero citekey:", "Zotero item key:"]);
 		for (const [label, value] of [["Obsidian citekey", "note-key"], ["Zotero citekey", "zotero-key"], ["Zotero item key", "ITEM1234"]]) {
 			modal.contentEl.querySelector<HTMLButtonElement>(`button[aria-label="Copy ${label}"]`)!.click();
 			expect(copy).toHaveBeenCalledWith(popoutWindow, value);
 		}
+		findButton("Cancel").click();
+		await expect(promise).resolves.toBe("cancel");
+		copy.mockRestore();
+	});
+
+	it.each([
+		{ title: "Update literature note", buttons: [{ label: "Cancel", value: "cancel" as const }], compact: false, decision: "cancel" },
+		{ title: "Attachment error", buttons: [{ label: "Close", value: "skip" as const }], compact: true, decision: "skip" },
+	])("closes $title before opening the note for editing in a pop-out", async ({ title, buttons, compact, decision }) => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		let closedWhenOpened = false;
+		const openLinkText = vi.fn().mockImplementation(async () => { closedWhenOpened = latestModal().closed; });
+		const app = { workspace: { openLinkText } } as unknown as App;
+		const promise = withNoteDecisionSession(app, (session) => session.ask(title, "Review", buttons, undefined, {
+			title: "Paper", itemkey: "ABC", libraryURI: "library", zoteroCitekey: "key", notePath: "lit/note.md", compact,
+		}));
+		await settleMicrotasks();
+		const modal = latestModal();
+		try {
+			const description = modal.contentEl.textContent;
+			modal.contentEl.querySelector<HTMLAnchorElement>('a[href="#"]')!.click();
+			expect(closedWhenOpened).toBe(true);
+			expect(openLinkText).toHaveBeenCalledWith("lit/note.md", "", false);
+			expect(description).toContain("Opening the note closes this dialog and cancels the current review.");
+			await expect(promise).resolves.toBe(decision);
+			expect(createdNotices.at(-1)?.message).toContain("retry the update from Zotero");
+		} finally {
+			if (!modal.closed) modal.close();
+			await promise;
+		}
+	});
+
+	it("shows the affected path first in a pop-out error dialog", async () => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const promise = withNoteDecisionSession({} as App, (session) => session.ask(
+			"Zotero attachment outside the vault", "",
+			[{ label: "Close", value: "skip" }], undefined, {
+				title: "Paper", itemkey: "ABC", libraryURI: "library", zoteroCitekey: "key",
+				compact: true,
+				attachmentProblems: [{ path: "C:\\outside\\paper.pdf", title: "Zotero attachment outside the vault", problem: "Outside the vault.", action: "Link a file inside the vault." }],
+			},
+		));
+		await settleMicrotasks();
+		const modal = latestModal();
+		const issue = modal.contentEl.querySelector(".lit-note-attachment-problem")!;
+		expect(modal.contentEl.firstElementChild?.className).toBe("lit-note-attachment-problems");
+		expect(issue.firstElementChild?.textContent).toContain("Zotero attachment:");
+		expect(issue.textContent).toContain("Outside the vault.");
+		expect(issue.textContent).toContain("Link a file inside the vault.");
+		expect(modal.contentEl.textContent?.split("C:\\outside\\paper.pdf")).toHaveLength(2);
+		expect(modal.contentEl.textContent).not.toContain("Existing note links were preserved.");
+		expect(modal.contentEl.querySelector("details")?.open).toBe(false);
+		findButton("Close").click();
+		await expect(promise).resolves.toBe("skip");
+	});
+
+	it("copies unresolved link targets but not clickable attachment paths", async () => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const popoutWindow = { name: "pop-out" };
+		Object.defineProperty(state.doc, "defaultView", { value: popoutWindow });
+		const copy = vi.spyOn(windows, "writeClipboardIn").mockResolvedValue(true);
+		const promise = withNoteDecisionSession({} as App, (session) => session.ask("Review", "Attachments", [
+			{ label: "Cancel", value: "cancel" },
+		], [{
+			kind: "note", label: "Unresolved link", copyValue: "old.pdf",
+			options: [{ label: "Keep", value: "keep" }], defaultValue: "keep",
+			files: [{ path: "attachments/paper.pdf" }],
+		}]));
+		await settleMicrotasks();
+		latestModal().contentEl.querySelector<HTMLButtonElement>('button[aria-label="Copy link target old.pdf"]')!.click();
+		expect(copy).toHaveBeenCalledWith(popoutWindow, "old.pdf");
+		expect(latestModal().contentEl.querySelector('button[aria-label="Copy attachment path attachments/paper.pdf"]')).toBeNull();
 		findButton("Cancel").click();
 		await expect(promise).resolves.toBe("cancel");
 		copy.mockRestore();

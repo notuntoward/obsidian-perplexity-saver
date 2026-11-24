@@ -21,6 +21,8 @@ import { ViewTracker } from "./litNote/viewTracker";
 import { notifyTranscriptNoteOpened } from "commons/youtube";
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
+import { setReviewListener } from "./litNote/pendingReviews";
+import { setupReviewStatus } from "./litNote/reviewStatus";
 import { DEFAULT_SETTINGS, type PerplexitySaverSettings } from "./settings";
 import { PerplexitySaverSettingTab } from "./settingsTab";
 import { perplexityInputStateField, startImport } from "./dialog/inlineInput";
@@ -74,6 +76,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 			onNoteOpened: (file) => notifyTranscriptNoteOpened(this.app, file),
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
+		this.register(setupReviewStatus(this.app, this.addStatusBarItem()));
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 
@@ -109,6 +112,7 @@ export default class PerplexitySaverPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		setReviewListener();
 		if (this.litNoteServer) {
 			stopLitNoteServer(this.litNoteServer);
 			this.litNoteServer = null;

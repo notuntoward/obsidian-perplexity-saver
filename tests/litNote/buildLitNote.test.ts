@@ -255,14 +255,14 @@ describe("Lit Note Builder", () => {
 			const body = await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
 				title: "Paper",
 				citekey: "paper",
-				attachments: [{ path: outside }, { path: missing }, { path: unindexed }, { path: "relative/paper.pdf" }, { title: "Unknown PDF" }],
+				attachments: [{ path: outside }, { path: missing }, { path: unindexed }, { path: "relative/paper.pdf", mode: "linked", usesRelativePath: true }, { title: "Unknown PDF" }],
 			});
 			expect(body).not.toContain("[[paper.pdf|PDF]]");
 			expect(body).toContain("**PDF unavailable in vault**");
 			expect(app.fileManager.generateMarkdownLink).not.toHaveBeenCalled();
 			expect(createdNotices).toHaveLength(1);
 			expect(createdNotices[0].message).toContain(outside);
-			expect(createdNotices[0].message).toContain(`outside the open Obsidian vault (${base})`);
+			expect(createdNotices[0].message).toContain(`outside the Obsidian vault (${base})`);
 			expect(createdNotices[0].message).toContain(missing);
 			expect(createdNotices[0].message).toContain("file is missing");
 			expect(createdNotices[0].message).toContain(unindexed);
@@ -288,6 +288,30 @@ describe("Lit Note Builder", () => {
 			expect(createdNotices).toHaveLength(1);
 			expect(createdNotices[0].message).toContain("Missing file: Zotero could not resolve a file path");
 			expect(createdNotices[0].message).not.toContain("Web link");
+		});
+
+		it("diagnoses stored and relative linked files separately, including unsupported file types", async () => {
+			createdNotices.length = 0;
+			const base = path.resolve("test-vault");
+			const app = {
+				vault: {
+					adapter: Object.assign(new FileSystemAdapter(), { getBasePath: () => base, stat: async () => null }),
+					getAbstractFileByPath: () => null,
+				},
+			} as unknown as App;
+			await buildLitNoteBody(app, { litNotesFolder: "lit" }, {
+				title: "Paper", citekey: "paper", linkedAttachmentBaseDirectory: "",
+				attachments: [
+					{ path: path.join(base, "missing.zip"), isFile: true, mode: "stored" },
+					{ title: "Linked PDF", isFile: true, mode: "linked", usesRelativePath: true },
+				],
+			});
+			const message = createdNotices[0].message;
+			expect(message).toContain("missing.zip");
+			expect(message).toContain("does not apply to stored files");
+			expect(message).toContain("Linked PDF");
+			expect(message).toContain("Base Directory is unset");
+			expect(message).toContain("Changing the directory does not move files");
 		});
 
 		it("reports filesystem errors without misdiagnosing a missing or unindexed file", async () => {
