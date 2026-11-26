@@ -88,6 +88,12 @@ export interface LitNoteOpenRequest {
 	citekey?: string;
 }
 
+export interface LitNoteOpenPathRequest {
+	action: "open-note-path";
+	notePath: string;
+	itemkey: string;
+}
+
 export interface LitNoteSyncRequest {
 	action: "sync" | "update" | "review-sync" | "bulk-review-sync" | "review-recheck" | "review-recover";
 	data: ZoteroItemPayload[];
@@ -164,7 +170,7 @@ export interface LitNoteItemTrashCompleteRequest {
 	error?: string;
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteInitialReviewScanStartRequest | LitNoteInitialReviewScanEndRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteAttachmentRepairPrepareRequest | LitNoteBulkLibraryRequest | LitNoteItemTrashCompleteRequest;
+export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteOpenPathRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteInitialReviewScanStartRequest | LitNoteInitialReviewScanEndRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteAttachmentRepairPrepareRequest | LitNoteBulkLibraryRequest | LitNoteItemTrashCompleteRequest;
 
 export type LitNoteItemStatus =
 	| "created"

@@ -2013,6 +2013,30 @@ describe("Lit Note Server", () => {
 	});
 
 	describe("open action", () => {
+		it("opens the exact reported note without modifying it", async () => {
+			const notePath = `${FOLDER}/renamed note.md`;
+			const leaf = {
+				openFile: vi.fn(),
+				setEphemeralState: vi.fn(),
+				view: { editor: { focus: vi.fn(), getValue: vi.fn(() => "Note"), replaceRange: vi.fn() } },
+			};
+			const { app, modified } = makeApp([notePath], { getLeaf: vi.fn(() => leaf) });
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { zotero_item_key: "ITEM1" } });
+			expect(await post(app, { action: "open-note-path", notePath, itemkey: "ITEM1" })).toEqual({ success: true });
+			expect(leaf.openFile).toHaveBeenCalledWith(expect.objectContaining({ path: notePath }), expect.anything());
+			expect(leaf.view.editor.replaceRange).not.toHaveBeenCalled();
+			expect(modified).toEqual([]);
+		});
+
+		it("refuses to open stale or out-of-folder report paths", async () => {
+			const notePath = `${FOLDER}/note.md`;
+			const { app } = makeApp([notePath, "outside.md"]);
+			app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { zotero_item_key: "OTHER" } });
+			expect(await post(app, { action: "open-note-path", notePath, itemkey: "ITEM1" })).toMatchObject({ success: false });
+			expect(await post(app, { action: "open-note-path", notePath: "outside.md", itemkey: "OTHER" })).toMatchObject({ success: false });
+			expect(app.workspace.getLeaf).not.toHaveBeenCalled();
+		});
+
 		it("opens found notes without prompting", async () => {
 			const { app } = makeApp([`${FOLDER}/found.md`]);
 			const json = await post(app, {

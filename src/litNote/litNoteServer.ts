@@ -12,6 +12,8 @@
  *                    → opens lit note(s); if any are missing, prompts in
  *                      Obsidian (Create / Skip / Cancel)
  *                    Legacy form { action: "open", citekey } opens only.
+ *   POST /lit-note   { action: "open-note-path", notePath, itemkey }
+ *                    → opens the reported note without changing it.
  *
  * Decisions are always shown as an Obsidian modal, so the prompt is never
  * hidden behind Obsidian or another window and looks the same every time.
@@ -1818,6 +1820,26 @@ async function handleRequest(
 				}
 			}));
 			sendJson(res, 200, resultsResponse([entry]));
+		} else if (parsed.action === "open-note-path") {
+			if (typeof parsed.notePath !== "string" || !parsed.notePath || typeof parsed.itemkey !== "string" || !parsed.itemkey) {
+				sendJson(res, 400, { success: false, error: "notePath and itemkey are required." });
+				return;
+			}
+			const { notePath, itemkey } = parsed;
+			const result = await runSerialized(async () => {
+				await ensureWorkspaceReady(app);
+				const folderError = litNotesFolderError(settings.litNotesFolder);
+				if (folderError) return { success: false, error: folderError };
+				const folder = normalizePath(settings.litNotesFolder);
+				const file = app.vault.getAbstractFileByPath(notePath);
+				if (!(file instanceof TFile) || file.path !== notePath || path.posix.normalize(notePath) !== notePath || !notePath.startsWith(`${folder}/`) ||
+					app.metadataCache.getFileCache(file)?.frontmatter?.zotero_item_key !== itemkey) {
+					return { success: false, error: "The reported Obsidian note is missing or no longer matches this Zotero item key. Check the notes again." };
+				}
+				await openFile(app, file, null, { modifyText: false });
+				return { success: true };
+			});
+			sendJson(res, 200, result);
 		} else if (parsed.action === "open") {
 			const openRequest = parsed;
 			const data = Array.isArray(openRequest.data) ? openRequest.data : [];

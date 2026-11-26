@@ -118,6 +118,8 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   missing note can be created from the Zotero data.
 - Legacy `{ action: "open", citekey }` still opens a single existing note and
   never creates.
+- `{ action: "open-note-path", notePath, itemkey }` opens an existing reported
+  literature note without changing it, after rechecking its path and item key.
 - `{ action: "sync", data: ZoteroItemPayload[] }` reconciles keys and managed
   attachments; `{ action: "update", data: ZoteroItemPayload[] }` previews and
   refreshes Zotero-owned metadata as well.
