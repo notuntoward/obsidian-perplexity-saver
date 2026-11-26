@@ -2,7 +2,7 @@ import {
 	Editor,
 	MarkdownView,
 	Plugin,
-	debounce,
+	debounce
 } from "obsidian";
 import http from "http";
 import { registerRemoveSourcesWithNoDialogCommand } from "./commands/removeNoDialog";
@@ -16,7 +16,8 @@ import { registerGetLitNoteLinkCommand } from "./commands/getLitNoteLink";
 import { HeadlineOptions } from "./normalize/headlines";
 import { registerFootnoteNavigation } from "./normalize/footnoteNavigation";
 import { ZoteroClient } from "./zotero/zoteroClient";
-import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings } from "./litNote/litNoteServer";
+import { startLitNoteServer, stopLitNoteServer, type LitNoteServerSettings,
+} from "./litNote/litNoteServer";
 import { ViewTracker } from "./litNote/viewTracker";
 import { notifyTranscriptNoteOpened } from "commons/youtube";
 import { getMainWindow } from "commons/workspace";
@@ -27,6 +28,7 @@ import { registerPreservedAttachmentsReport } from "./litNote/preservedAttachmen
 import { registerStrayAttachmentNotes } from "./litNote/strayAttachmentNotes";
 import { registerNoteMerge } from "./litNote/noteMergeCommands";
 import { DEFAULT_SETTINGS, type PerplexitySaverSettings } from "./settings";
+import { isCollectionAdoptions } from "./litNote/collectionAdoption";
 import { PerplexitySaverSettingTab } from "./settingsTab";
 import { perplexityInputStateField, startImport } from "./dialog/inlineInput";
 
@@ -76,6 +78,17 @@ export default class PerplexitySaverPlugin extends Plugin {
 			authorDropVon: this.settings.authorDropVon,
 			downloadYoutubeTranscripts: this.settings.downloadYoutubeTranscripts,
 			transcriptHeading: this.settings.transcriptHeading,
+			collectionAdoptions: this.settings.collectionAdoptions,
+			saveCollectionAdoptions: async (collectionAdoptions) => {
+				const previous = this.settings.collectionAdoptions;
+				this.settings.collectionAdoptions = collectionAdoptions;
+				try {
+					await this.saveSettings();
+				} catch (error) {
+					this.settings.collectionAdoptions = previous;
+					throw error;
+				}
+			},
 			onNoteOpened: (file) => notifyTranscriptNoteOpened(this.app, file),
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
@@ -145,6 +158,12 @@ export default class PerplexitySaverPlugin extends Plugin {
 				: {};
 		// Retain older video preferences in data.json for Watchword's explicit import.
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, stored);
+		if (!isCollectionAdoptions(this.settings.collectionAdoptions)) {
+			console.error(
+				"Invalid Zotero collection adoption state; existing notes will require manual review before collection sync."
+			);
+			this.settings.collectionAdoptions = {};
+		}
 	}
 
 	async saveSettings(): Promise<void> {

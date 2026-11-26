@@ -23,7 +23,8 @@ import http from "http";
 import path from "path";
 import { realpath, stat } from "fs/promises";
 import { randomUUID } from "crypto";
-import { App, FileSystemAdapter, getFrontMatterInfo, Notice, normalizePath, parseYaml, TFile } from "obsidian";
+import { App, FileSystemAdapter, getFrontMatterInfo, Notice, normalizePath, parseYaml, TFile,
+} from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import {
 	focusLeafAndWindow,
@@ -35,10 +36,13 @@ import {
 } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
-import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession } from "./decisionModal";
+import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession,
+} from "./decisionModal";
 import { getLitNoteFiles, hasLiteratureNoteCategory, isDirectChildOfFolder } from "commons/litnote";
-import { finishAttachmentMove, recordRecoveredAutomaticAttachments, syncLitNote, type SyncResult } from "./syncLitNote";
-import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, replaceMissingItemKeyReviews, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanBusyError, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
+import { finishAttachmentMove, recordRecoveredAutomaticAttachments, syncLitNote, type SyncResult,
+} from "./syncLitNote";
+import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, replaceMissingItemKeyReviews, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanBusyError, ReviewScanCompleteError, startInitialReviewScan,
+} from "./pendingReviews";
 import { clearItemTrashRequests, finishItemTrash, itemTrashRequests } from "./zoteroItemTrash";
 import type { BulkProposal } from "./pendingReviews";
 import { findIdenticalAttachments } from "./attachmentIdentity";
@@ -55,6 +59,12 @@ import type {
 } from "./types";
 
 import type { NameStyle } from "./bibtexName";
+import {
+	collectionAdoptionKey,
+	getCollectionAdoption,
+	type CollectionAdoptions,
+	type CollectionAdoptionState,
+} from "./collectionAdoption";
 
 export interface LitNoteServerSettings {
 	litNotesFolder: string; // vault-relative path, e.g. "lit/lit_notes"
@@ -64,6 +74,8 @@ export interface LitNoteServerSettings {
 	downloadYoutubeTranscripts?: boolean;
 	/** Text of the heading the YouTube transcript is stored under. */
 	transcriptHeading?: string;
+	collectionAdoptions?: CollectionAdoptions;
+	saveCollectionAdoptions?: (adoptions: CollectionAdoptions) => Promise<void>;
 	/** Called after note loading and final cursor/ephemeral state placement. */
 	onNoteOpened?: (file: TFile) => void;
 }
@@ -82,7 +94,8 @@ interface SyncPlan {
 	snapshot: string;
 	notePath?: string;
 	identicalAttachments?: IdenticalAttachment[];
-	decisions: Array<{ title: string; message: string; buttons: DecisionButton[]; review?: AttachmentReviewRow[]; conflict?: CitekeyConflictDetails; choice: NoteDecision }>;
+	decisions: Array<{ title: string; message: string; buttons: DecisionButton[]; review?: AttachmentReviewRow[]; conflict?: CitekeyConflictDetails; choice: NoteDecision;
+	}>;
 	expires: number;
 	reviewKey?: string;
 	bulk?: boolean;
@@ -118,22 +131,28 @@ function errorKey(item: ZoteroItemPayload): string {
 
 async function showReconciliationError(app: App, session: NoteDecisionSession, item: ZoteroItemPayload, entry: SyncResult, notePath?: string, mode?: SyncPlan["mode"]): Promise<void> {
 	const key = errorKey(item);
-	const fingerprint = JSON.stringify([entry.errorTitle, entry.dialogMessage, entry.error, entry.attachmentProblems, entry.identity, notePath]);
+	const fingerprint = JSON.stringify([entry.errorTitle, entry.dialogMessage, entry.error, entry.attachmentProblems, entry.identity, notePath,
+	]);
 	if (mode === "auto" && item.itemkey && reportedAutoErrors.get(key) === fingerprint) return;
 	const identity = entry.identity ?? (item?.itemkey && item.libraryURI ? {
 		title: item.title || "(untitled)", itemkey: item.itemkey, libraryURI: item.libraryURI,
 		zoteroCitekey: item.citekey || "(not set)", notePath,
 	} : undefined);
-	const message = entry.attachmentProblems?.length ? "" : entry.dialogMessage ?? entry.error ?? "An unknown reconciliation error occurred.";
+	const message = entry.attachmentProblems?.length ? "" : (entry.dialogMessage ?? entry.error ?? "An unknown reconciliation error occurred.");
 	const changed = item.zoteroChanges ? "Your Zotero citation-key change is saved. Check both apps before retrying." : "";
 	raiseAndFocus(app, app.workspace.getMostRecentLeaf());
 	const decision = await session.ask(entry.errorTitle ?? "Literature note update failed", [message, changed].filter(Boolean).join("\n\n"),
 		[{ label: "Close", value: "skip" }], undefined,
-		identity ? { ...identity, compact: !identity.notePaths?.length, attachmentProblems: entry.attachmentProblems } : undefined);
+		identity ? { ...identity, compact: !identity.notePaths?.length, attachmentProblems: entry.attachmentProblems,
+				} : undefined);
 	if (mode === "auto" && item.itemkey && decision === "skip") reportedAutoErrors.set(key, fingerprint);
 }
 
-function syncInput(item: ZoteroItemPayload, mode: SyncPlan["mode"]): string {
+function syncInput(
+	item: ZoteroItemPayload,
+	mode: SyncPlan["mode"],
+	collectionAdoption?: CollectionAdoptionState
+): string {
 	const common = {
 		title: item.title, citekey: item.citekey, itemkey: item.itemkey, libraryURI: item.libraryURI,
 		attachments: item.attachments, citationKeyCheck: item.citationKeyCheck,
@@ -142,9 +161,29 @@ function syncInput(item: ZoteroItemPayload, mode: SyncPlan["mode"]): string {
 	};
 	return JSON.stringify(mode === "auto" ? common : {
 		...common, tags: item.tags, collections: item.collections,
+		collectionAdoption: collectionAdoption ?? null,
 		creators: item.creators, date: item.date, itemType: item.itemType, DOI: item.DOI,
 		url: item.url, publicationTitle: item.publicationTitle, publisher: item.publisher, ISBN: item.ISBN,
 	});
+}
+
+async function persistCollectionAdoption(
+	settings: LitNoteServerSettings,
+	item: ZoteroItemPayload,
+	baseline: string[]
+): Promise<void> {
+	const key = collectionAdoptionKey(item);
+	if (!key || !settings.collectionAdoptions || !settings.saveCollectionAdoptions) {
+		throw new Error(
+			"Persistent collection adoption is unavailable; no collection metadata was adopted."
+		);
+	}
+	const next = {
+		...settings.collectionAdoptions,
+		[key]: { status: "managed" as const, baseline },
+	};
+	await settings.saveCollectionAdoptions(next);
+	settings.collectionAdoptions = next;
 }
 
 function runSerialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -159,23 +198,28 @@ function errorMessage(err: unknown): string {
 
 async function recoverInterruptedReview(
 	app: App, settings: LitNoteServerSettings, item: ZoteroItemPayload,
-	automaticAttachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string }>,
+	automaticAttachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string;
+	}>
 ): Promise<LitNoteItemResult> {
 	return runSerialized(async () => {
 		await ensureWorkspaceReady(app);
 		const key = reviewKey(item);
 		const existing = allReviews().find((entry) => entry.key === key);
 		if (existing?.automaticRecovery && existing.requested && existing.automaticAttachment) {
-			return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true };
+			return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true,
+			};
 		}
 		const revision = beginInterruptedRecovery(key);
 		beginReviewOperation(key);
 		try {
 			const matches = getLitNoteFiles(app, settings.litNotesFolder).filter((file) => {
 				const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-				return fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI;
+				return (
+					fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI
+				);
 			});
-			if (matches.length !== 1) return { citekey: item.citekey, status: "error", error: "Could not uniquely identify the matching note for the interrupted update." };
+			if (matches.length !== 1) return { citekey: item.citekey, status: "error", error: "Could not uniquely identify the matching note for the interrupted update.",
+				};
 			const note = matches[0];
 			const before = await app.vault.read(note);
 			let result: SyncResult;
@@ -186,13 +230,14 @@ async function recoverInterruptedReview(
 				}, { prepareOnly: true });
 			} catch (error) {
 				if (!(error instanceof ReviewNeeded)) throw error;
-				if (await app.vault.read(note) !== before) throw new Error("The note changed while the interrupted update was checked.");
+				if ((await app.vault.read(note)) !== before) throw new Error("The note changed while the interrupted update was checked.");
 				queueReconciliation(app, settings, item, error.reason, error.notePath ?? note.path, error.proposal);
 				finishInterruptedRecovery(key, revision, false);
 				return { citekey: item.citekey, status: "pending-review" };
 			}
-			if (await app.vault.read(note) !== before) throw new Error("The note changed while the interrupted update was checked.");
-			if (result.status === "missing") return { citekey: item.citekey, status: "error", error: "The matching note is missing." };
+			if ((await app.vault.read(note)) !== before) throw new Error("The note changed while the interrupted update was checked.");
+			if (result.status === "missing") return { citekey: item.citekey, status: "error", error: "The matching note is missing.",
+				};
 			if (result.status === "attachment-error") return { citekey: item.citekey, status: result.status, error: result.error };
 			let snapshot = before;
 			if (item.automaticAttachments && automaticAttachmentPaths &&
@@ -204,7 +249,8 @@ async function recoverInterruptedReview(
 				queueReconciliation(app, settings, item, "Automatic attachment reconciliation", note.path, undefined, result.attachmentMove);
 				finishInterruptedRecovery(key, revision, false);
 				requestAutomaticAttachment(key, snapshot, true);
-				return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true };
+				return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true,
+				};
 			}
 			const fm = app.metadataCache.getFileCache(note)?.frontmatter;
 			if (item.automaticAttachments && result.status === "prepared" && fm?.citekey === item.citekey &&
@@ -242,7 +288,7 @@ import {
 	litNotesFolderError,
 	ensureWorkspaceReady,
 	existingFile,
-	writeNote,
+	writeNote
 } from "./writeLitNote";
 import {
 	validateItemAuthorFormats,
@@ -251,7 +297,7 @@ import {
 } from "./authorFormatValidator";
 import {
 	askAuthorFormatDecision,
-	type AuthorFormatDecision,
+	type AuthorFormatDecision
 } from "./authorFormatModal";
 
 
@@ -281,7 +327,7 @@ function applyAuthorCorrections(
 	}
 
 	for (const item of items) {
-		const citekey = (item.citekey?.trim() || item.itemkey?.trim() || "untitled");
+		const citekey = item.citekey?.trim() || item.itemkey?.trim() || "untitled";
 		const byIndex = correctionMap.get(citekey);
 		if (!byIndex || !item.creators) continue;
 
@@ -400,7 +446,8 @@ async function handleCreateBatch(
 	const folderError = litNotesFolderError(settings.litNotesFolder);
 	if (folderError) {
 		new Notice(folderError, 15000);
-		return items.map((item) => ({ citekey: citekeyOf(item), status: "error", error: folderError }));
+		return items.map((item) => ({ citekey: citekeyOf(item), status: "error", error: folderError,
+		}));
 	}
 
 	const entries = items.map((item) => ({ item, citekey: citekeyOf(item) }));
@@ -414,7 +461,8 @@ async function handleCreateBatch(
 		for (const e of existingEntries) {
 			const file = existingFile(app, settings, e.citekey);
 			if (file) {
-				await openFile(app, file, null, { modifyText: false, transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+				await openFile(app, file, null, { modifyText: false, transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+				});
 			}
 		}
 
@@ -517,16 +565,19 @@ async function handleCreateBatch(
 					continue;
 				}
 				if (decision === "open-existing") {
-					await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+					await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+					});
 					results.push({ citekey: entry.citekey, status: "opened" });
 					continue;
 				}
 				await writeNote(app, settings, entry.item, existing);
-				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+				});
 				results.push({ citekey: entry.citekey, status: "overwritten" });
 			} else {
 				const created = await writeNote(app, settings, entry.item, null);
-				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+				});
 				results.push({ citekey: entry.citekey, status: "created" });
 			}
 		} catch (err: unknown) {
@@ -658,7 +709,8 @@ async function openFile(
 	app: App,
 	file: TFile,
 	preferredLeaf?: WorkspaceLeaf | null,
-	options?: { modifyText?: boolean; transcriptHeading?: string; onNoteOpened?: (file: TFile) => void }
+	options?: { modifyText?: boolean; transcriptHeading?: string; onNoteOpened?: (file: TFile) => void;
+	}
 ): Promise<void> {
 	await openFileInLeaf(app, file, {
 		preferredLeaf,
@@ -739,7 +791,8 @@ async function handleOpenBatch(
 	const folderError = litNotesFolderError(settings.litNotesFolder);
 	if (folderError) {
 		new Notice(folderError, 15000);
-		return entries.map((entry) => ({ citekey: entry.citekey, status: "error", error: folderError }));
+		return entries.map((entry) => ({ citekey: entry.citekey, status: "error", error: folderError,
+		}));
 	}
 	const results: LitNoteItemResult[] = [];
 	const found: OpenEntry[] = [];
@@ -769,7 +822,8 @@ async function handleOpenBatch(
 			continue;
 		}
 		try {
-			await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+			await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+			});
 			results.push({ citekey: entry.citekey, status: "opened" });
 		} catch (err: unknown) {
 			results.push({
@@ -905,9 +959,11 @@ async function handleOpenBatch(
 						const file = await writeNote(app, settings, entry.item!, null);
 						if (i === 0 && blankLeaf) {
 							blankLeafConsumed = true;
-							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+							});
 						} else {
-							await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened });
+							await openFile(app, file, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
+							});
 						}
 						results.push({ citekey: entry.citekey, status: "created" });
 					} catch (err: unknown) {
@@ -985,7 +1041,8 @@ async function readIndexedFrontmatter(app: App, file: TFile, fresh = false): Pro
 	}
 }
 
-async function getIndicatorIdentities(app: App, settings: LitNoteServerSettings, fresh = false): Promise<{ identities: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string }>; unidentifiedNotes: number; unidentifiedNotePaths: string[] }> {
+async function getIndicatorIdentities(app: App, settings: LitNoteServerSettings, fresh = false): Promise<{ identities: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string }>; unidentifiedNotes: number; unidentifiedNotePaths: string[];
+}> {
 	await ensureWorkspaceReady(app);
 	if (settings.litNotesFolder.trim() && !app.vault.getAbstractFileByPath(normalizePath(settings.litNotesFolder))) {
 		throw new Error("Literature notes folder is unavailable.");
@@ -1000,7 +1057,8 @@ async function getIndicatorIdentities(app: App, settings: LitNoteServerSettings,
 			notePath: file.path,
 			libraryURI: typeof fm.zotero_library_uri === "string" ? fm.zotero_library_uri : undefined,
 			citekey: typeof fm.citekey === "string" ? fm.citekey : file.basename,
-		} };
+		},
+			};
 	}));
 	return {
 		identities: records.flatMap((record) => record?.kind === "identity" ? [record.identity] : []),
@@ -1047,7 +1105,8 @@ async function cleanupOldIndicatorTags(app: App, settings: LitNoteServerSettings
 	return { success: errors.length === 0, removed, errors };
 }
 
-async function fillMissingLibraryURIs(app: App, settings: LitNoteServerSettings, notes: Array<{ notePath: string; itemkey: string; libraryURI: string }>): Promise<{ success: boolean; updated: number; reordered: number; unfilled: number; errors: string[] }> {
+async function fillMissingLibraryURIs(app: App, settings: LitNoteServerSettings, notes: Array<{ notePath: string; itemkey: string; libraryURI: string }>): Promise<{ success: boolean; updated: number; reordered: number; unfilled: number; errors: string[];
+}> {
 	const folderError = litNotesFolderError(settings.litNotesFolder);
 	if (folderError) throw new Error(folderError);
 	await ensureWorkspaceReady(app);
@@ -1055,13 +1114,15 @@ async function fillMissingLibraryURIs(app: App, settings: LitNoteServerSettings,
 	const files = app.vault.getMarkdownFiles().filter((file) => isDirectChildOfFolder(file, settings.litNotesFolder));
 	const reads = await Promise.all(files.map(async (file) => {
 		try {
-			return { file, fm: await readIndexedFrontmatter(app, file, true), error: undefined };
+			return { file, fm: await readIndexedFrontmatter(app, file, true), error: undefined,
+				};
 		} catch (error) {
 			return { file, fm: undefined, error: errorMessage(error) };
 		}
 	}));
-	const readErrors = reads.flatMap((read) => read.error ? [read.error] : []);
-	if (readErrors.length) return { success: false, updated: 0, reordered: 0, unfilled: notes.length, errors: readErrors };
+	const readErrors = reads.flatMap((read) => (read.error ? [read.error] : []));
+	if (readErrors.length) return { success: false, updated: 0, reordered: 0, unfilled: notes.length, errors: readErrors,
+		};
 	const snapshots = reads;
 	const counts = new Map<string, number>();
 	for (const { fm } of snapshots) {
@@ -1150,13 +1211,15 @@ async function handleRequest(
 				citekey: typeof fm.citekey === "string" ? fm.citekey : file.basename,
 				modifiedAt: file.stat?.mtime,
 				size: file.stat?.size,
-			}];
+			},
+			];
 		});
 		sendJson(res, 200, { success: true, identities });
 		return;
 	}
 	if (req.method === "GET" && (req.url === "/lit-note-review-requests" || req.url === "/lit-note-review-requests?bulk=1")) {
-		const identity = ({ itemkey, libraryURI }: { itemkey: string; libraryURI: string }) => ({ itemkey, libraryURI });
+		const identity = ({ itemkey, libraryURI }: { itemkey: string; libraryURI: string }) => ({ itemkey, libraryURI,
+		});
 		const supportsBulk = req.url.endsWith("?bulk=1");
 		sendJson(res, 200, {
 			success: true,
@@ -1171,7 +1234,8 @@ async function handleRequest(
 						strategy: entry.attachmentStrategy,
 					} : {}),
 				})),
-			pending: allReviews().filter((entry) => !entry.missingItemKey).map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}) })),
+			pending: allReviews().filter((entry) => !entry.missingItemKey).map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}),
+				})),
 			acknowledgedUncertain: acknowledgedUncertainReviews(),
 			...(supportsBulk ? { obsidianSession } : {}),
 			...(supportsBulk && pendingRescan() ? { rescan: pendingRescan() } : {}),
@@ -1235,17 +1299,20 @@ async function handleRequest(
 		parsed.action === "attachment-repair-complete") {
 		activeReviews = Array.isArray(parsed.data) ? [...new Set(parsed.data
 			.filter((item) => item?.itemkey && item.libraryURI)
-			.map((item) => reviewKey(item)))] : [];
+			.map((item) => reviewKey(item))),
+				] : [];
 	}
 	for (const key of activeReviews) beginReviewOperation(key);
 	try {
 		if (parsed.action === "fill-missing-library-uris") {
 			if (req.headers?.origin || !req.headers?.["content-type"]?.toLowerCase().startsWith("application/json")) {
-				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header." });
+				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header.",
+				});
 				return;
 			}
 			if (!Array.isArray(parsed.notes) || parsed.notes.some((note) => !note || typeof note.notePath !== "string" || !note.notePath || typeof note.itemkey !== "string" || !note.itemkey || typeof note.libraryURI !== "string" || !note.libraryURI) || new Set(parsed.notes.map((note) => note.notePath)).size !== parsed.notes.length) {
-				sendJson(res, 400, { success: false, error: "Invalid library URI cleanup request." });
+				sendJson(res, 400, { success: false, error: "Invalid library URI cleanup request.",
+				});
 				return;
 			}
 			const result = await runSerialized(() => fillMissingLibraryURIs(app, settings, parsed.notes));
@@ -1254,7 +1321,8 @@ async function handleRequest(
 		}
 		if (parsed.action === "cleanup-obs-lit-note-tag") {
 			if (req.headers?.origin || !req.headers?.["content-type"]?.toLowerCase().startsWith("application/json")) {
-				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header." });
+				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header.",
+				});
 				return;
 			}
 			const result = await runSerialized(() => cleanupOldIndicatorTags(app, settings));
@@ -1263,31 +1331,36 @@ async function handleRequest(
 		}
 		if (parsed.action === "initial-review-scan-start") {
 			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256) {
-				sendJson(res, 400, { success: false, error: "scanId must be a non-empty string of at most 256 characters." });
+				sendJson(res, 400, { success: false, error: "scanId must be a non-empty string of at most 256 characters.",
+				});
 				return;
 			}
 			if (parsed.preserveExisting !== undefined && typeof parsed.preserveExisting !== "boolean") {
-				sendJson(res, 400, { success: false, error: "preserveExisting must be a boolean." });
+				sendJson(res, 400, { success: false, error: "preserveExisting must be a boolean.",
+				});
 				return;
 			}
 			try {
 				const scan = startInitialReviewScan(parsed.scanId, parsed.preserveExisting);
 				sendJson(res, 200, { success: true, initialReviewScan: scan });
 			} catch (error) {
-				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error), ...(error instanceof ReviewScanBusyError ? { retryable: true } : {}) });
+				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error), ...(error instanceof ReviewScanBusyError ? { retryable: true } : {}),
+				});
 			}
 		} else if (parsed.action === "initial-review-scan-end") {
 			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256 ||
 				(parsed.status !== "complete" && parsed.status !== "paused" && parsed.status !== "error") ||
 				(parsed.error !== undefined && typeof parsed.error !== "string")) {
-				sendJson(res, 400, { success: false, error: "Invalid initial review scan result." });
+				sendJson(res, 400, { success: false, error: "Invalid initial review scan result.",
+				});
 				return;
 			}
 			try {
 				const scan = endInitialReviewScan(parsed.scanId, parsed.status, parsed.error);
 				sendJson(res, 200, { success: true, initialReviewScan: scan });
 			} catch (error) {
-				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error) });
+				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error),
+				});
 			}
 		} else if (parsed.action === "review-recover") {
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
@@ -1299,14 +1372,17 @@ async function handleRequest(
 						typeof entry.sourcePath !== "string" || typeof entry.destinationPath !== "string" ||
 						(entry.archivePath !== undefined && typeof entry.archivePath !== "string") ||
 						(entry.archiveDirectory !== undefined && typeof entry.archiveDirectory !== "string"))))) {
-				sendJson(res, 400, { success: false, error: "Invalid interrupted review snapshot." });
+				sendJson(res, 400, { success: false, error: "Invalid interrupted review snapshot.",
+				});
 				return;
 			}
 			try {
-				sendJson(res, 200, resultsResponse([await recoverInterruptedReview(app, settings, item, parsed.automaticAttachmentPaths)]));
+				sendJson(res, 200, resultsResponse([await recoverInterruptedReview(app, settings, item, parsed.automaticAttachmentPaths),
+					]));
 			} catch (error) {
 				console.error("Could not recheck an interrupted Zotero review", error);
-				sendJson(res, 200, resultsResponse([{ citekey: item.citekey, status: "error", error: errorMessage(error) }]));
+				sendJson(res, 200, resultsResponse([{ citekey: item.citekey, status: "error", error: errorMessage(error) },
+					]));
 			}
 		} else if (parsed.action === "review-uncertain" || parsed.action === "review-uncertain-acknowledged") {
 			if (typeof parsed.itemkey !== "string" || !parsed.itemkey || typeof parsed.libraryURI !== "string" || !parsed.libraryURI ||
@@ -1322,7 +1398,8 @@ async function handleRequest(
 				(parsed.attachmentPaths !== undefined && (!Array.isArray(parsed.attachmentPaths) || parsed.attachmentPaths.some((attachment) =>
 					!attachment || typeof attachment !== "object" || typeof attachment.itemkey !== "string" ||
 					typeof attachment.sourcePath !== "string" || typeof attachment.destinationPath !== "string")))) {
-				sendJson(res, 400, { success: false, error: "Invalid interrupted review identity" });
+				sendJson(res, 400, { success: false, error: "Invalid interrupted review identity",
+				});
 				return;
 			}
 			if (parsed.action === "review-uncertain") {
@@ -1335,7 +1412,9 @@ async function handleRequest(
 						await ensureWorkspaceReady(app);
 						const matches = getLitNoteFiles(app, settings.litNotesFolder).filter((file) => {
 							const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-							return fm?.zotero_item_key === parsed.itemkey && fm?.zotero_library_uri === parsed.libraryURI;
+							return (
+									fm?.zotero_item_key === parsed.itemkey && fm?.zotero_library_uri === parsed.libraryURI
+								);
 						});
 						if (matches.length === 1) {
 							const file = matches[0];
@@ -1377,7 +1456,8 @@ async function handleRequest(
 			const entry = item && requestedReviews().find((review) => review.key === reviewKey(item) &&
 				review.automaticAttachment && review.operation === "attachment-move");
 			if (!item || !entry?.attachmentMove || entry.repairSnapshot === undefined) {
-				sendJson(res, 400, { success: false, error: "No automatic attachment reconciliation is pending." });
+				sendJson(res, 400, { success: false, error: "No automatic attachment reconciliation is pending.",
+				});
 				return;
 			}
 			try {
@@ -1397,7 +1477,8 @@ async function handleRequest(
 			const entry = item && requestedReviews().find((review) => review.key === reviewKey(item) &&
 				review.uncertain && review.operation === "attachment-repair" && review.repairId === parsed.repairId);
 			if (!item || !entry || !entry.notePath || entry.attachmentMove) {
-				sendJson(res, 400, { success: false, error: "No matching attachment repair is pending." });
+				sendJson(res, 400, { success: false, error: "No matching attachment repair is pending.",
+				});
 				return;
 			}
 			try {
@@ -1414,14 +1495,16 @@ async function handleRequest(
 					if (!plan.attachmentMove) {
 						throw new Error(plan.error || "The current attachments cannot be safely repaired automatically.");
 					}
-					if (await app.vault.read(note) !== snapshot) throw new Error("The note changed while preparing the repair.");
+					if ((await app.vault.read(note)) !== snapshot) throw new Error("The note changed while preparing the repair.");
 					const candidate = plan.attachmentMove;
 					if (!(app.vault.adapter instanceof FileSystemAdapter)) throw new Error("The vault path is unavailable.");
 					const vaultRoot = app.vault.adapter.getBasePath();
 					candidate.attachments = candidate.attachments.filter((attachment) => {
 						if (attachment.resolution !== "trash") return true;
 						const relative = path.relative(vaultRoot, attachment.sourcePath);
-						return !relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+						return (
+							!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+						);
 					});
 					const used = new Set(candidate.attachments.filter((attachment) => attachment.resolution !== "trash")
 						.map((attachment) => path.resolve(attachment.destinationPath).toLowerCase()));
@@ -1478,7 +1561,8 @@ async function handleRequest(
 			const repair = parsed.action === "attachment-repair-complete";
 			const entry = item && requestedReviews().find((review) =>
 				review.key === reviewKey(item) && review.operation === (repair ? "attachment-repair" : "attachment-move") &&
-				(!repair || review.uncertain && review.repairId === parsed.repairId && review.repairSnapshot !== undefined));
+				(!repair ||
+							(review.uncertain && review.repairId === parsed.repairId && review.repairSnapshot !== undefined)));
 			const candidate = entry?.attachmentMove;
 			const moved = parsed.moved;
 			const linked = parsed.linked ?? [];
@@ -1487,14 +1571,15 @@ async function handleRequest(
 				item.linkedAttachmentBaseDirectory !== candidate.baseDirectory ||
 				item.libraryType !== "user" ||
 				moved.length !== candidate.attachments.length) {
-				sendJson(res, 400, { success: false, error: "No matching attachment move is pending, or Zotero's base directory changed." });
+				sendJson(res, 400, { success: false, error: "No matching attachment move is pending, or Zotero's base directory changed.",
+				});
 				return;
 			}
 			const samePath = (first?: string, second?: string): boolean =>
 				!!first && !!second && path.resolve(first).toLocaleLowerCase() === path.resolve(second).toLocaleLowerCase();
 			const linkedAt = (key: string | undefined, filePath: string): boolean => !!key && !!item.attachments?.some((current) =>
 				current.itemkey === key && current.mode === "linked" && samePath(current.path, filePath));
-			const allowedDestination = (attachment: typeof candidate.attachments[number], result: typeof moved[number]): boolean => {
+			const allowedDestination = (attachment: (typeof candidate.attachments)[number], result: (typeof moved)[number]): boolean => {
 				if (samePath(result.to, attachment.destinationPath)) return true;
 				if (repair || !result.referenceCheckFailed || !result.copied ||
 					(attachment.resolution !== "move" && attachment.resolution !== "newest") ||
@@ -1503,7 +1588,9 @@ async function handleRequest(
 				const actual = path.parse(result.to);
 				const prefix = `${original.name} `;
 				const suffix = actual.name.startsWith(prefix) ? actual.name.slice(prefix.length) : "";
-				return actual.ext.toLowerCase() === original.ext.toLowerCase() && /^[0-9]+$/.test(suffix) && Number(suffix) >= 2;
+				return (
+					actual.ext.toLowerCase() === original.ext.toLowerCase() && /^[0-9]+$/.test(suffix) && Number(suffix) >= 2
+				);
 			};
 			const fallbackNoteFiles = candidate.attachments.flatMap((attachment) => {
 				const result = moved.find((move) => move.itemkey === attachment.itemkey);
@@ -1515,45 +1602,58 @@ async function handleRequest(
 				const result = moved.find((move) => move.itemkey === attachment.itemkey);
 				if (!result || !samePath(result.from, attachment.sourcePath)) return false;
 				if (attachment.sourceMissing) {
-					return candidate.automatic === true && !repair && attachment.resolution === "keep-note" &&
+					return (
+							candidate.automatic === true && !repair && attachment.resolution === "keep-note" &&
 						result.sourceMissing === true && !result.preservedSource && !result.copied && !result.trashed &&
 						!result.referenceCheckFailed && !result.archivePath &&
-						(result.archiveDirectory === undefined || attachment.mode === "stored" &&
+						(result.archiveDirectory === undefined ||
+								(attachment.mode === "stored" &&
 							typeof result.archiveDirectory === "string" && path.isAbsolute(result.archiveDirectory) &&
 							!samePath(result.archiveDirectory, path.dirname(result.from)) &&
-							!samePath(result.archiveDirectory, result.to)) &&
+							!samePath(result.archiveDirectory, result.to))) &&
 						(attachment.mode === "stored"
 							? result.oldKey === attachment.itemkey && !!result.newKey && result.newKey !== attachment.itemkey &&
 								!item.attachments?.some((current) => current.itemkey === attachment.itemkey)
 							: result.oldKey === undefined && result.newKey === attachment.itemkey) &&
-						samePath(result.to, attachment.destinationPath) && linkedAt(result.newKey, result.to);
+						samePath(result.to, attachment.destinationPath) && linkedAt(result.newKey, result.to)
+						);
 				}
 				if (result.sourceMissing || result.archiveDirectory || ((repair || candidate.automatic) && !result.preservedSource)) return false;
 				if (result.referenceCheckFailed && !result.preservedSource) return false;
 				if (result.preservedSource) {
-					return !result.trashed && allowedDestination(attachment, result) &&
+					return (
+							!result.trashed && allowedDestination(attachment, result) &&
 						(result.archivePath
 							? attachment.mode === "stored" && typeof result.archivePath === "string" && path.isAbsolute(result.archivePath) &&
 								!samePath(result.archivePath, result.from) && !samePath(result.archivePath, result.to) &&
 								result.oldKey === attachment.itemkey && !!result.newKey && result.newKey !== attachment.itemkey &&
 								!item.attachments?.some((current) => current.itemkey === attachment.itemkey)
 							: result.oldKey === undefined && result.newKey === attachment.itemkey) &&
-						linkedAt(result.newKey, result.to);
+						linkedAt(result.newKey, result.to)
+						);
 				}
 				if (attachment.resolution === "trash") {
-					return result.trashed === true &&
-						!item.attachments?.some((current) => current.itemkey === attachment.itemkey);
+					return (
+							result.trashed === true &&
+						!item.attachments?.some((current) => current.itemkey === attachment.itemkey
+							)
+						);
 				}
 				if (result.trashed || !samePath(result.to, attachment.destinationPath)) return false;
 				if (result.copied) return false;
 				if (attachment.mode === "stored") {
-					return result.oldKey === attachment.itemkey && !!result.newKey && linkedAt(result.newKey, attachment.destinationPath);
+					return (
+							result.oldKey === attachment.itemkey && !!result.newKey && linkedAt(result.newKey, attachment.destinationPath)
+						);
 				}
-				return result.oldKey === undefined && result.newKey === undefined && linkedAt(attachment.itemkey, attachment.destinationPath);
+				return (
+						result.oldKey === undefined && result.newKey === undefined && linkedAt(attachment.itemkey, attachment.destinationPath)
+					);
 			}) && linked.length === expectedNoteFiles.length && expectedNoteFiles.every((filePath) =>
 				linked.some((entry) => samePath(entry.path, filePath) && linkedAt(entry.newKey, filePath)));
 			if (!verified) {
-				sendJson(res, 400, { success: false, error: "Zotero's attachment list does not match the reviewed files." });
+				sendJson(res, 400, { success: false, error: "Zotero's attachment list does not match the reviewed files.",
+				});
 				return;
 			}
 			const outcome = await runSerialized(async (): Promise<LitNoteItemResult> => {
@@ -1614,7 +1714,8 @@ async function handleRequest(
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
 			const entry = item && requestedReviews().find((review) => review.key === reviewKey(item) && review.operation === "library-uri");
 			if (!item || !entry || !entry.libraryNotePath || !item.itemkey || item.libraryURI !== entry.libraryURI) {
-				sendJson(res, 400, { success: false, error: "No matching library correction is pending." });
+				sendJson(res, 400, { success: false, error: "No matching library correction is pending.",
+				});
 				return;
 			}
 			const outcome = await runSerialized(async (): Promise<LitNoteItemResult> => {
@@ -1648,7 +1749,8 @@ async function handleRequest(
 			}
 			const adapter = app.vault.adapter;
 			if (!(adapter instanceof FileSystemAdapter) || !path.isAbsolute(parsed.baseDirectory)) {
-				sendJson(res, 200, { success: false, error: "Cannot compare the linked attachment base directory with this vault: an absolute directory and a local filesystem vault are required." });
+				sendJson(res, 200, { success: false, error: "Cannot compare the linked attachment base directory with this vault: an absolute directory and a local filesystem vault are required.",
+				});
 				return;
 			}
 			try {
@@ -1658,9 +1760,11 @@ async function handleRequest(
 				if (!info.isDirectory()) throw new Error("The configured path is not a directory.");
 				const relative = path.relative(vault, base);
 				const inside = relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-				sendJson(res, 200, { success: true, relationship: inside ? "inside" : "outside", vaultPath: vault });
+				sendJson(res, 200, { success: true, relationship: inside ? "inside" : "outside", vaultPath: vault,
+				});
 			} catch (error) {
-				sendJson(res, 200, { success: false, error: `Cannot check Zotero's linked attachment base directory: ${errorMessage(error)}` });
+				sendJson(res, 200, { success: false, error: `Cannot check Zotero's linked attachment base directory: ${errorMessage(error)}`,
+				});
 			}
 		} else if (parsed.action === "create") {
 			const items = parsed.data;
@@ -1679,6 +1783,24 @@ async function handleRequest(
 				return;
 			}
 			const mode = parsed.action === "update" ? "metadata" : "auto";
+			if (
+				parsed.action === "update" &&
+				items.some((item) => item.collections !== undefined) &&
+				(!settings.collectionAdoptions || !settings.saveCollectionAdoptions)
+			) {
+				sendJson(
+					res,
+					200,
+					resultsResponse(
+						items.map((item) => ({
+							citekey: item.citekey ?? "",
+							status: "error" as const,
+							error: "Persistent collection adoption is unavailable; no collection metadata was adopted.",
+						}))
+					)
+				);
+				return;
+			}
 			const recheck = parsed.action === "review-recheck";
 			const automatic = parsed.action === "sync" || recheck;
 			const bulk = parsed.action === "bulk-review-sync";
@@ -1687,7 +1809,8 @@ async function handleRequest(
 				? requestedReviews().find((review) => review.key === reviewKey(items[0]) && review.operation === "note-update")
 				: undefined;
 			if (bulk && !bulkEntry?.proposal) {
-				sendJson(res, 400, { success: false, error: "No matching bulk review is pending." });
+				sendJson(res, 400, { success: false, error: "No matching bulk review is pending.",
+				});
 				return;
 			}
 			const recheckEntry = recheck && items.length === 1
@@ -1701,7 +1824,8 @@ async function handleRequest(
 					const waiting = file instanceof TFile && (!fm || (fm.zotero_item_key === items[0].itemkey && fm.zotero_library_uri === undefined)) &&
 						Date.now() - (recheckEntry.recheckStartedAt ?? 0) < 15000;
 					if (waiting) {
-						sendJson(res, 200, resultsResponse([{ citekey: items[0].citekey, status: "waiting-index" }]));
+						sendJson(res, 200, resultsResponse([{ citekey: items[0].citekey, status: "waiting-index" },
+							]));
 						return;
 					}
 					finishLibraryRecheck(recheckEntry.key, false, "The updated note could not be verified in Obsidian's index; review it after indexing.");
@@ -1719,20 +1843,28 @@ async function handleRequest(
 						if (item.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
 							entries.push(automatic
 								? { citekey: item.citekey, status: "pending-review" }
-								: { citekey: item.citekey, status: "error", error: "Check the interrupted operation in Obsidian before updating this note." });
+								: { citekey: item.citekey, status: "error", error: "Check the interrupted operation in Obsidian before updating this note.",
+											});
 							continue;
 						}
 						const decisions: SyncPlan["decisions"] = [];
+						const collectionAdoption =
+							mode === "metadata"
+								? getCollectionAdoption(settings.collectionAdoptions, item)
+								: undefined;
 						const entry = await syncLitNote(app, settings, item, mode, async (title, message, buttons, review, conflict, bulkSummary) => {
 							if (automatic) throw new ReviewNeeded(title, conflict?.notePath, bulkSummary
-								? { summary: bulkSummary, title, message, buttons, conflict } : undefined);
+								? { summary: bulkSummary, title, message, buttons, conflict,
+													} : undefined);
 							if (bulk) {
-								const proposal = { summary: bulkSummary, title, message, buttons, conflict };
+								const proposal = { summary: bulkSummary, title, message, buttons, conflict,
+										};
 								if (review || !bulkEntry?.proposal || JSON.stringify(proposal) !== JSON.stringify(bulkEntry.proposal) ||
 									!buttons.some((button) => button.value === "create")) {
 									throw new Error("The proposed note changes changed; review this note individually.");
 								}
-								decisions.push({ title, message, buttons, review, conflict, choice: "create" });
+								decisions.push({ title, message, buttons, review, conflict, choice: "create",
+										});
 								return "create";
 							}
 							raiseAndFocus(app, app.workspace.getMostRecentLeaf());
@@ -1740,7 +1872,7 @@ async function handleRequest(
 							if (choice === "cancel") cancelled = true;
 							decisions.push({ title, message, buttons, review, conflict, choice });
 							return choice;
-						}, { prepareOnly: true });
+						}, { prepareOnly: true, collectionAdoption });
 						if (recheck && (entry.status === "prepared" || entry.status === "set-zotero-key")) {
 							queueReconciliation(app, settings, item, "Note changes need confirmation", entry.notePath);
 							entries.push({ citekey: entry.citekey, status: "pending-review" });
@@ -1758,7 +1890,7 @@ async function handleRequest(
 							const token = randomUUID();
 							syncPlans.set(token, {
 								mode, kind: entry.status === "prepared" ? "apply-sync" : "validate-zotero-key",
-								input: syncInput(item, mode), snapshot: entry.snapshot,
+								input: syncInput(item, mode, collectionAdoption), snapshot: entry.snapshot,
 								notePath: entry.notePath, identicalAttachments: entry.identicalAttachments,
 								decisions, expires: Date.now() + 120000, ...(requested ? { reviewKey: reviewKey(item) } : {}), ...(bulk ? { bulk: true } : {}),
 							});
@@ -1772,7 +1904,8 @@ async function handleRequest(
 							if (bulk) {
 								const message = entry.error ?? "The proposed note changes are no longer available; review this note individually.";
 								finishNoteCorrection(reviewKey(item), message);
-								entries.push({ citekey: item.citekey, status: "error", error: message });
+								entries.push({ citekey: item.citekey, status: "error", error: message,
+									});
 								continue;
 							}
 							// A requested review (for example the recheck after a duplicate merge) hands off to the same automatic move as sync.
@@ -1780,12 +1913,14 @@ async function handleRequest(
 								queueReconciliation(app, settings, item, "Automatic attachment reconciliation", entry.notePath, undefined, entry.attachmentMove);
 								if (requested) resetReviewRequest(reviewKey(item));
 								requestAutomaticAttachment(reviewKey(item), entry.snapshot);
-								entries.push({ citekey: entry.citekey, status: "pending-review" });
+								entries.push({ citekey: entry.citekey, status: "pending-review",
+									});
 								continue;
 							}
 							if (entry.status === "error" && automatic && item.itemkey && item.libraryURI) {
 								queueReconciliation(app, settings, item, entry.errorTitle ?? "Reconciliation needs attention", entry.identity?.notePath, undefined, entry.attachmentMove);
-								entries.push({ citekey: entry.citekey, status: "pending-review" });
+								entries.push({ citekey: entry.citekey, status: "pending-review",
+									});
 								continue;
 							}
 							if (entry.status === "error" && !automatic) await showReconciliationError(app, session, item, entry, undefined, requested ? undefined : mode);
@@ -1793,7 +1928,8 @@ async function handleRequest(
 							if (requested && entry.status === "error" && entry.identity?.notePaths?.length &&
 								allReviews().some((review) => review.key === reviewKey(item))) {
 								resetReviewRequest(reviewKey(item));
-								entries.push({ citekey: entry.citekey, status: "pending-review" });
+								entries.push({ citekey: entry.citekey, status: "pending-review",
+									});
 								continue;
 							}
 							if (automatic && !recheck && entry.status !== "error") removeReview(reviewKey(item));
@@ -1806,9 +1942,11 @@ async function handleRequest(
 						if (error instanceof ReviewNeeded) {
 							if (item.itemkey && item.libraryURI) {
 								queueReconciliation(app, settings, item, error.reason, error.notePath, error.proposal);
-								entries.push({ citekey: item.citekey ?? "", status: "pending-review" });
+								entries.push({ citekey: item.citekey ?? "", status: "pending-review",
+									});
 							} else {
-								entries.push({ citekey: item.citekey ?? "", status: "error", error: "Cannot queue a review without a Zotero item and library identity." });
+								entries.push({ citekey: item.citekey ?? "", status: "error", error: "Cannot queue a review without a Zotero item and library identity.",
+									});
 							}
 							continue;
 						}
@@ -1859,10 +1997,15 @@ async function handleRequest(
 			const plan = syncPlans.get(parsed.token);
 			syncPlans.delete(parsed.token);
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			const collectionAdoption =
+				item && plan?.mode === "metadata"
+					? getCollectionAdoption(settings.collectionAdoptions, item)
+					: undefined;
 			if (item?.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
 				sendJson(res, 200, resultsResponse([{
 					citekey: item.citekey, status: "error", error: "Check the interrupted operation in Obsidian before updating this note.",
-				}]));
+				},
+					]));
 				return;
 			}
 			const reportFailure = async (failure: SyncResult): Promise<LitNoteItemResult> => {
@@ -1881,7 +2024,7 @@ async function handleRequest(
 				}
 				return { citekey: failure.citekey, status: "error", error: failure.error };
 			};
-			if (!plan || plan.kind !== parsed.action || plan.expires < Date.now() || !item || syncInput(item, plan.mode) !== plan.input) {
+			if (!plan || plan.kind !== parsed.action || plan.expires < Date.now() || !item || syncInput(item, plan.mode, collectionAdoption) !== plan.input) {
 				const failure: SyncResult = {
 					citekey: item?.citekey ?? "", status: "error",
 					error: "The Zotero item or update plan changed or expired; retry the update.",
@@ -1921,6 +2064,9 @@ async function handleRequest(
 						expectedContent: plan.snapshot,
 						expectedIdenticalAttachments: plan.identicalAttachments,
 						prepareOnly: parsed.action === "validate-zotero-key",
+						collectionAdoption,
+						persistCollectionAdoption: async (baseline) =>
+							persistCollectionAdoption(settings, item, baseline),
 						beforeApply: async () => {
 							if (index !== plan.decisions.length) throw new Error("The note or its links changed after the decision; retry the update.");
 							if (duplicatePairs.length && plan.notePath && zoteroPaths) {
@@ -1958,16 +2104,19 @@ async function handleRequest(
 					});
 					if (parsed.action === "validate-zotero-key") {
 						if (result.status !== "set-zotero-key" || index !== plan.decisions.length) {
-							const failure: SyncResult = { citekey: item.citekey, status: "error", error: result.error ?? "The note changed after the decision; retry the update.", errorTitle: result.errorTitle ?? "Note changed after decision", dialogMessage: result.dialogMessage, identity: result.identity, attachmentProblems: result.attachmentProblems };
+							const failure: SyncResult = { citekey: item.citekey, status: "error", error: result.error ?? "The note changed after the decision; retry the update.", errorTitle: result.errorTitle ?? "Note changed after decision", dialogMessage: result.dialogMessage, identity: result.identity, attachmentProblems: result.attachmentProblems,
+								};
 							await showReconciliationError(app, session, item, failure, plan.notePath, plan.mode);
 							const { identity: _identity, attachmentProblems: _attachmentProblems, errorTitle: _errorTitle, dialogMessage: _dialogMessage, ...responseEntry } = failure;
 							return responseEntry;
 						}
-						return { citekey: item.citekey, status: "skipped" as const, noteCitekey: result.noteCitekey };
+						return { citekey: item.citekey, status: "skipped" as const, noteCitekey: result.noteCitekey,
+							};
 					}
 					if (result.status === "error" && plan.mode === "auto" && !plan.reviewKey && item.itemkey && item.libraryURI) {
 						queueReconciliation(app, settings, item, result.errorTitle ?? result.error ?? "Reconciliation failed", plan.notePath);
-						return { citekey: item.citekey, status: "error" as const, error: result.error };
+						return { citekey: item.citekey, status: "error" as const, error: result.error,
+							};
 					}
 					if (plan.bulk && plan.reviewKey) {
 						if (result.status === "updated") finishNoteCorrection(plan.reviewKey);
@@ -1983,7 +2132,8 @@ async function handleRequest(
 					const { identity: _identity, attachmentProblems: _attachmentProblems, errorTitle: _errorTitle, dialogMessage: _dialogMessage, ...responseEntry } = result;
 					return responseEntry;
 				} catch (error) {
-					const failure: SyncResult = { citekey: item.citekey, status: "error", error: errorMessage(error) };
+					const failure: SyncResult = { citekey: item.citekey, status: "error", error: errorMessage(error),
+						};
 					if (plan.bulk && plan.reviewKey) {
 						finishNoteCorrection(plan.reviewKey, failure.error);
 						return failure;
@@ -2011,7 +2161,8 @@ async function handleRequest(
 				const file = app.vault.getAbstractFileByPath(notePath);
 				if (!(file instanceof TFile) || file.path !== notePath || path.posix.normalize(notePath) !== notePath || !notePath.startsWith(`${folder}/`) ||
 					app.metadataCache.getFileCache(file)?.frontmatter?.zotero_item_key !== itemkey) {
-					return { success: false, error: "The reported Obsidian note is missing or no longer matches this Zotero item key. Check the notes again." };
+					return { success: false, error: "The reported Obsidian note is missing or no longer matches this Zotero item key. Check the notes again.",
+					};
 				}
 				await openFile(app, file, null, { modifyText: false });
 				return { success: true };
