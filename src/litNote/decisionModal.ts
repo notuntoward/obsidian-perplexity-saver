@@ -2,6 +2,7 @@ import { App, FileSystemAdapter, Modal, Notice, TFile } from "obsidian";
 import { applyModalAppearance } from "commons/modal";
 import { ownerWindow, writeClipboardIn } from "commons/windows";
 import { getNoteZoteroSelectUri } from "./zoteroUri";
+import { openNotesSideBySide } from "./noteComparison";
 import type { AttachmentProblem } from "./buildLitNote";
 
 /**
@@ -24,6 +25,7 @@ export type NoteDecision =
 	| "skip-manual"
 	| "keep-link"
 	| "replace-link"
+	| "repair-attachments"
 	| `attachment:${number}`
 	| `review:${string}`
 	| "cancel";
@@ -43,12 +45,13 @@ export interface CitekeyConflictDetails {
 	itemkey: string;
 	libraryURI: string;
 	notePath?: string;
+	notePaths?: string[];
 	noteCitekey?: string;
 	zoteroCitekey?: string;
 	attachmentProblems?: AttachmentProblem[];
 	compact?: boolean;
 	noteOpenFollowUp?: string;
-	recoveryPaths?: Array<{ label: string; path: string; status: string }>;
+	recoveryPaths?: Array<{ label: string; path: string; status?: string }>;
 }
 
 export interface DecisionButton {
@@ -157,10 +160,7 @@ export function withNoteDecisionSession<T>(
 						: this.contentEl.createDiv({ cls: "lit-note-citekey-details" });
 					if (conflict.compact) details.createEl("summary", { text: "Item and note details" });
 					const grid = details.createDiv({ cls: "lit-note-identity-grid" });
-					const group = conflict.libraryURI.match(/\/groups\/(\d+)(?:\/|$)/);
-					const zoteroURI = group
-						? `zotero://select/groups/${group[1]}/items/${encodeURIComponent(conflict.itemkey)}`
-						: getNoteZoteroSelectUri({ itemkey: conflict.itemkey });
+					const zoteroURI = getNoteZoteroSelectUri({ itemkey: conflict.itemkey, libraryURI: conflict.libraryURI });
 					grid.createEl("strong", { text: "Zotero item:" });
 					const item = grid.createDiv({ cls: "lit-note-identity-value" });
 					const zoteroLink = item.createEl("a", { text: conflict.title, cls: "external-link", attr: { href: zoteroURI, title: "Open in Zotero" } });
@@ -179,19 +179,40 @@ export function withNoteDecisionSession<T>(
 							}
 						})();
 					});
-					if (conflict.notePath) {
-						const notePath = conflict.notePath;
-						grid.createEl("strong", { text: "Obsidian note:" });
+					const notePaths = conflict.notePaths ?? (conflict.notePath ? [conflict.notePath] : []);
+					const closeForNote = (): void => {
+						const resolve = resolveDecision;
+						resolveDecision = undefined;
+						resolve?.(buttons.length === 1 && buttons[0].value === "skip" ? "skip" : "cancel");
+						this.close();
+					};
+					if (conflict.notePaths && conflict.notePaths.length > 1) {
+						grid.createEl("strong", { text: "Compare:" });
+						const compare = grid.createDiv({ cls: "lit-note-identity-value" });
+						const compareButton = compare.createEl("button", { text: "Open notes side by side", cls: "mod-cta" });
+						compare.createDiv({ cls: "lit-note-edit-hint", text: "Opens every matching note in adjacent panes and closes this dialog." });
+						compareButton.addEventListener("click", () => {
+							closeForNote();
+							const files = notePaths.map((path) => app.vault.getAbstractFileByPath(path)).filter((file): file is TFile => file instanceof TFile);
+							void openNotesSideBySide(app, files).then(() => {
+								new Notice(conflict.noteOpenFollowUp ?? "After editing, retry the update from Zotero.", 10000);
+							}).catch((error: unknown) => {
+								console.error("Could not open the duplicate notes", error);
+								new Notice(`Could not open the duplicate notes. Open them manually. ${conflict.noteOpenFollowUp ?? ""}`, 10000);
+							});
+						});
+					}
+					for (const notePath of notePaths) {
+						grid.createEl("strong", { text: conflict.notePaths ? "Matching Obsidian note:" : "Obsidian note:" });
 						const note = grid.createDiv({ cls: "lit-note-identity-value" });
-						const noteLink = note.createEl("a", { text: notePath.split("/").pop() || notePath, attr: { href: "#" } });
-						note.createDiv({ cls: "lit-note-edit-hint", text: "Opening the note closes this dialog and cancels the current review." });
+						const noteLink = note.createEl("a", { text: conflict.notePaths ? notePath : notePath.split("/").pop() || notePath, attr: { href: "#" } });
+						note.createDiv({ cls: "lit-note-edit-hint", text: conflict.notePaths
+							? "Opens the note in a new tab and closes this dialog."
+							: "Opening the note closes this dialog and cancels the current review." });
 						noteLink.addEventListener("click", (event) => {
 							event.preventDefault();
-							const resolve = resolveDecision;
-							resolveDecision = undefined;
-							resolve?.(buttons.length === 1 && buttons[0].value === "skip" ? "skip" : "cancel");
-							this.close();
-							void app.workspace.openLinkText(notePath, "", false).then(() => {
+							closeForNote();
+							void app.workspace.openLinkText(notePath, "", conflict.notePaths ? "tab" : false).then(() => {
 								new Notice(conflict.noteOpenFollowUp ?? "After editing, retry the update from Zotero.", 10000);
 							}).catch((error: unknown) => {
 								console.error("Could not open the Obsidian note", error);
@@ -215,7 +236,7 @@ export function withNoteDecisionSession<T>(
 						const row = grid.createDiv({ cls: "lit-note-copyable-key lit-note-identity-value lit-note-recovery-path" });
 						row.createEl("code", { text: entry.path });
 						addCopyButton(row, `${entry.label} ${entry.path}`, entry.path);
-						row.createDiv({ cls: "lit-note-edit-hint", text: entry.status });
+						if (entry.status) row.createDiv({ cls: "lit-note-edit-hint", text: entry.status });
 					}
 				}
 				const selections: string[] = [];

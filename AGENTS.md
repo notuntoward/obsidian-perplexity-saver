@@ -129,10 +129,25 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   Attachment-move reports can include the current `attachments`, an
   `attachmentCheckError`, and journaled `attachmentPaths` (source and planned
   destination). Older journal entries may lack those paths; do not infer them.
-  Saver blocks further automatic work for that identity until the user checks
-  both apps. After the user's acknowledgement, the review-requests endpoint
-  exposes `acknowledgedUncertain`; the companion clears its journal and posts
+  At startup the companion can instead send `{ action: "review-recover", data:
+  [ZoteroItemPayload] }` to check the current item and note without writing.
+  Matching state resolves the interruption; real differences become ordinary
+  reviews. The companion removes the journal only after a successful recovery
+  response and rechecks the item during the initial scan.
+  Saver blocks further automatic work for unresolved interruptions until the
+  user acknowledges the review. The review-requests endpoint then exposes
+  `acknowledgedUncertain`; the companion clears its journal and posts
   `review-uncertain-acknowledged` before that identity can be requested again.
+- The companion brackets its initial review scan with
+  `{ action: "initial-review-scan-start", scanId }` and
+  `{ action: "initial-review-scan-end", scanId, status: "complete" | "error", error? }`.
+  Start is idempotent by `scanId`; retry an error with the same ID. Saver hides
+  the initial review count until a complete end is acknowledged. An error keeps
+  the count hidden and exposes retry/error state. The companion must not end a
+  scan as complete until all uncertain-journal reports and candidate submissions
+  have succeeded; a failed or unavailable Obsidian request must not be treated as
+  acknowledged. Once complete, do not start another scan or add new reviews in
+  the same session; surface new interrupted operations as errors, not hidden work.
 - `GET /lit-note-identities` returns indexed item keys, Obsidian note paths,
   library identities, and citation keys for reconciliation.
 - When citation keys differ, the companion sends `citationKeyCheck` for the

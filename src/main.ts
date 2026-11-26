@@ -23,6 +23,9 @@ import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import { setReviewListener } from "./litNote/pendingReviews";
 import { setupReviewStatus } from "./litNote/reviewStatus";
+import { registerPreservedAttachmentsReport } from "./litNote/preservedAttachmentsReport";
+import { registerStrayAttachmentNotes } from "./litNote/strayAttachmentNotes";
+import { registerNoteMerge } from "./litNote/noteMergeCommands";
 import { DEFAULT_SETTINGS, type PerplexitySaverSettings } from "./settings";
 import { PerplexitySaverSettingTab } from "./settingsTab";
 import { perplexityInputStateField, startImport } from "./dialog/inlineInput";
@@ -76,7 +79,10 @@ export default class PerplexitySaverPlugin extends Plugin {
 			onNoteOpened: (file) => notifyTranscriptNoteOpened(this.app, file),
 		};
 		this.litNoteServer = startLitNoteServer(this.app, this.litNoteServerSettings);
-		this.register(setupReviewStatus(this.app, this.addStatusBarItem()));
+		this.register(setupReviewStatus(this.app, this.addStatusBarItem(), this.litNoteServerSettings));
+		registerPreservedAttachmentsReport(this);
+		registerStrayAttachmentNotes(this);
+		registerNoteMerge(this, this.litNoteServerSettings);
 
 		this.registerEditorExtension(perplexityInputStateField(this));
 

@@ -35,12 +35,14 @@ import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession } from "./decisionModal";
 import { getLitNoteFiles } from "commons/litnote";
-import { finishAttachmentMove, syncLitNote, type SyncResult } from "./syncLitNote";
-import { acknowledgedUncertainReviews, allReviews, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, endReviewOperation, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, queueReview, removeReview, requestedReviews, resetReviewRequest, reviewKey } from "./pendingReviews";
+import { finishAttachmentMove, recordRecoveredAutomaticAttachments, syncLitNote, type SyncResult } from "./syncLitNote";
+import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
+import { clearItemTrashRequests, finishItemTrash, itemTrashRequests } from "./zoteroItemTrash";
 import type { BulkProposal } from "./pendingReviews";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
 import { assertAttachmentsUnshared } from "./attachmentSharing";
+import { verifyAttachmentCopy } from "./attachmentMove";
 import { findTranscriptRange, headingsFromText, normalizeTranscriptHeading } from "commons/youtube";
 import type {
 	LitNoteItemResult,
@@ -102,6 +104,8 @@ function missingLibraryNote(app: App, settings: LitNoteServerSettings, item: Zot
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+let obsidianSession = "";
+
 function queueReconciliation(app: App, settings: LitNoteServerSettings, item: ZoteroItemPayload, reason: string, notePath?: string, proposal?: BulkProposal, attachmentMove?: SyncResult["attachmentMove"]): void {
 	queueReview(item, reason, notePath, missingLibraryNote(app, settings, item)?.path, proposal, attachmentMove);
 }
@@ -119,11 +123,11 @@ async function showReconciliationError(app: App, session: NoteDecisionSession, i
 		zoteroCitekey: item.citekey || "(not set)", notePath,
 	} : undefined);
 	const message = entry.attachmentProblems?.length ? "" : entry.dialogMessage ?? entry.error ?? "An unknown reconciliation error occurred.";
-	const changed = item.zoteroChanges ? "Zotero's citation key has already changed. Check both apps before retrying." : "";
+	const changed = item.zoteroChanges ? "Your Zotero citation-key change is saved. Check both apps before retrying." : "";
 	raiseAndFocus(app, app.workspace.getMostRecentLeaf());
 	const decision = await session.ask(entry.errorTitle ?? "Literature note update failed", [message, changed].filter(Boolean).join("\n\n"),
 		[{ label: "Close", value: "skip" }], undefined,
-		identity ? { ...identity, compact: true, attachmentProblems: entry.attachmentProblems } : undefined);
+		identity ? { ...identity, compact: !identity.notePaths?.length, attachmentProblems: entry.attachmentProblems } : undefined);
 	if (mode === "auto" && item.itemkey && decision === "skip") reportedAutoErrors.set(key, fingerprint);
 }
 
@@ -132,7 +136,7 @@ function syncInput(item: ZoteroItemPayload, mode: SyncPlan["mode"]): string {
 		title: item.title, citekey: item.citekey, itemkey: item.itemkey, libraryURI: item.libraryURI,
 		attachments: item.attachments, citationKeyCheck: item.citationKeyCheck,
 		linkedAttachmentBaseDirectory: item.linkedAttachmentBaseDirectory,
-		libraryName: item.libraryName, zoteroChanges: item.zoteroChanges,
+		libraryName: item.libraryName, zoteroChanges: item.zoteroChanges, automaticAttachments: item.automaticAttachments,
 	};
 	return JSON.stringify(mode === "auto" ? common : {
 		...common, tags: item.tags, collections: item.collections,
@@ -149,6 +153,79 @@ function runSerialized<T>(fn: () => Promise<T>): Promise<T> {
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+async function recoverInterruptedReview(
+	app: App, settings: LitNoteServerSettings, item: ZoteroItemPayload,
+	automaticAttachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string }>,
+): Promise<LitNoteItemResult> {
+	return runSerialized(async () => {
+		await ensureWorkspaceReady(app);
+		const key = reviewKey(item);
+		const revision = beginInterruptedRecovery(key);
+		beginReviewOperation(key);
+		try {
+			const matches = getLitNoteFiles(app, settings.litNotesFolder).filter((file) => {
+				const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+				return fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI;
+			});
+			if (matches.length !== 1) return { citekey: item.citekey, status: "error", error: "Could not uniquely identify the matching note for the interrupted update." };
+			const note = matches[0];
+			const before = await app.vault.read(note);
+			let result: SyncResult;
+			try {
+				result = await syncLitNote(app, settings, item, "auto", async (title, message, buttons, _review, conflict, bulkSummary) => {
+					throw new ReviewNeeded(title, conflict?.notePath, bulkSummary
+						? { summary: bulkSummary, title, message, buttons, conflict } : undefined);
+				}, { prepareOnly: true });
+			} catch (error) {
+				if (!(error instanceof ReviewNeeded)) throw error;
+				if (await app.vault.read(note) !== before) throw new Error("The note changed while the interrupted update was checked.");
+				queueReconciliation(app, settings, item, error.reason, error.notePath ?? note.path, error.proposal);
+				finishInterruptedRecovery(key, revision, false);
+				return { citekey: item.citekey, status: "pending-review" };
+			}
+			if (await app.vault.read(note) !== before) throw new Error("The note changed while the interrupted update was checked.");
+			if (result.status === "missing") return { citekey: item.citekey, status: "error", error: "The matching note is missing." };
+			if (result.status === "attachment-error") return { citekey: item.citekey, status: result.status, error: result.error };
+			let snapshot = before;
+			if (item.automaticAttachments && automaticAttachmentPaths &&
+				(result.status === "skipped" || result.status === "prepared" || result.attachmentMove?.automatic)) {
+				await recordRecoveredAutomaticAttachments(app, note, item, automaticAttachmentPaths);
+				snapshot = await app.vault.read(note);
+			}
+			if (result.attachmentMove?.automatic && result.snapshot !== undefined) {
+				queueReconciliation(app, settings, item, "Automatic attachment reconciliation", note.path, undefined, result.attachmentMove);
+				finishInterruptedRecovery(key, revision, false);
+				requestAutomaticAttachment(key, snapshot);
+				return { citekey: item.citekey, status: "pending-review" };
+			}
+			const fm = app.metadataCache.getFileCache(note)?.frontmatter;
+			if (item.automaticAttachments && result.status === "prepared" && fm?.citekey === item.citekey &&
+				note.basename === item.citekey && !item.zoteroChanges) {
+				const applied = await syncLitNote(app, settings, item, "auto", async () => {
+					throw new Error("The note requires a decision before it can be updated.");
+				}, { expectedContent: snapshot });
+				if (applied.status !== "updated" && applied.status !== "skipped") {
+					throw new Error(applied.error ?? "Could not finish the automatic attachment update.");
+				}
+				finishInterruptedRecovery(key, revision, true);
+				return { citekey: item.citekey, status: "skipped" };
+			}
+			if (result.status === "skipped") {
+				finishInterruptedRecovery(key, revision, true);
+				return { citekey: item.citekey, status: "skipped" };
+			}
+			if (result.status !== "error" && result.status !== "prepared" && result.status !== "set-zotero-key") {
+				throw new Error("The interrupted update could not be checked without changing the note.");
+			}
+			queueReconciliation(app, settings, item, result.errorTitle ?? "Note changes need confirmation", result.identity?.notePath ?? result.notePath ?? note.path, undefined, result.attachmentMove);
+			finishInterruptedRecovery(key, revision, false);
+			return { citekey: item.citekey, status: "pending-review" };
+		} finally {
+			endReviewOperation(key);
+		}
+	});
 }
 
 function citekeyOf(item: ZoteroItemPayload): string {
@@ -239,6 +316,7 @@ function noticeSummary(results: LitNoteItemResult[], prompted = false): void {
 		"set-zotero-key": 0,
 		prepared: 0,
 		"pending-review": 0,
+		"attachment-error": 0,
 		"waiting-index": 0,
 		skipped: 0,
 		missing: 0,
@@ -881,7 +959,7 @@ function sendJson(res: http.ServerResponse, status: number, body: LitNoteRespons
 
 function resultsResponse(results: LitNoteItemResult[]): LitNoteResponse {
 	return {
-		success: !results.some((r) => r.status === "error"),
+		success: !results.some((r) => r.status === "error" || r.status === "attachment-error"),
 		results,
 	};
 }
@@ -921,10 +999,12 @@ async function handleRequest(
 		const supportsBulk = req.url.endsWith("?bulk=1");
 		sendJson(res, 200, {
 			success: true,
-			requests: requestedReviews().filter((entry) => !entry.uncertain && (supportsBulk || !entry.operation))
+			requests: requestedReviews().filter((entry) => (!entry.uncertain || entry.operation === "attachment-repair") && (supportsBulk || !entry.operation))
 				.map((entry) => ({
 					...identity(entry),
 					...(entry.operation ? { operation: entry.operation } : {}),
+					...(entry.operation === "attachment-repair" ? { repairId: entry.repairId } : {}),
+					...(entry.automaticAttachment ? { automaticAttachment: true } : {}),
 					...(entry.operation === "attachment-move" ? {
 						attachmentMove: entry.attachmentMove,
 						strategy: entry.attachmentStrategy,
@@ -932,6 +1012,9 @@ async function handleRequest(
 				})),
 			pending: allReviews().map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}) })),
 			acknowledgedUncertain: acknowledgedUncertainReviews(),
+			...(supportsBulk ? { obsidianSession } : {}),
+			...(supportsBulk && pendingRescan() ? { rescan: pendingRescan() } : {}),
+			...(supportsBulk && itemTrashRequests().length ? { itemTrash: itemTrashRequests() } : {}),
 		});
 		return;
 	}
@@ -982,20 +1065,63 @@ async function handleRequest(
 		sendJson(res, 400, { success: false, error: "Invalid JSON" });
 		return;
 	}
-
 	let activeReviews: string[] = [];
 	if (parsed.action === "apply-sync" || parsed.action === "validate-zotero-key" ||
 		parsed.action === "sync" || parsed.action === "update" ||
 		parsed.action === "review-sync" || parsed.action === "bulk-review-sync" ||
 		parsed.action === "review-recheck" || parsed.action === "bulk-library-uri" ||
-		parsed.action === "attachment-move-complete") {
+		parsed.action === "attachment-move-complete" || parsed.action === "attachment-auto-prepare" || parsed.action === "attachment-repair-prepare" ||
+		parsed.action === "attachment-repair-complete") {
 		activeReviews = Array.isArray(parsed.data) ? [...new Set(parsed.data
 			.filter((item) => item?.itemkey && item.libraryURI)
 			.map((item) => reviewKey(item)))] : [];
 	}
 	for (const key of activeReviews) beginReviewOperation(key);
 	try {
-		if (parsed.action === "review-uncertain" || parsed.action === "review-uncertain-acknowledged") {
+		if (parsed.action === "initial-review-scan-start") {
+			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256) {
+				sendJson(res, 400, { success: false, error: "scanId must be a non-empty string of at most 256 characters." });
+				return;
+			}
+			try {
+				const scan = startInitialReviewScan(parsed.scanId);
+				sendJson(res, 200, { success: true, initialReviewScan: scan });
+			} catch (error) {
+				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error) });
+			}
+		} else if (parsed.action === "initial-review-scan-end") {
+			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256 ||
+				(parsed.status !== "complete" && parsed.status !== "error") ||
+				(parsed.error !== undefined && typeof parsed.error !== "string")) {
+				sendJson(res, 400, { success: false, error: "Invalid initial review scan result." });
+				return;
+			}
+			try {
+				const scan = endInitialReviewScan(parsed.scanId, parsed.status, parsed.error);
+				sendJson(res, 200, { success: true, initialReviewScan: scan });
+			} catch (error) {
+				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error) });
+			}
+		} else if (parsed.action === "review-recover") {
+			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			if (!item || typeof item.itemkey !== "string" || !item.itemkey ||
+				typeof item.libraryURI !== "string" || !item.libraryURI ||
+				typeof item.title !== "string" || typeof item.citekey !== "string" || !Array.isArray(item.attachments) ||
+				(parsed.automaticAttachmentPaths !== undefined && (!Array.isArray(parsed.automaticAttachmentPaths) ||
+					parsed.automaticAttachmentPaths.some((entry) => !entry || typeof entry.itemkey !== "string" ||
+						typeof entry.sourcePath !== "string" || typeof entry.destinationPath !== "string" ||
+						(entry.archivePath !== undefined && typeof entry.archivePath !== "string") ||
+						(entry.archiveDirectory !== undefined && typeof entry.archiveDirectory !== "string"))))) {
+				sendJson(res, 400, { success: false, error: "Invalid interrupted review snapshot." });
+				return;
+			}
+			try {
+				sendJson(res, 200, resultsResponse([await recoverInterruptedReview(app, settings, item, parsed.automaticAttachmentPaths)]));
+			} catch (error) {
+				console.error("Could not recheck an interrupted Zotero review", error);
+				sendJson(res, 200, resultsResponse([{ citekey: item.citekey, status: "error", error: errorMessage(error) }]));
+			}
+		} else if (parsed.action === "review-uncertain" || parsed.action === "review-uncertain-acknowledged") {
 			if (typeof parsed.itemkey !== "string" || !parsed.itemkey || typeof parsed.libraryURI !== "string" || !parsed.libraryURI ||
 				(parsed.error !== undefined && typeof parsed.error !== "string") ||
 				(parsed.operation !== undefined && typeof parsed.operation !== "string") ||
@@ -1039,17 +1165,133 @@ async function handleRequest(
 				}
 			} else consumeUncertainAcknowledgement(parsed);
 			sendJson(res, 200, { success: true });
+		} else if (parsed.action === "item-trash-complete") {
+			if (typeof parsed.id !== "string" || !parsed.id || (parsed.error !== undefined && typeof parsed.error !== "string")) {
+				sendJson(res, 400, { success: false, error: "Invalid Zotero trash result" });
+				return;
+			}
+			finishItemTrash(parsed.id, parsed.error);
+			sendJson(res, 200, { success: true });
 		} else if (parsed.action === "review-failed") {
 			if (typeof parsed.itemkey !== "string" || typeof parsed.libraryURI !== "string" || typeof parsed.error !== "string") {
 				sendJson(res, 400, { success: false, error: "Invalid review failure" });
 				return;
 			}
+			const repairFailed = requestedReviews().some((review) =>
+				review.key === reviewKey(parsed) && review.operation === "attachment-repair");
+			const automaticFailed = requestedReviews().some((review) =>
+				review.key === reviewKey(parsed) && review.automaticAttachment);
 			failReview(parsed, parsed.error);
+			if (repairFailed) new Notice(`Could not repair attachment links: ${parsed.error}`, 0);
+			if (automaticFailed) console.error("Automatic Zotero attachment reconciliation failed", parsed.error);
 			sendJson(res, 200, { success: true });
-		} else if (parsed.action === "attachment-move-complete") {
+		} else if (parsed.action === "attachment-auto-prepare") {
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			const entry = item && requestedReviews().find((review) => review.key === reviewKey(item) &&
+				review.automaticAttachment && review.operation === "attachment-move");
+			if (!item || !entry?.attachmentMove || entry.repairSnapshot === undefined) {
+				sendJson(res, 400, { success: false, error: "No automatic attachment reconciliation is pending." });
+				return;
+			}
+			try {
+				await runSerialized(async () => {
+					await ensureWorkspaceReady(app);
+					const current = await syncLitNote(app, settings, item, "auto", async () => "cancel", { prepareOnly: true });
+					if (current.snapshot !== entry.repairSnapshot || JSON.stringify(current.attachmentMove) !== JSON.stringify(entry.attachmentMove)) {
+						throw new Error("The note or attachments changed before automatic reconciliation.");
+					}
+				});
+				sendJson(res, 200, { success: true });
+			} catch (error) {
+				sendJson(res, 200, { success: false, error: errorMessage(error) });
+			}
+		} else if (parsed.action === "attachment-repair-prepare") {
+			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			const entry = item && requestedReviews().find((review) => review.key === reviewKey(item) &&
+				review.uncertain && review.operation === "attachment-repair" && review.repairId === parsed.repairId);
+			if (!item || !entry || !entry.notePath || entry.attachmentMove) {
+				sendJson(res, 400, { success: false, error: "No matching attachment repair is pending." });
+				return;
+			}
+			try {
+				const candidate = await runSerialized(async () => {
+					await ensureWorkspaceReady(app);
+					const note = app.vault.getAbstractFileByPath(entry.notePath!);
+					if (!(note instanceof TFile)) throw new Error("The matching Obsidian note is unavailable.");
+					const fm = app.metadataCache.getFileCache(note)?.frontmatter;
+					if (!fm || fm.zotero_item_key !== item.itemkey || fm.zotero_library_uri !== item.libraryURI || fm.citekey !== item.citekey) {
+						throw new Error("The note's Zotero identity or citation key changed.");
+					}
+					const snapshot = await app.vault.read(note);
+					const plan = await syncLitNote(app, settings, item, "auto", async () => "cancel", { prepareOnly: true });
+					if (!plan.attachmentMove) {
+						throw new Error(plan.error || "The current attachments cannot be safely repaired automatically.");
+					}
+					if (await app.vault.read(note) !== snapshot) throw new Error("The note changed while preparing the repair.");
+					const candidate = plan.attachmentMove;
+					if (!(app.vault.adapter instanceof FileSystemAdapter)) throw new Error("The vault path is unavailable.");
+					const vaultRoot = app.vault.adapter.getBasePath();
+					candidate.attachments = candidate.attachments.filter((attachment) => {
+						if (attachment.resolution !== "trash") return true;
+						const relative = path.relative(vaultRoot, attachment.sourcePath);
+						return !relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+					});
+					const used = new Set(candidate.attachments.filter((attachment) => attachment.resolution !== "trash")
+						.map((attachment) => path.resolve(attachment.destinationPath).toLowerCase()));
+					for (const attachment of candidate.attachments) {
+						const duplicate = attachment.resolution === "trash";
+						if (!duplicate && (attachment.destinationMtime === undefined || attachment.identical)) continue;
+						const ext = path.extname(attachment.destinationPath);
+						const basename = path.basename(attachment.destinationPath);
+						const stem = path.join(candidate.baseDirectory, ext ? basename.slice(0, -ext.length) : basename);
+						if (attachment.resolution === "newest" && (await stat(attachment.destinationPath)).size > 0) {
+							candidate.linkNoteFiles.push(attachment.destinationPath);
+							if (app.vault.adapter instanceof FileSystemAdapter) {
+								const notePath = path.relative(app.vault.adapter.getBasePath(), attachment.destinationPath).split(path.sep).join("/");
+								candidate.extras.push({ path: notePath, origin: "note" });
+							}
+						}
+						let index = 2;
+						let destination: string;
+						for (;;) {
+							destination = `${stem} ${index++}${ext}`;
+							if (used.has(path.resolve(destination).toLowerCase())) continue;
+							try { await stat(destination); }
+							catch (error) {
+								if ((error as NodeJS.ErrnoException).code === "ENOENT") break;
+								throw error;
+							}
+						}
+						used.add(path.resolve(destination).toLowerCase());
+						if (!duplicate) {
+							const oldPath = path.relative(vaultRoot, attachment.destinationPath).split(path.sep).join("/");
+							const newPath = path.relative(vaultRoot, destination).split(path.sep).join("/");
+							for (const extra of candidate.extras) {
+								if (extra.origin === "zotero" && extra.path === oldPath) extra.path = newPath;
+							}
+						}
+						attachment.destinationPath = destination;
+						attachment.destinationMtime = undefined;
+						attachment.resolution = "move";
+						attachment.conflict = false;
+						attachment.identical = false;
+					}
+					candidate.trashNoteFiles = [];
+					candidate.trashNoteSnapshots = [];
+					entry.attachmentMove = candidate;
+					entry.repairSnapshot = snapshot;
+					return candidate;
+				});
+				sendJson(res, 200, { success: true, attachmentMove: candidate });
+			} catch (error) {
+				sendJson(res, 200, { success: false, error: errorMessage(error) });
+			}
+		} else if (parsed.action === "attachment-move-complete" || parsed.action === "attachment-repair-complete") {
+			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
+			const repair = parsed.action === "attachment-repair-complete";
 			const entry = item && requestedReviews().find((review) =>
-				review.key === reviewKey(item) && review.operation === "attachment-move");
+				review.key === reviewKey(item) && review.operation === (repair ? "attachment-repair" : "attachment-move") &&
+				(!repair || review.uncertain && review.repairId === parsed.repairId && review.repairSnapshot !== undefined));
 			const candidate = entry?.attachmentMove;
 			const moved = parsed.moved;
 			const linked = parsed.linked ?? [];
@@ -1057,8 +1299,7 @@ async function handleRequest(
 				item.linkedAttachmentBaseDirectoryValidated !== true ||
 				item.linkedAttachmentBaseDirectory !== candidate.baseDirectory ||
 				item.libraryType !== "user" ||
-				moved.length !== candidate.attachments.length ||
-				linked.length !== candidate.linkNoteFiles.length) {
+				moved.length !== candidate.attachments.length) {
 				sendJson(res, 400, { success: false, error: "No matching attachment move is pending, or Zotero's base directory changed." });
 				return;
 			}
@@ -1066,16 +1307,51 @@ async function handleRequest(
 				!!first && !!second && path.resolve(first).toLocaleLowerCase() === path.resolve(second).toLocaleLowerCase();
 			const linkedAt = (key: string | undefined, filePath: string): boolean => !!key && !!item.attachments?.some((current) =>
 				current.itemkey === key && current.mode === "linked" && samePath(current.path, filePath));
+			const allowedDestination = (attachment: typeof candidate.attachments[number], result: typeof moved[number]): boolean => {
+				if (samePath(result.to, attachment.destinationPath)) return true;
+				if (repair || !result.referenceCheckFailed || !result.copied ||
+					(attachment.resolution !== "move" && attachment.resolution !== "newest") ||
+					typeof result.to !== "string" || !samePath(path.dirname(result.to), candidate.baseDirectory)) return false;
+				const original = path.parse(attachment.destinationPath);
+				const actual = path.parse(result.to);
+				const prefix = `${original.name} `;
+				const suffix = actual.name.startsWith(prefix) ? actual.name.slice(prefix.length) : "";
+				return actual.ext.toLowerCase() === original.ext.toLowerCase() && /^[0-9]+$/.test(suffix) && Number(suffix) >= 2;
+			};
+			const fallbackNoteFiles = candidate.attachments.flatMap((attachment) => {
+				const result = moved.find((move) => move.itemkey === attachment.itemkey);
+				return attachment.resolution === "newest" && result && !samePath(result.to, attachment.destinationPath) &&
+					allowedDestination(attachment, result) ? [attachment.destinationPath] : [];
+			});
+			const expectedNoteFiles = [...candidate.linkNoteFiles, ...fallbackNoteFiles];
 			const verified = candidate.attachments.every((attachment) => {
 				const result = moved.find((move) => move.itemkey === attachment.itemkey);
 				if (!result || !samePath(result.from, attachment.sourcePath)) return false;
+				if (attachment.sourceMissing) {
+					return candidate.automatic === true && !repair && attachment.resolution === "keep-note" &&
+						result.sourceMissing === true && !result.preservedSource && !result.copied && !result.trashed &&
+						!result.referenceCheckFailed && !result.archivePath &&
+						(result.archiveDirectory === undefined || attachment.mode === "stored" &&
+							typeof result.archiveDirectory === "string" && path.isAbsolute(result.archiveDirectory) &&
+							!samePath(result.archiveDirectory, path.dirname(result.from)) &&
+							!samePath(result.archiveDirectory, result.to)) &&
+						(attachment.mode === "stored"
+							? result.oldKey === attachment.itemkey && !!result.newKey && result.newKey !== attachment.itemkey &&
+								!item.attachments?.some((current) => current.itemkey === attachment.itemkey)
+							: result.oldKey === undefined && result.newKey === attachment.itemkey) &&
+						samePath(result.to, attachment.destinationPath) && linkedAt(result.newKey, result.to);
+				}
+				if (result.sourceMissing || result.archiveDirectory || ((repair || candidate.automatic) && !result.preservedSource)) return false;
 				if (result.referenceCheckFailed && !result.preservedSource) return false;
 				if (result.preservedSource) {
-					const original = item.attachments?.find((current) => current.itemkey === attachment.itemkey);
-					return !result.trashed && samePath(result.to, attachment.destinationPath) &&
-						result.oldKey === undefined && !!result.newKey &&
-						linkedAt(result.newKey, attachment.destinationPath) &&
-						original?.mode === attachment.mode && samePath(original.path, attachment.sourcePath);
+					return !result.trashed && allowedDestination(attachment, result) &&
+						(result.archivePath
+							? attachment.mode === "stored" && typeof result.archivePath === "string" && path.isAbsolute(result.archivePath) &&
+								!samePath(result.archivePath, result.from) && !samePath(result.archivePath, result.to) &&
+								result.oldKey === attachment.itemkey && !!result.newKey && result.newKey !== attachment.itemkey &&
+								!item.attachments?.some((current) => current.itemkey === attachment.itemkey)
+							: result.oldKey === undefined && result.newKey === attachment.itemkey) &&
+						linkedAt(result.newKey, result.to);
 				}
 				if (attachment.resolution === "trash") {
 					return result.trashed === true &&
@@ -1087,7 +1363,7 @@ async function handleRequest(
 					return result.oldKey === attachment.itemkey && !!result.newKey && linkedAt(result.newKey, attachment.destinationPath);
 				}
 				return result.oldKey === undefined && result.newKey === undefined && linkedAt(attachment.itemkey, attachment.destinationPath);
-			}) && candidate.linkNoteFiles.every((filePath) =>
+			}) && linked.length === expectedNoteFiles.length && expectedNoteFiles.every((filePath) =>
 				linked.some((entry) => samePath(entry.path, filePath) && linkedAt(entry.newKey, filePath)));
 			if (!verified) {
 				sendJson(res, 400, { success: false, error: "Zotero's attachment list does not match the reviewed files." });
@@ -1096,21 +1372,53 @@ async function handleRequest(
 			const outcome = await runSerialized(async (): Promise<LitNoteItemResult> => {
 				try {
 					await ensureWorkspaceReady(app);
+					for (const move of moved) {
+						if (!move.referenceCheckFailed) continue;
+						await verifyAttachmentCopy(move.from, move.to);
+						const attachment = candidate.attachments.find((current) => current.itemkey === move.itemkey);
+						if (attachment && !samePath(attachment.destinationPath, move.to)) {
+							if (app.vault.adapter instanceof FileSystemAdapter) {
+								const root = app.vault.adapter.getBasePath();
+								const previous = path.relative(root, attachment.destinationPath).split(path.sep).join("/");
+								const replacement = path.relative(root, move.to).split(path.sep).join("/");
+								if (attachment.resolution === "newest") {
+									candidate.linkNoteFiles.push(attachment.destinationPath);
+									candidate.extras.push({ path: previous, origin: "note" }, { path: replacement, origin: "zotero" });
+								}
+								for (const extra of candidate.extras) {
+									if (extra.origin === "zotero" && extra.path === previous) extra.path = replacement;
+								}
+							}
+							attachment.destinationPath = move.to;
+						}
+					}
 					const preservedSources = moved
-						.filter((move) => move.preservedSource)
+						.filter((move) => move.preservedSource || move.archiveDirectory)
 						.map((move) => ({
 							itemkey: move.itemkey!,
 							from: move.from,
 							to: move.to,
+							...(move.newKey ? { newKey: move.newKey } : {}),
+							...(move.archivePath ? { archivePath: move.archivePath } : {}),
+							...(move.archiveDirectory ? { archiveDirectory: move.archiveDirectory } : {}),
 							...(move.copied ? { copied: true } : {}),
 							...(move.referenceCheckFailed ? { referenceCheckFailed: true } : {}),
 						}));
-					await finishAttachmentMove(app, settings, item, candidate, preservedSources);
-					finishAttachmentCorrection(entry.key);
+					if (repair || candidate.automatic) await finishAttachmentMove(app, settings, item, candidate, preservedSources, entry.repairSnapshot);
+					else await finishAttachmentMove(app, settings, item, candidate, preservedSources);
+					if (repair) finishUncertainAttachmentRepair(entry.key);
+					else finishAttachmentCorrection(entry.key);
 					return { citekey: item.citekey, status: "updated" };
 				} catch (error) {
 					const message = errorMessage(error);
-					finishAttachmentCorrection(entry.key, message);
+					if (repair) {
+						finishUncertainAttachmentRepair(entry.key, message);
+						new Notice(`Could not repair attachment links: ${message}`, 0);
+					}
+					else {
+						if (candidate.automatic) console.error("Automatic Zotero attachment reconciliation failed", message);
+						finishAttachmentCorrection(entry.key, message);
+					}
 					return { citekey: item.citekey, status: "error", error: message };
 				}
 			});
@@ -1280,6 +1588,14 @@ async function handleRequest(
 								entries.push({ citekey: item.citekey, status: "error", error: message });
 								continue;
 							}
+							// A requested review (for example the recheck after a duplicate merge) hands off to the same automatic move as sync.
+							if (entry.attachmentMove?.automatic && entry.snapshot !== undefined && (automatic || requested) && item.itemkey && item.libraryURI) {
+								queueReconciliation(app, settings, item, "Automatic attachment reconciliation", entry.notePath, undefined, entry.attachmentMove);
+								if (requested) resetReviewRequest(reviewKey(item));
+								requestAutomaticAttachment(reviewKey(item), entry.snapshot);
+								entries.push({ citekey: entry.citekey, status: "pending-review" });
+								continue;
+							}
 							if (entry.status === "error" && automatic && item.itemkey && item.libraryURI) {
 								queueReconciliation(app, settings, item, entry.errorTitle ?? "Reconciliation needs attention", entry.identity?.notePath, undefined, entry.attachmentMove);
 								entries.push({ citekey: entry.citekey, status: "pending-review" });
@@ -1287,6 +1603,12 @@ async function handleRequest(
 							}
 							if (entry.status === "error" && !automatic) await showReconciliationError(app, session, item, entry, undefined, requested ? undefined : mode);
 							else if (mode === "auto") reportedAutoErrors.delete(errorKey(item));
+							if (requested && entry.status === "error" && entry.identity?.notePaths?.length &&
+								allReviews().some((review) => review.key === reviewKey(item))) {
+								resetReviewRequest(reviewKey(item));
+								entries.push({ citekey: entry.citekey, status: "pending-review" });
+								continue;
+							}
 							if (automatic && !recheck && entry.status !== "error") removeReview(reviewKey(item));
 							if (recheck && entry.status === "skipped" && !requestedReviews().some((review) => review.key === reviewKey(item) && review.operation === "library-recheck")) removeReview(reviewKey(item));
 							if (requested && entry.status === "skipped" && !cancelled) removeReview(reviewKey(item));
@@ -1323,7 +1645,9 @@ async function handleRequest(
 					}
 					if (cancelled) break;
 				}
-				if (requested && !bulk) for (const item of items) resetReviewRequest(reviewKey(item));
+				if (requested && !bulk) for (const item of items) {
+					if (!allReviews().some((review) => review.key === reviewKey(item) && review.automaticAttachment && review.requested)) resetReviewRequest(reviewKey(item));
+				}
 				if (cancelled) {
 					for (const entry of entries) if (entry.token) syncPlans.delete(entry.token);
 					return items.map((item, index) => entries[index]?.status === "error"
@@ -1513,6 +1837,12 @@ async function handleRequest(
 		}
 	} catch (err: unknown) {
 		const msg = errorMessage(err);
+		if (err instanceof ReviewScanCompleteError) {
+			console.error("[LitNoteServer] A new Zotero review could not be added:", err);
+			new Notice(msg, 0);
+			sendJson(res, 200, { success: false, error: msg });
+			return;
+		}
 		console.error("[LitNoteServer] Unhandled error:", err);
 		sendJson(res, 500, { success: false, error: msg });
 	} finally {
@@ -1530,6 +1860,8 @@ async function handleRequest(
  * `onunload()`.
  */
 export function startLitNoteServer(app: App, settings: LitNoteServerSettings): http.Server {
+	// Reviews live only in memory; a new ID tells Zotero they were lost and must be checked again.
+	obsidianSession = randomUUID();
 	const server = http.createServer((req, res) => {
 		handleRequest(app, settings, req, res).catch((err) => {
 			console.error("[LitNoteServer] Fatal request error:", err);
@@ -1565,6 +1897,7 @@ export function startLitNoteServer(app: App, settings: LitNoteServerSettings): h
 export function stopLitNoteServer(server: http.Server): void {
 	syncPlans.clear();
 	clearReviews();
+	clearItemTrashRequests();
 	server.close((err) => {
 		if (err) {
 			console.warn("[LitNoteServer] Error on close:", err);

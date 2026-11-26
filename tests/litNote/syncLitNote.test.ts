@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, rmdir, stat, unlink, writeFile } from "fs/promises"
 import { createHash } from "crypto";
 import { tmpdir } from "os";
 import path from "path";
-import { finishAttachmentMove, MISMATCH_PROPERTY, syncLitNote } from "../../src/litNote/syncLitNote";
+import { finishAttachmentMove, MISMATCH_PROPERTY, recordRecoveredAutomaticAttachments, syncLitNote } from "../../src/litNote/syncLitNote";
 import { createdNotices } from "../__mocks__/obsidian";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
 import type { AttachmentReviewRow, DecisionButton, NoteDecision } from "../../src/litNote/decisionModal";
@@ -110,6 +110,245 @@ async function setUpIdenticalAttachments(f: ReturnType<typeof fixture>): Promise
 }
 
 describe("literature note reconciliation", () => {
+	it("logs a missing automatic attachment without showing a pop-up", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "saver-missing-attachment-"));
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const f = fixture();
+			(f.app.vault.adapter as FileSystemAdapter).getBasePath = () => root;
+			Object.assign(f.item, {
+				citekey: "old", automaticAttachments: true, libraryType: "user",
+				linkedAttachmentBaseDirectory: path.join(root, "attachments"), linkedAttachmentBaseDirectoryValidated: true,
+				attachments: [{ itemkey: "ATT", isFile: true, mode: "linked", path: path.join(root, "missing", "old.pdf") }],
+			});
+			const previousNotices = createdNotices.length;
+			const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn());
+			expect(result.status).toBe("attachment-error");
+			expect(result.error).toContain("The Zotero attachment is missing or empty");
+			expect(log).toHaveBeenCalledWith("Automatic Zotero attachment reconciliation failed", result.error);
+			expect(createdNotices).toHaveLength(previousNotices);
+		} finally {
+			log.mockRestore();
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("warns persistently and leaves the note alone when the linked attachment base is invalid", async () => {
+		const f = fixture();
+		Object.assign(f.item, {
+			citekey: "old", automaticAttachments: true, libraryType: "user",
+			linkedAttachmentBaseDirectory: path.resolve("outside-vault"), linkedAttachmentBaseDirectoryValidated: false,
+		});
+		const before = f.getBody();
+		const prompt = vi.fn();
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt);
+		expect(result.status).toBe("attachment-error");
+		expect(result.error).toContain("Linked Attachment Base Directory");
+		expect(createdNotices.at(-1)?.message).toContain("Linked Attachment Base Directory");
+		expect(f.getBody()).toBe(before);
+		expect(prompt).not.toHaveBeenCalled();
+	});
+
+	it("keeps a different nonempty note attachment, records the original, and does not review it again", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "saver-auto-attachment-"));
+		try {
+			const vaultRoot = path.join(root, "vault");
+			const base = path.join(vaultRoot, "attachments");
+			await mkdir(base, { recursive: true });
+			const source = path.join(root, "old.pdf");
+			const destination = path.join(base, "old.pdf");
+			await writeFile(source, "original Zotero file");
+			await writeFile(destination, "preferred note file");
+			const f = fixture();
+			const attachment = Object.assign(new TFile(), { path: "attachments/old.pdf", basename: "old", extension: "pdf" });
+			const adapter = f.app.vault.adapter as FileSystemAdapter;
+			adapter.getBasePath = () => vaultRoot;
+			adapter.stat = async (relative) => {
+				try {
+					const info = await stat(path.join(vaultRoot, relative));
+					return { type: "file", size: info.size, mtime: info.mtimeMs, ctime: info.ctimeMs };
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+					throw error;
+				}
+			};
+			f.app.vault.getAbstractFileByPath = (p) => p === attachment.path ? attachment : p === f.file.path ? f.file : null;
+			f.app.metadataCache.getFirstLinkpathDest = (p) => p === attachment.path || p === "old.pdf" ? attachment : null;
+			f.app.fileManager.generateMarkdownLink = () => "[[attachments/old.pdf|PDF]]";
+			Object.assign(f.item, {
+				citekey: "old", automaticAttachments: true, libraryType: "user",
+				linkedAttachmentBaseDirectory: base, linkedAttachmentBaseDirectoryValidated: true,
+				attachments: [{ itemkey: "ATT", isFile: true, mode: "linked", path: source }],
+			});
+			const prompt = vi.fn();
+			const planned = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true });
+			expect(planned.attachmentMove?.attachments[0]).toMatchObject({
+				sourcePath: source, destinationPath: destination, resolution: "keep-note",
+			});
+			f.item.attachments![0].path = destination;
+			await finishAttachmentMove(f.app, { litNotesFolder: "lit" }, f.item, planned.attachmentMove!, [{
+				itemkey: "ATT", from: source, to: destination, newKey: "ATT",
+			}], planned.snapshot);
+			expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{
+				sourceKey: "ATT", linkedKey: "ATT", sourcePath: source, destinationPath: destination,
+			}]);
+			f.fm.zotero_attachment_preserved_copies = [];
+			await recordRecoveredAutomaticAttachments(f.app, f.file, f.item, [
+				{ itemkey: "ATT", sourcePath: source, destinationPath: destination },
+				{ itemkey: "NOT-MOVED", sourcePath: source, destinationPath: destination },
+			]);
+			expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{
+				sourceKey: "ATT", linkedKey: "ATT", sourcePath: source, destinationPath: destination,
+			}]);
+			const archive = path.join(root, "archive.pdf");
+			await writeFile(archive, "original Zotero file");
+			f.fm.zotero_attachment_preserved_copies = [];
+			f.item.attachments![0].itemkey = "NEW";
+			await finishAttachmentMove(f.app, { litNotesFolder: "lit" }, f.item, planned.attachmentMove!, [{
+				itemkey: "ATT", from: source, to: destination, newKey: "NEW", archivePath: archive,
+			}]);
+			expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{
+				sourceKey: "ATT", linkedKey: "NEW", sourcePath: archive, originalPath: source, destinationPath: destination,
+			}]);
+			f.fm.zotero_attachment_preserved_copies = [];
+			await unlink(source);
+			await recordRecoveredAutomaticAttachments(f.app, f.file, f.item, [
+				{ itemkey: "ATT", sourcePath: source, destinationPath: destination, archivePath: archive },
+			]);
+			expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{
+				sourceKey: "ATT", linkedKey: "NEW", sourcePath: archive, originalPath: source, destinationPath: destination,
+			}]);
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true })).status).toBe("skipped");
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it.each([false, true])("reconciles a missing Zotero source without claiming a preserved main file (resources: %s)", async (resources) => {
+		const root = await mkdtemp(path.join(tmpdir(), "saver-missing-attachment-"));
+		try {
+			const vaultRoot = path.join(root, "vault");
+			const base = path.join(vaultRoot, "attachments");
+			await mkdir(base, { recursive: true });
+			const source = path.join(root, "storage", "old.pdf");
+			await mkdir(path.dirname(source));
+			const archiveDirectory = path.join(root, "resource-archive");
+			if (resources) {
+				await mkdir(archiveDirectory);
+				await writeFile(path.join(path.dirname(source), "image.png"), "resource");
+				await writeFile(path.join(archiveDirectory, "image.png"), "resource");
+			}
+			const destination = path.join(base, "old.pdf");
+			await writeFile(destination, "preferred note file");
+			const f = fixture();
+			const attachment = Object.assign(new TFile(), { path: "attachments/old.pdf", basename: "old", extension: "pdf" });
+			const adapter = f.app.vault.adapter as FileSystemAdapter;
+			adapter.getBasePath = () => vaultRoot;
+			adapter.stat = async (relative) => {
+				const info = await stat(path.join(vaultRoot, relative));
+				return { type: "file", size: info.size, mtime: info.mtimeMs, ctime: info.ctimeMs };
+			};
+			f.app.vault.getAbstractFileByPath = (p) => p === attachment.path ? attachment : p === f.file.path ? f.file : null;
+			f.app.metadataCache.getFirstLinkpathDest = (p) => p === attachment.path || p === "old.pdf" ? attachment : null;
+			f.app.fileManager.generateMarkdownLink = () => "[[attachments/old.pdf|PDF]]";
+			Object.assign(f.item, {
+				citekey: "old", automaticAttachments: true, libraryType: "user",
+				linkedAttachmentBaseDirectory: base, linkedAttachmentBaseDirectoryValidated: true,
+				attachments: [{ itemkey: "ATT", isFile: true, mode: resources ? "stored" : "linked", path: source }],
+			});
+			const prompt = vi.fn();
+			const planned = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true });
+			expect(planned.attachmentMove?.attachments[0]).toMatchObject({
+				sourcePath: source, sourceMissing: true, destinationPath: destination, resolution: "keep-note",
+			});
+			f.item.attachments![0].path = destination;
+			f.item.attachments![0].mode = "linked";
+			if (resources) f.item.attachments![0].itemkey = "NEW";
+			await finishAttachmentMove(f.app, { litNotesFolder: "lit" }, f.item, planned.attachmentMove!, resources ? [{
+				itemkey: "ATT", from: source, to: destination, newKey: "NEW", archiveDirectory,
+			}] : [], planned.snapshot);
+			if (resources) {
+				expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{
+					sourceKey: "ATT", linkedKey: "NEW", sourcePath: archiveDirectory, originalPath: source,
+					resourcesOnly: true, resourceSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+				}]);
+				f.fm.zotero_attachment_preserved_copies = [];
+				await recordRecoveredAutomaticAttachments(f.app, f.file, f.item, [{
+					itemkey: "ATT", sourcePath: source, destinationPath: destination, archiveDirectory,
+				}]);
+				expect(f.fm.zotero_attachment_preserved_copies).toMatchObject([{ resourcesOnly: true }]);
+			} else expect(f.fm.zotero_attachment_preserved_copies).toBeUndefined();
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true })).status).toBe("skipped");
+			expect(prompt).not.toHaveBeenCalled();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
+	it("makes an absolute in-vault attachment link relative without asking for review", async () => {
+		const f = fixture();
+		f.item.citekey = "old";
+		const absolute = f.item.attachments![0].path!;
+		f.setBody(`> [!info]- [**Zotero**]()<!-- zotero-attachments:start --> | **[[${absolute}|PDF]]**<!-- zotero-attachments:end -->\n`);
+		const prompt = vi.fn();
+
+		const prepared = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true });
+		expect(prepared.status).toBe("prepared");
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { expectedContent: prepared.snapshot });
+
+		expect(result.status).toBe("updated");
+		expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
+		expect(f.getBody()).not.toContain(absolute);
+		expect(prompt).not.toHaveBeenCalled();
+		expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt)).status).toBe("skipped");
+	});
+
+	it("recognizes the same Zotero and note attachment without asking for a decision", async () => {
+		const f = fixture();
+		f.item.citekey = "old";
+		f.setBody("> [!info]- [**Zotero**]()<!-- zotero-attachments:start --> | **[[attachments/new.pdf|PDF]]**<!-- zotero-attachments:end -->\n");
+		const prompt = vi.fn();
+		const before = f.getBody();
+
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt, { prepareOnly: true });
+
+		expect(result.status).toBe("skipped");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(f.getBody()).toBe(before);
+	});
+
+	it.each([true, false])("verifies the repaired note link resolves to the copied file: %s", async (resolves) => {
+		const root = await mkdtemp(path.join(tmpdir(), "saver-repair-note-"));
+		try {
+			await mkdir(path.join(root, "attachments"));
+			const source = path.join(root, "source.pdf");
+			const destination = path.join(root, "attachments", "new.pdf");
+			await writeFile(source, "PDF data");
+			await writeFile(destination, "PDF data");
+			const f = fixture();
+			f.item.citekey = "old";
+			f.item.attachments = [
+				{ itemkey: "ORIGINAL", mode: "stored", path: source, isFile: true },
+				{ itemkey: "LINKED", mode: "linked", path: destination, isFile: true },
+			];
+			(f.app.vault.adapter as FileSystemAdapter).getBasePath = () => root;
+			if (!resolves) f.app.metadataCache.getFirstLinkpathDest = () => null;
+			const snapshot = f.getBody();
+			const operation = finishAttachmentMove(f.app, { litNotesFolder: "lit" }, f.item,
+				{ baseDirectory: path.join(root, "attachments"), attachments: [], linkNoteFiles: [], trashNoteFiles: [], extras: [] },
+				[{ itemkey: "ORIGINAL", from: source, to: destination, newKey: "LINKED", copied: true }], snapshot);
+			if (resolves) {
+				await expect(operation).resolves.toEqual({ trashed: [] });
+				expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
+			} else {
+				await expect(operation).rejects.toThrow("The note does not link to the copied attachment");
+			}
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+
 	it("corrects a stale note citekey when its filename matches Zotero, then leaves attachments for the next sync", async () => {
 		const f = fixture();
 		f.item.citekey = "old";
@@ -217,61 +456,121 @@ describe("literature note reconciliation", () => {
 	});
 
 	it("links a copied Zotero attachment and ignores the preserved source on later syncs", async () => {
-		const f = fixture();
-		f.item.citekey = "old";
-		const vaultRoot = (f.app.vault.adapter as FileSystemAdapter).getBasePath();
-		const sourcePath = path.resolve("zotero-storage", "shared.pdf");
-		f.item.attachments = [
-			{ itemkey: "ATT-SOURCE", isFile: true, mode: "stored", path: sourcePath },
-			{
-				itemkey: "ATT-COPY",
-				isFile: true,
-				mode: "linked",
-				path: path.join(vaultRoot, "attachments", "new.pdf"),
-			},
-		];
-
-		await finishAttachmentMove(
-			f.app,
-			{ litNotesFolder: "lit" },
-			f.item,
-			{
-				baseDirectory: "attachments",
-				attachments: [],
-				linkNoteFiles: [],
-				trashNoteFiles: [],
-				extras: [],
-			},
-			[
+		const root = await mkdtemp(path.join(tmpdir(), "saver-preserved-copy-"));
+		try {
+			const vaultRoot = path.join(root, "vault");
+			await mkdir(vaultRoot);
+			await mkdir(path.join(vaultRoot, "attachments"));
+			await mkdir(path.join(root, "storage"));
+			const sourcePath = path.join(root, "storage", "shared.pdf");
+			const destinationPath = path.join(vaultRoot, "attachments", "new.pdf");
+			await writeFile(sourcePath, "PDF fixture");
+			await writeFile(destinationPath, "PDF fixture");
+			const f = fixture();
+			f.item.citekey = "old";
+			const adapter = f.app.vault.adapter as FileSystemAdapter;
+			adapter.getBasePath = () => vaultRoot;
+			adapter.stat = async (relative) => {
+				try {
+					const info = await stat(path.join(vaultRoot, relative));
+					return { type: "file", size: info.size, mtime: info.mtimeMs, ctime: info.ctimeMs };
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+					throw error;
+				}
+			};
+			f.item.attachments = [
+				{ itemkey: "ATT-SOURCE", isFile: true, mode: "stored", path: sourcePath },
 				{
-					itemkey: "ATT-SOURCE",
-					from: sourcePath,
-					to: path.join(vaultRoot, "attachments", "new.pdf"),
-					copied: true,
+					itemkey: "ATT-COPY",
+					isFile: true,
+					mode: "linked",
+					path: destinationPath,
 				},
-			],
-		);
+			];
 
-		expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
-		expect(f.fm.zotero_attachment_preserved_keys).toEqual(["ATT-SOURCE"]);
-		expect(createdNotices.at(-1)?.message).toContain(
-			"Copied new.pdf into the vault and linked the copies in Obsidian and Zotero.",
-		);
-		expect(createdNotices.at(-1)?.message).toContain(
-			"The Zotero originals remain. Another attachment references them.",
-		);
-		expect(createdNotices.at(-1)?.message).toContain(
-			"Verify the references before manually deleting an original.",
-		);
+			await finishAttachmentMove(
+				f.app,
+				{ litNotesFolder: "lit" },
+				f.item,
+				{
+					baseDirectory: "attachments",
+					attachments: [],
+					linkNoteFiles: [],
+					trashNoteFiles: [],
+					extras: [],
+				},
+				[
+					{
+						itemkey: "ATT-SOURCE",
+						from: sourcePath,
+						to: destinationPath,
+						newKey: "ATT-COPY",
+						copied: true,
+					},
+				],
+			);
 
-		const next = await syncLitNote(
-			f.app,
-			{ litNotesFolder: "lit" },
-			f.item,
-			"auto",
-			vi.fn(),
-		);
-		expect(next.status).toBe("skipped");
+			expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
+			expect(f.fm.zotero_attachment_preserved_keys).toEqual(["ATT-SOURCE"]);
+			expect(f.fm.zotero_attachment_preserved_copies).toEqual([{
+				sourceKey: "ATT-SOURCE", linkedKey: "ATT-COPY", sourcePath, destinationPath,
+				sha256: createHash("sha256").update("PDF fixture").digest("hex"),
+			}]);
+			expect(createdNotices.at(-1)?.message).toContain(
+				"Copied new.pdf into the vault and linked the copies in Obsidian and Zotero.",
+			);
+			expect(createdNotices.at(-1)?.message).toContain(
+				"The Zotero originals remain. Another attachment references them.",
+			);
+			expect(createdNotices.at(-1)?.message).toContain(
+				"Verify the references before manually deleting an original.",
+			);
+
+			const next = await syncLitNote(
+				f.app,
+				{ litNotesFolder: "lit" },
+				f.item,
+				"auto",
+				vi.fn(),
+			);
+			expect(next.status).toBe("skipped");
+			await unlink(sourcePath);
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("skipped");
+			await writeFile(destinationPath, "Different PDF");
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			await writeFile(destinationPath, "PDF fixture");
+			await writeFile(sourcePath, "Different PDF");
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			await writeFile(sourcePath, "PDF fixture");
+			await writeFile(destinationPath, "Different PDF");
+			await writeFile(sourcePath, "Different PDF");
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			await writeFile(sourcePath, "PDF fixture");
+			await writeFile(destinationPath, "PDF fixture");
+			const originalCopies = f.fm.zotero_attachment_preserved_copies;
+			f.fm.zotero_attachment_preserved_copies = [];
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			f.fm.zotero_attachment_preserved_copies = originalCopies;
+			const source = f.item.attachments![0];
+			const linked = f.item.attachments![1];
+			source.itemkey = "OTHER-SOURCE";
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			source.itemkey = "ATT-SOURCE";
+			source.path = path.join(root, "storage", "other.pdf");
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			source.path = sourcePath;
+			linked.itemkey = "OTHER-COPY";
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			linked.itemkey = "ATT-COPY";
+			linked.path = path.join(vaultRoot, "attachments", "other.pdf");
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+			linked.path = destinationPath;
+			await unlink(destinationPath);
+			expect((await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", vi.fn())).status).toBe("error");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	it("keeps note duplicates and explains why originals remain when Zotero reference checking fails", async () => {
@@ -328,7 +627,7 @@ describe("literature note reconciliation", () => {
 		expect(f.getBody()).toContain("[[old.pdf|PDF]]");
 	});
 
-	it("includes other note links and warns when Zotero has already changed", async () => {
+	it("describes the user's citation-key change without implying an earlier operation", async () => {
 		const f = fixture();
 		f.item.citekey = "old";
 		f.item.zoteroChanges = {
@@ -340,8 +639,9 @@ describe("literature note reconciliation", () => {
 		await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt);
 		const message = prompt.mock.calls[0][1] as string;
 		expect(prompt.mock.calls[0][3].some((row: AttachmentReviewRow) => row.kind === "body")).toBe(true);
-		expect(message).toContain("Zotero already changed the citekey from previous to old");
-		expect(message).toContain("Cancel will not undo the changes already made in Zotero");
+		expect(message).toContain("The citation-key change you just made in Zotero was previous");
+		expect(message).not.toContain("already");
+		expect(message).toContain("Cancel stops this Obsidian update; it does not undo your Zotero citation-key change");
 	});
 
 	it("shows unmatched links without counting matching rendered links as differences", async () => {
@@ -462,6 +762,29 @@ describe("literature note reconciliation", () => {
 		expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
 		expect(f.getBody()).not.toContain("[[old.pdf|PDF]]");
 		expect(f.getBody()).toContain("Personal notes.");
+	});
+
+	it.each(["rename", "zotero-change"])("repairs a broken link in the confirmed %s plan, ignoring a stray .md note with the link's name", async (kind) => {
+		const f = fixture();
+		f.fm.citekey = "new";
+		if (kind === "zotero-change") {
+			f.file.path = "lit/new.md";
+			f.item.zoteroChanges = { previousCitekey: "old", attachmentMoves: [] };
+		}
+		const stray = Object.assign(new TFile(), { path: "lit/old.pdf.md", name: "old.pdf.md", basename: "old.pdf", extension: "md" });
+		const lookup = f.app.metadataCache.getFirstLinkpathDest;
+		f.app.metadataCache.getFirstLinkpathDest = (link, source) => link === "old.pdf" ? stray : lookup(link, source);
+		f.app.vault.adapter.stat = async () => ({ type: "file", size: 25, mtime: 1, ctime: 1 });
+		f.setBody("> [!info]- [**Zotero**]() | **[[old.pdf|PDF]]**\n\nPersonal notes.\n");
+		const prompt = accept();
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt);
+		expect(result.status).toBe("updated");
+		expect(prompt).toHaveBeenCalledTimes(1);
+		expect(prompt.mock.calls[0][3]).toBeUndefined();
+		expect(prompt.mock.calls[0][1]).toContain("Replace 1 broken attachment link(s) with the Zotero attachment:\n- old.pdf → attachments/new.pdf");
+		expect(f.getBody()).toContain("[[attachments/new.pdf|PDF]]");
+		expect(f.getBody()).not.toContain("old.pdf");
+		expect(f.file.path).toBe("lit/new.md");
 	});
 
 	it("does not replace a broken link with an empty Zotero file", async () => {
@@ -614,6 +937,13 @@ describe("literature note reconciliation", () => {
 		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept());
 		expect(result.status).toBe("error");
 		expect(result.error).toContain("More than one");
+		expect(result.identity).toMatchObject({
+			itemkey: "ABC",
+			notePaths: ["lit/old.md", "lit/duplicate.md"],
+		});
+		expect(result.dialogMessage).toContain("No notes or attachments were changed");
+		expect(result.dialogMessage).toContain("zotero_item_key");
+		expect(result.dialogMessage).toContain("zotero_library_uri");
 		expect(f.fm.citekey).toBe("old");
 	});
 
@@ -677,7 +1007,19 @@ describe("literature note reconciliation", () => {
 		]);
 	});
 
-	it("does not present a choice when the duplicate check is absent or stale", async () => {
+	it("queues the citekey decision instead of an error when a background recheck has no key check", async () => {
+		const f = fixture();
+		delete f.item.citationKeyCheck;
+		const prompt = vi.fn();
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt);
+		expect(result.status).toBe("error");
+		expect(result.errorTitle).toBe("Citekeys differ");
+		expect(result.error).toContain("The note uses citation key old; Zotero uses new.");
+		expect(prompt).not.toHaveBeenCalled();
+		expect(f.fm.citekey).toBe("old");
+	});
+
+	it("does not present a choice when the duplicate check is stale", async () => {
 		const f = fixture();
 		f.item.citationKeyCheck = { citekey: "stale", matches: [] };
 		const prompt = vi.fn();
@@ -991,9 +1333,9 @@ describe("literature note reconciliation", () => {
 		const before = f.getBody();
 		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", prompt);
 		const preview = prompt.mock.calls.find((call) => call[0] === "Confirm attachment link changes")?.[1];
-		expect(preview).toContain("Already changed in Zotero");
+		expect(preview).toContain("Your Zotero changes");
 		expect(preview).toContain("previous → old");
-		expect(preview).toContain("Cancel will not undo the changes already made in Zotero");
+		expect(preview).toContain("Cancel stops this Obsidian update; it does not undo your Zotero citation-key change");
 		expect(result.status).toBe("skipped");
 		expect(f.getBody()).toBe(before);
 		expect(f.fm.citekey).toBe("old");

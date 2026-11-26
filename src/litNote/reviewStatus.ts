@@ -1,13 +1,16 @@
 import { App, Notice } from "obsidian";
-import { ItemSuggestModal } from "commons/modal";
 import { raiseWindow } from "commons/os";
 import { getMainWindow } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
+import { randomUUID } from "crypto";
 import { inspectUncertainAttachments } from "./uncertainAttachments";
-import { acknowledgeUncertainReview, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, setReviewListener } from "./pendingReviews";
+import { acknowledgeUncertainReview, allReviews, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, requestUncertainAttachmentRepair, requestUncertainAttachmentRepairBatch, setReviewListener } from "./pendingReviews";
+import { ReviewOverviewModal } from "./reviewOverviewModal";
+import { compareDuplicateReview, isDuplicateReview, watchDuplicateReviews } from "./duplicateNotes";
+import type { DuplicateReviewSettings } from "./duplicateNotes";
 import type { PendingReview } from "./pendingReviews";
 
-type ReviewGroup =
+export type ReviewGroup =
 	| { kind: "uncertain"; title: string; attachmentMove: boolean; reviews: PendingReview[] }
 	| { kind: "awaiting-ack"; title: string; reviews: PendingReview[] }
 	| { kind: "library"; title: string; uri: string; reviews: PendingReview[] }
@@ -35,11 +38,13 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 			const group = libraries.get(review.libraryURI) ?? [];
 			group.push(review);
 			libraries.set(review.libraryURI, group);
+			continue;
 		}
 		if (review.proposal && !review.requested) {
 			const group = updates.get(review.proposal.summary) ?? [];
 			group.push(review);
 			updates.set(review.proposal.summary, group);
+			continue;
 		}
 		if (review.attachmentMove && !review.requested) {
 			const conflict = review.attachmentMove.attachments.some((attachment) =>
@@ -192,57 +197,52 @@ async function approveNoteBatch(app: App, group: Extract<ReviewGroup, { kind: "b
 	}
 }
 
+let reviewingUncertain = false;
+
 function openGroup(app: App, group: ReviewGroup): void {
 	if (group.kind === "awaiting-ack") {
 		new Notice("Start Zotero to finish confirming the checked operations.", 10000);
 		return;
 	}
 	if (group.kind === "uncertain") {
-		new ItemSuggestModal(app, group.reviews, (entry) => {
+		const eligible = group.reviews.filter((entry) => !entry.requested);
+		if (group.attachmentMove && eligible.length > 1) {
 			void (async () => {
-				const attachmentMove = entry.uncertainOperation === "attachment-move";
-				let attachmentDetails: Awaited<ReturnType<typeof inspectUncertainAttachments>> | undefined;
-				if (attachmentMove) {
+				const choice = await askNoteDecision(app, "Repair interrupted attachments?",
+					`Copy and link the attachments for ${eligible.length} items in Zotero and Obsidian. The original files remain for you to inspect and optionally delete. Any item that cannot be repaired safely stays in the review list.`,
+					[{ label: "Copy and repair all", value: "create", cta: true }, { label: "Cancel", value: "cancel" }]);
+				if (choice === "create") {
 					try {
-						attachmentDetails = await inspectUncertainAttachments(app, entry);
+						requestUncertainAttachmentRepairBatch(eligible.map((entry) => ({ key: entry.key, repairId: randomUUID() })));
 					} catch (error) {
-						console.error("Could not inspect the Zotero attachment review", error);
-						attachmentDetails = { message: `Could not inspect the attachment links: ${error instanceof Error ? error.message : String(error)}`, paths: [] };
+						console.error("Could not start attachment repairs", error);
+						new Notice(error instanceof Error ? error.message : String(error), 10000);
 					}
 				}
-				const choice = await askNoteDecision(app, attachmentMove ? "Check the attachment move" : "Check the Zotero item and Obsidian note",
-					[
-						attachmentMove
-							? "Zotero tried to move attachments to the vault and/or link to them, but couldn't verify that the changes finished."
-							: "Zotero could not confirm that an update finished. It may have changed the citation key, note details, attachment files, or links.",
-						`- In Zotero, open the item and its file attachments. Check that the files open.\n- In Obsidian, open the note and its attachment links. Check that the links open the correct files.${attachmentMove ? "" : "\n- Check that the citation key and note details match the Zotero item."}`,
-						attachmentDetails?.message ?? "",
-						entry.notePath ? "Opening the note closes this dialog; return to Zotero reviews afterward." : "Obsidian could not identify a matching note. Search Obsidian for the item's title or citation key.",
-						"Fix any missing files or broken links before confirming. Do not delete copies until you have checked them. Confirming does not fix files or links; it allows normal updates to resume.",
-						entry.uncertainReason ? `Error details: ${entry.uncertainReason}` : "",
-					].filter(Boolean).join("\n\n"),
-					[{ label: "I've checked the item and note", value: "create", cta: true }, { label: "Close", value: "cancel" }],
-					{
-						title: entry.title === entry.itemkey ? "Open item in Zotero" : entry.title,
-						itemkey: entry.itemkey,
-						libraryURI: entry.libraryURI,
-						notePath: entry.notePath,
-						noteOpenFollowUp: "Return to Zotero reviews after checking the note.",
-						...(attachmentDetails ? { recoveryPaths: attachmentDetails.paths } : {}),
-					});
-				if (choice !== "create") return;
+			})();
+			return;
+		}
+		if (!group.attachmentMove && eligible.length > 1) {
+			if (reviewingUncertain) {
+				new Notice("A sequence of Zotero reviews is already open.");
+				return;
+			}
+			reviewingUncertain = true;
+			void (async () => {
 				try {
-					acknowledgeUncertainReview(entry.key);
-					new Notice("Waiting for Zotero to acknowledge the check. The note will be rechecked.", 10000);
+					for (const entry of eligible) {
+						const current = allReviews().find((review) => review.key === entry.key);
+						if (!current?.uncertain || current.requested) continue;
+						if (!await reviewUncertainItem(app, current)) break;
+					}
 				} catch (error) {
-					new Notice(error instanceof Error ? error.message : String(error), 10000);
+					console.error("Could not continue Zotero reviews", error);
+					new Notice(`Could not continue Zotero reviews: ${error instanceof Error ? error.message : String(error)}`, 10000);
+				} finally {
+					reviewingUncertain = false;
 				}
 			})();
-		}, {
-			placeholder: group.title,
-			getTitle: (entry) => entry.title === entry.itemkey ? `Zotero item (key ${entry.itemkey})` : entry.title,
-			getSubtitle: (entry) => entry.notePath || "Obsidian note unavailable. Select to open the item in Zotero and find its note.",
-		}).open();
+		}
 		return;
 	}
 	if (group.kind === "library") {
@@ -257,44 +257,119 @@ function openGroup(app: App, group: ReviewGroup): void {
 		void approveAttachmentBatch(app, group);
 		return;
 	}
-	new ItemSuggestModal(app, group.reviews, (entry) => {
-		if (entry.requested) {
-			new Notice("This review is waiting for Zotero. Start Zotero if it is closed.");
-			return;
-		}
-		try {
-			requestReview(entry.key);
-			new Notice("Waiting for Zotero to prepare this review. Start Zotero if it is closed.", 10000);
-		} catch (error) {
-			console.error("Could not request Zotero review", error);
-			new Notice("This review is no longer pending.");
-		}
-	}, {
-		placeholder: group.title,
-		getTitle: (entry) => entry.title,
-		getSubtitle: (entry) => `${entry.notePath || entry.itemkey}${entry.requested ? " (waiting for Zotero)" : ""}`,
-	}).open();
 }
 
-export function setupReviewStatus(app: App, status: HTMLElement): () => void {
+async function reviewUncertainItem(app: App, entry: PendingReview): Promise<boolean> {
+	const attachmentMove = entry.uncertainOperation === "attachment-move";
+	let attachmentDetails: Awaited<ReturnType<typeof inspectUncertainAttachments>> | undefined;
+	if (attachmentMove) {
+		try {
+			attachmentDetails = await inspectUncertainAttachments(app, entry);
+		} catch (error) {
+			console.error("Could not inspect the Zotero attachment review", error);
+			attachmentDetails = { message: `Could not inspect the attachment links: ${error instanceof Error ? error.message : String(error)}`, paths: [] };
+		}
+	}
+	const choice = await askNoteDecision(app, attachmentMove ? "Check the attachment move" : "Check the Zotero item and Obsidian note",
+		[
+			attachmentMove
+				? "Zotero tried to move attachments to the vault and/or link to them, but couldn't verify that the changes finished."
+				: "Zotero could not confirm that an update finished. It may have changed the citation key, note details, attachment files, or links.",
+			`- In Zotero, open the item and its file attachments. Check that the files open.\n- In Obsidian, open the note and its attachment links. Check that the links open the correct files.${attachmentMove ? "" : "\n- Check that the citation key and note details match the Zotero item."}`,
+			attachmentDetails?.message ?? "",
+			entry.notePath ? "Opening the note closes this dialog; return to Zotero reviews afterward." : "Obsidian could not identify a matching note. Search Obsidian for the item's title or citation key.",
+			attachmentMove
+				? "Copy and repair attachment links copies the attachment into the vault and links the copy in Zotero and Obsidian. The original stays in its current location, such as Zotero storage. You can delete it yourself after checking that the copy opens in both apps."
+				: "Fix any missing files or broken links before confirming. Do not delete copies until you have checked them. Confirming does not fix files or links; it allows normal updates to resume.",
+			entry.uncertainReason ? `Error details: ${entry.uncertainReason}` : "",
+		].filter(Boolean).join("\n\n"),
+		[
+			...(attachmentMove ? [{ label: "Copy and repair attachment links", value: "repair-attachments" as const }] : []),
+			{ label: "I've checked the item and note", value: "create" as const, cta: true },
+			{ label: "Close", value: "cancel" as const },
+		],
+		{
+			title: entry.title === entry.itemkey ? "Open item in Zotero" : entry.title,
+			itemkey: entry.itemkey,
+			libraryURI: entry.libraryURI,
+			notePath: entry.notePath,
+			noteOpenFollowUp: "Return to Zotero reviews after checking the note.",
+			...(attachmentDetails ? { recoveryPaths: attachmentDetails.paths } : {}),
+		});
+	if (choice === "repair-attachments") {
+		try {
+			requestUncertainAttachmentRepair(entry.key, randomUUID());
+			new Notice("Waiting for Zotero to copy and repair the attachment links.", 10000);
+		} catch (error) {
+			new Notice(error instanceof Error ? error.message : String(error), 10000);
+			return false;
+		}
+		return true;
+	}
+	if (choice !== "create") return false;
+	try {
+		acknowledgeUncertainReview(entry.key);
+		new Notice("Waiting for Zotero to acknowledge the check. The note will be rechecked.", 10000);
+		return true;
+	} catch (error) {
+		new Notice(error instanceof Error ? error.message : String(error), 10000);
+		return false;
+	}
+}
+
+function requestIndividualReview(entry: PendingReview): void {
+	if (entry.requested) {
+		new Notice("This review is waiting for Zotero. Start Zotero if it is closed.");
+		return;
+	}
+	try {
+		requestReview(entry.key);
+		new Notice("Waiting for Zotero to prepare this review. Start Zotero if it is closed.", 10000);
+	} catch (error) {
+		console.error("Could not request Zotero review", error);
+		new Notice("This review is no longer pending.");
+	}
+}
+
+export function setupReviewStatus(app: App, status: HTMLElement, settings?: DuplicateReviewSettings): () => void {
 	const button = status.createEl("button", { cls: "lit-note-review-status" });
+	let overview: ReviewOverviewModal | undefined;
+	const fileOpen = app.workspace.on("file-open", () => overview?.close());
 	let count = 0;
 	let announced = false;
 	let arrival: Notice | undefined;
 	let progress: Notice | undefined;
-	setReviewListener((reviews, batch) => {
-		status.hidden = reviews.length === 0;
-		const interrupted = batch ? reviews.filter((entry) => entry.uncertain &&
+	let scanning: string | undefined;
+	setReviewListener((reviews, batch, scan) => {
+		reviews = reviews.filter((entry) => !entry.automaticAttachment);
+		overview?.update(groupsFor(reviews), reviews.length);
+		const scanPending = scan?.status === "pending";
+		const scanFailed = scan?.status === "error";
+		// Without this, a requested check that finds nothing ends silently: the status bar item just disappears.
+		if (scan?.requested && scanning === scan.scanId && !scanPending) {
+			if (scanFailed) new Notice(`Zotero could not finish checking the literature notes${scan.error ? `: ${scan.error}` : "."}`, 15000);
+			else if (!reviews.length) new Notice("Zotero finished checking all literature notes. Nothing needs review.", 10000);
+			else {
+				arrival?.hide();
+				announced = false;
+			}
+		}
+		scanning = scanPending ? scan.scanId : undefined;
+		status.hidden = !scanPending && !scanFailed && reviews.length === 0;
+		const interrupted = batch && batch.kind !== "attachment-repair" ? reviews.filter((entry) => entry.uncertain &&
 			(entry.operation === batch.kind || (batch.kind === "library-uri" && entry.operation === "library-recheck"))).length : 0;
-		button.setText(`Zotero reviews: ${reviews.length}`);
-		button.title = batch
-			? `${batch.completed}/${batch.total} checked${batch.rechecking ? `, ${batch.rechecking} rechecking` : ""}${interrupted ? `, ${interrupted} ${interrupted === 1 ? "needs" : "need"} checking` : ""}`
-			: "Open Zotero reviews";
-		if (reviews.length && !announced) {
+		button.setText(scanPending ? "Checking Zotero/Obsidian match..." : scanFailed ? "Zotero/Obsidian check failed" : `Zotero reviews: ${reviews.length}`);
+		button.title = scanFailed
+			? `Could not check Zotero and Obsidian for inconsistencies${scan.error ? `: ${scan.error}` : ""}. Keep both apps open while Zotero retries.`
+			: batch
+				? `${batch.completed}/${batch.total} checked${batch.rechecking ? `, ${batch.rechecking} rechecking` : ""}${interrupted ? `, ${interrupted} ${interrupted === 1 ? "needs" : "need"} checking` : ""}`
+				: scanPending ? "Checking Zotero and Obsidian for inconsistencies."
+					: "Open Zotero reviews";
+		if (!scanPending && !scanFailed && reviews.length && !announced) {
 			arrival = new Notice("Zotero reviews need attention. Click Zotero reviews in the status bar to see them.", 0);
 			announced = true;
 		}
-		if (!reviews.length && count && !batch) {
+		if (!scanPending && !scanFailed && !reviews.length && count && !batch) {
 			arrival?.hide();
 			arrival = undefined;
 			new Notice("All Zotero reviews are complete.", 10000);
@@ -303,7 +378,7 @@ export function setupReviewStatus(app: App, status: HTMLElement): () => void {
 		if (batch) {
 			const message = interrupted
 				? `${interrupted} update${interrupted === 1 ? " may" : "s may"} be incomplete. Select Zotero reviews in the status bar to check ${interrupted === 1 ? "it" : "them"}. ${batch.completed} of ${batch.total} notes checked; other updates may still be running.`
-				: `${batch.kind === "attachment-move" ? "Moving or copying attachments and relinking" : "Correcting"} ${batch.total} note${batch.total === 1 ? "" : "s"}: ${batch.completed} of ${batch.total} checked${batch.rechecking ? `; ${batch.rechecking} awaiting recheck` : ""}. Keep the updated Zotero companion running.`;
+				: `${batch.kind === "attachment-repair" ? "Copying and linking attachments for" : batch.kind === "attachment-move" ? "Moving or copying attachments and relinking" : "Correcting"} ${batch.total} note${batch.total === 1 ? "" : "s"}: ${batch.completed} of ${batch.total} checked${batch.rechecking ? `; ${batch.rechecking} awaiting recheck` : ""}. Keep the updated Zotero companion running.`;
 			if (!progress) progress = new Notice(message, 0);
 			else progress.setMessage(message);
 			if (batch.completed === batch.total && !batch.rechecking) {
@@ -312,7 +387,7 @@ export function setupReviewStatus(app: App, status: HTMLElement): () => void {
 				const failed = batch.total - batch.succeeded;
 				const result = batch.kind === "library-uri"
 					? `Added zotero_library_uri ${batch.label} to ${batch.succeeded} of ${batch.total} notes.`
-					: batch.kind === "attachment-move"
+					: batch.kind === "attachment-move" || batch.kind === "attachment-repair"
 						? `Linked Zotero attachments and Obsidian notes for ${batch.succeeded} of ${batch.total} notes.`
 						: `Updated ${batch.succeeded} of ${batch.total} notes.`;
 				const remaining = reviews.length
@@ -326,24 +401,40 @@ export function setupReviewStatus(app: App, status: HTMLElement): () => void {
 			}
 		}
 		button.onclick = () => {
+			if (scanPending) {
+				new Notice("Checking Zotero and Obsidian for inconsistencies. The full list will appear when the check finishes.", 10000);
+				return;
+			}
+			if (scanFailed) {
+				new Notice(`Could not check Zotero and Obsidian for inconsistencies${scan.error ? `: ${scan.error}` : ""}. Keep both apps open while Zotero retries.`, 0);
+				return;
+			}
 			arrival?.hide();
 			arrival = undefined;
-			new ItemSuggestModal(app, groupsFor(reviews), (group) => openGroup(app, group), {
-				placeholder: "Choose a Zotero review",
-				getTitle: (group) => group.title,
-				getSubtitle: (group) => group.kind === "uncertain" ? group.attachmentMove
-					? "Zotero tried to put attachments in the vault and link them to their Obsidian notes. Select to check each item."
-					: "Zotero couldn't confirm that changes finished. Select to check each item and note in both apps."
-					: group.kind === "awaiting-ack" ? "Keep Zotero open while it confirms your checks."
-					: group.kind === "library" ? group.uri
-					: group.kind === "bulk-update" ? group.summary
-					: group.kind === "attachment-move" ? group.baseDirectory
-					: "Review notes individually",
-			}).open();
+			if (overview) return;
+			overview = new ReviewOverviewModal(app, (group) => openGroup(app, group), (group, entry) => {
+				if (group.kind === "uncertain") {
+					void reviewUncertainItem(app, entry).catch((error: unknown) => {
+						console.error("Could not open the Zotero review", error);
+						new Notice(`Could not open the Zotero review: ${error instanceof Error ? error.message : String(error)}`, 10000);
+					});
+				}
+				else if (settings && isDuplicateReview(entry)) {
+					overview?.close();
+					void compareDuplicateReview(app, settings, entry);
+				}
+				else if (group.kind !== "awaiting-ack") requestIndividualReview(entry);
+			}, () => { overview = undefined; });
+			overview.update(groupsFor(reviews), reviews.length);
+			overview.open();
 		};
 	});
+	const stopWatching = settings ? watchDuplicateReviews(app, settings) : undefined;
 	return () => {
+		stopWatching?.();
 		setReviewListener();
+		app.workspace.offref(fileOpen);
+		overview?.close();
 		arrival?.hide();
 		progress?.hide();
 	};

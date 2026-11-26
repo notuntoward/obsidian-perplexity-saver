@@ -4,27 +4,27 @@ import type { ReferenceCache } from "obsidian";
 import { buildAliases, buildAttachmentLinks, buildLitNoteFrontmatter } from "./buildLitNote";
 import type { AttachmentProblem } from "./buildLitNote";
 import { findIdenticalAttachments } from "./attachmentIdentity";
+import { attachmentLinkDestination } from "./attachmentLinks";
 import type { IdenticalAttachment } from "./attachmentIdentity";
-import { buildAttachmentMoveCandidate, validateTrashNoteFile } from "./attachmentMove";
+import { attachmentFingerprint, buildAttachmentMoveCandidate, buildAutomaticAttachmentMoveCandidate, preservedAttachmentMatches, validateTrashNoteFile, verifyAttachmentCopy, verifyAttachmentResourceArchive } from "./attachmentMove";
 import type { NoteAttachmentLink } from "./attachmentMove";
 import type { AttachmentMoveCandidate } from "./pendingReviews";
 import type { AttachmentReviewRow, CitekeyConflictDetails, DecisionButton, NoteDecision } from "./decisionModal";
 import { getLitNoteFiles } from "commons/litnote";
+import { DUPLICATE_NOTES_REASON, matchingLitNotes } from "./duplicateNotes";
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import type { ZoteroItemPayload } from "./types";
 import type { LitNoteWriterSettings } from "./writeLitNote";
 import { litNotesFolderError } from "./writeLitNote";
+import { METADATA_FIELDS } from "./metadataFields";
 
 const START = "<!-- zotero-attachments:start -->";
 const END = "<!-- zotero-attachments:end -->";
-const METADATA_FIELDS = [
-	"title", "authors", "publication_date", "zotero_item_type", "doi", "url",
-	"publication", "publisher", "isbn", "zotero_collections", "zotero_tags",
-] as const;
+let warnedInvalidAttachmentBase = false;
 
 export interface SyncResult {
-	status: "updated" | "skipped" | "missing" | "error" | "set-zotero-key" | "prepared";
+	status: "updated" | "skipped" | "missing" | "error" | "attachment-error" | "set-zotero-key" | "prepared";
 	citekey: string;
 	error?: string;
 	errorTitle?: string;
@@ -107,6 +107,44 @@ function attachmentLinkPath(link: string): string | undefined {
 	return match?.[1] ?? (match?.[2] ? decodeURIComponent(match[2]) : undefined);
 }
 
+function relativeVaultAttachmentLinks(app: App, line: string): string {
+	if (!(app.vault.adapter instanceof FileSystemAdapter)) return line;
+	const root = app.vault.adapter.getBasePath();
+	for (const link of existingAttachmentLinks(line)) {
+		const target = attachmentLinkPath(link);
+		if (!target) continue;
+		const parsed = parseLinktext(target);
+		if (!path.isAbsolute(parsed.path)) continue;
+		const relative = path.relative(root, parsed.path);
+		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue;
+		const vaultPath = relative.split(path.sep).join("/");
+		if (!(app.vault.getAbstractFileByPath(vaultPath) instanceof TFile)) continue;
+		const replacement = vaultPath + (parsed.subpath ?? "");
+		const raw = withoutBold(link);
+		const normalized = raw.startsWith("[[")
+			? link.replace(target, replacement)
+			: link.replace(`(${encodeURI(target)})`, `(${encodeURI(replacement)})`).replace(`(${target})`, `(${replacement})`);
+		line = line.replace(link, normalized);
+	}
+	return line;
+}
+
+async function retainLiveNoteLinks(app: App, notePath: string, previous: string[], incoming: string[]): Promise<string[]> {
+	const retained: string[] = [];
+	for (const link of previous) {
+		const target = attachmentLinkPath(link);
+		const resolved = target ? attachmentLinkDestination(app, target, notePath) : null;
+		const info = resolved instanceof TFile ? await app.vault.adapter.stat(resolved.path) : null;
+		if (!info || info.type !== "file" || info.size === 0) {
+			const ext = linkExtension(link);
+			const alternatives = incoming.filter((candidate) => ext && linkExtension(candidate) === ext);
+			if (alternatives.length === 1) continue;
+		}
+		retained.push(link);
+	}
+	return retained;
+}
+
 const LABEL_EXTENSIONS: Record<string, string> = {
 	PDF: ".pdf", HTM: ".html", DOC: ".docx", PPT: ".pptx", EPUB: ".epub", TXT: ".txt",
 };
@@ -168,10 +206,7 @@ export async function syncLitNote(
 		const fm = app.metadataCache.getFileCache(file)?.frontmatter;
 		return !!fm && fm.zotero_item_key === item.itemkey;
 	});
-	let candidates = matchingKey.filter((file) => {
-		const fm = app.metadataCache.getFileCache(file)?.frontmatter;
-		return !fm?.zotero_library_uri || fm.zotero_library_uri === item.libraryURI;
-	});
+	let candidates = matchingLitNotes(app, settings.litNotesFolder, item as { itemkey: string; libraryURI: string });
 	let reassociating = false;
 	if (!candidates.length && mode === "metadata" && matchingKey.length === 1) {
 		candidates = matchingKey;
@@ -181,16 +216,40 @@ export async function syncLitNote(
 		return failure("Multiple notes have this Zotero item key", `More than one literature note has this Zotero item key:\n${matchingKey.map((note) => `- ${note.path}`).join("\n")}\n\nCheck the notes' Zotero identities before retrying. No association was changed.`);
 	}
 	if (!candidates.length) return result("missing");
-	if (candidates.length !== 1) return failure("Multiple notes match this Zotero item", `More than one literature note matches this Zotero item:\n${candidates.map((note) => `- ${note.path}`).join("\n")}\n\nCheck the notes' Zotero identities before retrying.`);
+	if (candidates.length !== 1) {
+		identity = {
+			title: item.title, itemkey: item.itemkey, libraryURI: item.libraryURI,
+			zoteroCitekey: citekey, notePaths: candidates.map((note) => note.path),
+			noteOpenFollowUp: "After you correct the notes, Saver rechecks this item's Zotero review automatically.",
+		};
+		return failure(DUPLICATE_NOTES_REASON,
+			"More than one literature note matches this Zotero item.",
+			"These notes contain the same Zotero item key. Saver cannot choose between them.\n\nOpen the notes side by side and correct their Zotero identities manually. Keep zotero_item_key and zotero_library_uri on the intended literature note; remove those duplicate properties from the other notes if they should no longer be linked to this item.\n\nNo notes or attachments were changed. When only one note matches, Saver rechecks this item's Zotero review automatically.");
+	}
 	const file = candidates[0];
 	const fm = app.metadataCache.getFileCache(file)?.frontmatter;
 	const noteKey = typeof fm?.citekey === "string" ? fm.citekey.trim() : "";
-	const preservedAttachmentKeys = new Set(
-		fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI &&
-			Array.isArray(fm.zotero_attachment_preserved_keys)
-			? fm.zotero_attachment_preserved_keys.filter((key): key is string => typeof key === "string")
-			: [],
-	);
+	const preservedAttachmentKeys = new Set<string>();
+	const preservedCopies: unknown[] = fm?.zotero_item_key === item.itemkey && fm?.zotero_library_uri === item.libraryURI &&
+		Array.isArray(fm.zotero_attachment_preserved_copies) ? fm.zotero_attachment_preserved_copies : [];
+	for (const copy of preservedCopies) {
+		if (!copy || typeof copy !== "object") continue;
+		const { sourceKey, linkedKey, sourcePath, destinationPath, sha256 } = copy as Record<string, unknown>;
+		if (typeof sourceKey !== "string" || typeof linkedKey !== "string" ||
+			typeof sourcePath !== "string" || typeof destinationPath !== "string" ||
+			typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256) ||
+			!path.isAbsolute(sourcePath) || !path.isAbsolute(destinationPath)) continue;
+		const source = item.attachments?.find((attachment) => attachment.itemkey === sourceKey);
+		const linked = item.attachments?.find((attachment) => attachment.itemkey === linkedKey);
+		const samePath = (a: string | undefined, b: string): boolean => {
+			if (!a || !path.isAbsolute(a)) return false;
+			const first = path.resolve(a);
+			const second = path.resolve(b);
+			return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
+		};
+		if (linked?.mode === "linked" && samePath(source?.path, sourcePath) && samePath(linked.path, destinationPath) &&
+			await preservedAttachmentMatches(sourcePath, destinationPath, true, sha256)) preservedAttachmentKeys.add(sourceKey);
+	}
 	const attachmentItem = preservedAttachmentKeys.size
 		? {
 			...item,
@@ -235,7 +294,9 @@ export async function syncLitNote(
 	}
 	if (noteKey && noteKey !== citekey && !filenameMatchesZotero) {
 		const check = item.citationKeyCheck;
-		if (!check || check.citekey !== noteKey || !Array.isArray(check.matches) ||
+		// Background rechecks omit Zotero's key check; queue the decision itself instead of an error.
+		if (!check) return failure("Citekeys differ", `The note uses citation key ${noteKey}; Zotero uses ${citekey}. Open this review to choose which key to keep.`, `The note uses ${noteKey}; Zotero uses ${citekey}. Open this review to choose which key to keep.`);
+		if (check.citekey !== noteKey || !Array.isArray(check.matches) ||
 			check.matches.some((match) => !match || typeof match.title !== "string" ||
 				typeof match.citekey !== "string" || typeof match.libraryURI !== "string" ||
 				typeof match.itemkey !== "string")) {
@@ -275,9 +336,55 @@ export async function syncLitNote(
 	}
 	const collision = app.vault.getAbstractFileByPath(target);
 	if (collision && collision !== file) return failure("Note filename already exists", `Cannot rename note: ${target} already exists. Check the existing note and resolve the filename conflict before retrying.`, `${target}\n\nResolve the filename conflict, then retry.`);
+	const automaticAttachments = item.automaticAttachments && mode === "auto" && !legacy && !reassociating &&
+		!item.zoteroChanges && noteKey === citekey && file.path === target;
+	const automaticAttachmentError = (message: string): SyncResult => {
+		console.error("Automatic Zotero attachment reconciliation failed", message);
+		return result("attachment-error", message);
+	};
+	if (automaticAttachments) {
+		if (!(app.vault.adapter instanceof FileSystemAdapter)) {
+			return automaticAttachmentError("The vault path is unavailable; attachment reconciliation was skipped.");
+		}
+		const vaultRoot = app.vault.adapter.getBasePath();
+		const base = item.linkedAttachmentBaseDirectory;
+		const relative = base && path.isAbsolute(base) ? path.relative(vaultRoot, base) : undefined;
+		if (!item.linkedAttachmentBaseDirectoryValidated || relative === undefined ||
+			relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+			const message = "Zotero's Linked Attachment Base Directory is not valid inside the vault. Attachment reconciliation was skipped.";
+			if (!warnedInvalidAttachmentBase) {
+				new Notice(message, 0);
+				warnedInvalidAttachmentBase = true;
+			}
+			return result("attachment-error", message);
+		}
+		warnedInvalidAttachmentBase = false;
+		try {
+			const links = existingAttachmentLinks(relativeVaultAttachmentLinks(app, oldHeader)).map((link): NoteAttachmentLink => {
+				const linkpath = attachmentLinkPath(link);
+				const resolved = linkpath ? attachmentLinkDestination(app, linkpath, file.path) : null;
+				return {
+					...(linkpath ? { target: parseLinktext(linkpath).path } : {}),
+					...(resolved ? { absolutePath: path.join(vaultRoot, resolved.path) } : {}),
+					...(linkExtension(link) ? { extension: linkExtension(link) } : {}),
+				};
+			});
+			const attachmentMove = await buildAutomaticAttachmentMoveCandidate(item, links, vaultRoot);
+			if (attachmentMove) return {
+				...failure("Automatic attachment reconciliation", "Zotero attachments need to be linked to vault files."),
+				snapshot: content, notePath: file.path, attachmentMove,
+			};
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return automaticAttachmentError(message);
+		}
+	}
 	let unavailable: AttachmentProblem[] = [];
 	const attachmentLinks = await buildAttachmentLinks(app, attachmentItem, target, (details) => { unavailable = details; });
 	if (unavailable.length) {
+		if (automaticAttachments) return automaticAttachmentError(
+			unavailable.map((entry) => `${entry.path ?? entry.label}: ${entry.problem} ${entry.action}`).join("\n"),
+		);
 		let attachmentMove: AttachmentMoveCandidate | undefined;
 		if (mode === "auto" && !item.zoteroChanges &&
 			fm?.zotero_item_key === item.itemkey &&
@@ -288,7 +395,7 @@ export async function syncLitNote(
 				const vaultRoot = app.vault.adapter.getBasePath();
 				const links = existingAttachmentLinks(oldHeader).map((link): NoteAttachmentLink => {
 					const linkpath = attachmentLinkPath(link);
-					const resolved = linkpath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkpath).path, file.path) : null;
+					const resolved = linkpath ? attachmentLinkDestination(app, linkpath, file.path) : null;
 					return {
 						...(linkpath ? { target: parseLinktext(linkpath).path } : {}),
 						...(resolved ? { absolutePath: path.join(vaultRoot, resolved.path) } : {}),
@@ -308,14 +415,17 @@ export async function syncLitNote(
 		};
 	}
 	let oldLinks: string[];
+	let relativeHeader: string;
 	try {
-		oldLinks = existingAttachmentLinks(oldHeader);
+		relativeHeader = relativeVaultAttachmentLinks(app, oldHeader);
+		oldLinks = existingAttachmentLinks(relativeHeader);
 	} catch (error) {
+		if (automaticAttachments) return automaticAttachmentError(error instanceof Error ? error.message : String(error));
 		return failure("Managed attachment markers are invalid", error instanceof Error ? error.message : String(error), "Check the note's managed attachment markers, then retry. Attachment links were not changed.");
 	}
 	const resolveAttachment = (link: string, sourcePath: string): TFile | null => {
 		const linkPath = attachmentLinkPath(link);
-		const candidate = linkPath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkPath).path, sourcePath) : null;
+		const candidate = linkPath ? attachmentLinkDestination(app, linkPath, sourcePath) : null;
 		return candidate instanceof TFile ? candidate : null;
 	};
 	const zoteroOnlyLinks = [...attachmentLinks];
@@ -328,8 +438,8 @@ export async function syncLitNote(
 		return false;
 	});
 	const repairedLinks: Array<{ note: string; zotero: string }> = [];
-	if (mode === "auto" && !legacy && !reassociating && !item.zoteroChanges &&
-		noteKey === citekey && file.path === target) {
+	// A rename or Zotero citation-key change is confirmed in the same prompt, so the repair joins that plan.
+	if (mode === "auto" && !legacy && !reassociating && noteKey === citekey) {
 		try {
 			for (const link of noteOnlyLinks) {
 				const ext = linkExtension(link);
@@ -349,11 +459,33 @@ export async function syncLitNote(
 				}
 			}
 		} catch (error) {
+			if (automaticAttachments) return automaticAttachmentError(error instanceof Error ? error.message : String(error));
 			return failure("Attachment files could not be checked", `Could not check attachment files: ${error instanceof Error ? error.message : String(error)}. Check the files and their permissions, then retry.`);
 		}
 	}
 	const unmatchedNoteLinks = subtractLinks(noteOnlyLinks, repairedLinks.map((entry) => entry.note));
 	const unmatchedZoteroLinks = subtractLinks(zoteroOnlyLinks, repairedLinks.map((entry) => entry.zotero));
+	if (automaticAttachments) {
+		try {
+			const links = [
+				...await retainLiveNoteLinks(app, file.path, subtractLinks(oldLinks, repairedLinks.map((entry) => entry.note)), unmatchedZoteroLinks),
+				...unmatchedZoteroLinks,
+				...repairedLinks.map((entry) => entry.zotero),
+			];
+			const updatedHeader = unmatchedZoteroLinks.length || repairedLinks.length
+				? managedHeader(relativeHeader, links, true) : relativeHeader;
+			if (updatedHeader === oldHeader) return result("skipped");
+			if (options.prepareOnly) return { status: "prepared", citekey, snapshot: content, notePath: file.path, identicalAttachments: [] };
+			await options.beforeApply?.();
+			await app.vault.process(file, (current) => {
+				if (current !== content) throw new Error("The note changed while the update was pending; retry.");
+				return current.replace(oldHeader, updatedHeader);
+			});
+			return result("updated");
+		} catch (error) {
+			return automaticAttachmentError(error instanceof Error ? error.message : String(error));
+		}
+	}
 	const noteOnlyFiles = [...new Map(unmatchedNoteLinks.flatMap((link) => {
 		const candidate = resolveAttachment(link, file.path);
 		return candidate ? [[candidate.path, candidate] as const] : [];
@@ -422,7 +554,7 @@ export async function syncLitNote(
 	const bodyChoices: Array<{ reference: ReferenceCache; eligible: TFile[]; existing: TFile | null }> = [];
 	for (const reference of outsideAttachments) {
 		const { path } = parseLinktext(reference.link);
-		const existing = app.metadataCache.getFirstLinkpathDest(path, file.path);
+		const existing = attachmentLinkDestination(app, path, file.path);
 		if (existing && attachmentFiles.some((candidate) => candidate.path === existing.path)) continue;
 		if (existing ? !noteOnlyPaths.has(existing.path) : !noteOnlyLinkPaths.has(path)) continue;
 		const identical = existing && identicalAttachments.find((pair) => pair.note.path === existing.path);
@@ -446,7 +578,7 @@ export async function syncLitNote(
 	const removedSelected: string[] = [...automaticRemoved, ...repairedLinks.map((entry) => entry.note)];
 	const reviewFile = (link: string, sourcePath: string, role: string): Array<{ path: string; modified?: number; role: string }> => {
 		const path = attachmentLinkPath(link);
-		const candidate = path ? app.metadataCache.getFirstLinkpathDest(path, sourcePath) : null;
+		const candidate = path ? attachmentLinkDestination(app, path, sourcePath) : null;
 		return candidate instanceof TFile ? [{ path: candidate.path, modified: candidate.stat?.mtime, role }] : [];
 	};
 	const review: AttachmentReviewRow[] = [
@@ -494,17 +626,19 @@ export async function syncLitNote(
 			],
 		})),
 		...(item.zoteroChanges?.attachmentMoves ?? []).map((move): AttachmentReviewRow => ({
-			kind: "zotero", label: `Already changed in Zotero (attachment item key ${move.itemkey}): ${move.from} → ${move.to}`,
-			options: [{ label: "Already changed", value: "changed" }],
+			kind: "zotero", label: `Changed with your Zotero citation key (attachment item key ${move.itemkey}): ${move.from} → ${move.to}`,
+			options: [{ label: "Changed in Zotero", value: "changed" }],
 			defaultValue: "changed",
 		})),
 	];
-	const cancelNote = item.zoteroChanges ? "Cancel will not undo the changes already made in Zotero." : "";
+	const cancelNote = item.zoteroChanges
+		? `Cancel stops this Obsidian update; it does not undo your Zotero citation-key change${item.zoteroChanges.attachmentMoves.length ? " or attachment moves" : ""}.`
+		: "";
 	if (review.length) {
 		let selections: unknown;
 		{
-			const alreadyChanged = item.zoteroChanges
-				? `Zotero already changed the citekey from ${item.zoteroChanges.previousCitekey} to ${citekey} and moved or renamed ${item.zoteroChanges.attachmentMoves.length} verified attachment file(s).`
+			const zoteroChanges = item.zoteroChanges
+				? `The citation-key change you just made in Zotero was ${item.zoteroChanges.previousCitekey} → ${citekey}.${item.zoteroChanges.attachmentMoves.length ? ` Zotero also moved or renamed ${item.zoteroChanges.attachmentMoves.length} verified attachment file(s).` : ""}`
 				: "";
 			const differences = removedLinks.length || addedLinks.length || bodyChoices.length;
 			const duplicateNotice = identicalAttachments.some((pair) => pair.note.path !== pair.zotero.path)
@@ -517,7 +651,7 @@ export async function syncLitNote(
 			].filter(Boolean).join(" ");
 			const choice = await prompt(differences ? "Attachment links differ" : "Zotero attachments changed",
 				[diagnosis, differences ? "Choose which links to keep, remove, add, or change below." : "Review the Zotero changes below.",
-					alreadyChanged, duplicateNotice, cancelNote].filter(Boolean).join("\n\n"),
+					zoteroChanges, duplicateNotice, cancelNote].filter(Boolean).join("\n\n"),
 				[{ label: "Continue", value: "create", cta: true }, { label: "Cancel", value: "cancel" }], review, identity);
 			if (choice === "cancel") return result("skipped");
 			if (!choice.startsWith("review:")) return failure("Attachment review was not completed", "The attachment review was not completed; no note changes were made.", "Review the attachments again. No note changes were made.");
@@ -562,16 +696,30 @@ export async function syncLitNote(
 		}
 	}
 	if (legacy && mode === "auto" && !item.zoteroChanges && noteKey === citekey && file.path === target &&
-		!removedLinks.length && !addedLinks.length && !automaticRemoved.length && !bodyEdits.length && !headerEdits.length && !keptLinks.length) return result("skipped");
+		!removedLinks.length && !addedLinks.length && !automaticRemoved.length && !bodyEdits.length && !headerEdits.length && !keptLinks.length && relativeHeader === oldHeader) return result("skipped");
 	if (!legacy && mode === "auto" && !item.zoteroChanges && noteKey === citekey && file.path === target &&
 		!removedLinks.length && !addedLinks.length && !automaticRemoved.length && !repairedLinks.length &&
-		!bodyEdits.length && !headerEdits.length && !keptLinks.length) return result("skipped");
+		!bodyEdits.length && !headerEdits.length && !keptLinks.length) {
+		if (relativeHeader === oldHeader) return result("skipped");
+		if (options.prepareOnly) return { status: "prepared", citekey, snapshot: content, notePath: file.path, identicalAttachments: [] };
+		await options.beforeApply?.();
+		try {
+			await app.vault.process(file, (current) => {
+				if (current !== content) throw new Error("The note changed while the update was pending; retry.");
+				return current.replace(oldHeader, relativeHeader);
+			});
+			return result("updated");
+		} catch (error) {
+			return failure("Attachment link could not be made relative", error instanceof Error ? error.message : String(error));
+		}
+	}
 	let editedHeader = oldHeader;
 	for (const edit of headerEdits.sort((a, b) => b.start - a.start)) {
 		const start = edit.start - headerStart;
 		const end = edit.end - headerStart;
 		editedHeader = editedHeader.slice(0, start) + edit.replacement + editedHeader.slice(end);
 	}
+	editedHeader = relativeVaultAttachmentLinks(app, editedHeader);
 	let newHeader: string;
 	try {
 		newHeader = managedHeader(editedHeader, [...subtractLinks(attachmentLinks, addedLinks), ...selectedAdditions, ...keptManagedLinks], true);
@@ -595,7 +743,8 @@ export async function syncLitNote(
 		descriptions.push("Links using an alias that is removed or changed may break.");
 	}
 	if (file.path !== target) descriptions.unshift(`Filename: ${file.path} → ${target}. ${backlinkWarning(app, file.path)}`);
-	if (removedSelected.length) descriptions.push(`Remove ${removedSelected.length} attachment link(s) from the Obsidian note.`);
+	if (repairedLinks.length) descriptions.push(`Replace ${repairedLinks.length} broken attachment link(s) with the Zotero attachment:\n${repairedLinks.map((entry) => `- ${attachmentLinkPath(entry.note) ?? entry.note} → ${attachmentLinkPath(entry.zotero) ?? entry.zotero}`).join("\n")}`);
+	if (removedSelected.length > repairedLinks.length) descriptions.push(`Remove ${removedSelected.length - repairedLinks.length} attachment link(s) from the Obsidian note.`);
 	if (identicalAttachments.length) {
 		descriptions.push(`Link to ${identicalAttachments.length} Zotero attachment ${identicalAttachments.length === 1 ? "file" : "files"} with identical contents.`);
 		const redundant = identicalAttachments.filter((pair) => pair.note.path !== pair.zotero.path);
@@ -628,17 +777,17 @@ export async function syncLitNote(
 	].filter(Boolean).join("; ") : undefined;
 	if (legacy || mode === "metadata" || (!oldHeader.includes(START) && !repairedLinks.length) || file.path !== target ||
 		review.length || item.zoteroChanges || duplicateFiles) {
-		const alreadyChanged = item.zoteroChanges
-			? `Already changed in Zotero:\n- Item citekey: ${item.zoteroChanges.previousCitekey} → ${citekey}\n- ${item.zoteroChanges.attachmentMoves.length} verified attachment file move(s) or rename(s)${item.zoteroChanges.attachmentMoves.length ? " (shown in the attachment review)" : ""}.`
+		const zoteroChanges = item.zoteroChanges
+			? `Your Zotero changes:\n- Item citekey: ${item.zoteroChanges.previousCitekey} → ${citekey}\n- ${item.zoteroChanges.attachmentMoves.length} verified attachment file move(s) or rename(s)${item.zoteroChanges.attachmentMoves.length ? " (shown in the attachment review)" : ""}.`
 			: "";
 		const diagnosis = adoption || (file.path !== target
 			? `The note filename does not match the Zotero citation key ${citekey}.`
-			: item.zoteroChanges ? "Zotero has already changed this item; review the note changes."
+			: item.zoteroChanges ? "Review the Obsidian updates for your Zotero citation-key change."
 			: review.length ? "Your attachment choices require changes to the note."
 			: duplicateFiles ? "Identical attachment files can be consolidated."
 			: mode === "metadata" ? "The note's Zotero metadata needs updating."
 			: "The note's attachment links are not yet managed.");
-		const message = [diagnosis, alreadyChanged, `Saver will update the note:\n${descriptions.join("\n") || "No note changes."}`, cancelNote].filter(Boolean).join("\n\n");
+		const message = [diagnosis, zoteroChanges, `Saver will update the note:\n${descriptions.join("\n") || "No note changes."}`, cancelNote].filter(Boolean).join("\n\n");
 		const title = reassociating ? "Confirm the Zotero library change"
 			: legacy ? "Add the Zotero library and update the note"
 			: file.path !== target ? "Rename and update the note"
@@ -716,16 +865,77 @@ export async function syncLitNote(
 
 export const MISMATCH_PROPERTY = "zotero_note_file_mismatch";
 const PRESERVED_ATTACHMENT_KEYS_PROPERTY = "zotero_attachment_preserved_keys";
+export const PRESERVED_ATTACHMENT_COPIES_PROPERTY = "zotero_attachment_preserved_copies";
+type PreservedCopy = { sourceKey: string; linkedKey: string; sourcePath: string; originalPath?: string; destinationPath: string; sha256: string; resourcesOnly?: true; resourceSha256?: string };
+
+async function recordPreservedCopies(app: App, file: TFile, copies: PreservedCopy[]): Promise<void> {
+	if (!copies.length) return;
+	await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
+		const existingKeys = Array.isArray(fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY])
+			? fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY].filter((key): key is string => typeof key === "string")
+			: [];
+		const existingCopies: unknown[] = Array.isArray(fm[PRESERVED_ATTACHMENT_COPIES_PROPERTY])
+			? fm[PRESERVED_ATTACHMENT_COPIES_PROPERTY] : [];
+		const replaced = new Set(copies.map((copy) => copy.sourceKey));
+		fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY] = [...new Set([...existingKeys, ...replaced])];
+		fm[PRESERVED_ATTACHMENT_COPIES_PROPERTY] = [
+			...existingCopies.filter((copy) => !copy || typeof copy !== "object" ||
+				!replaced.has(String((copy as Record<string, unknown>).sourceKey))),
+			...copies,
+		];
+	});
+}
+
+export async function recordRecoveredAutomaticAttachments(
+	app: App, file: TFile, item: ZoteroItemPayload,
+	paths: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string }>,
+): Promise<void> {
+	if (!(app.vault.adapter instanceof FileSystemAdapter)) throw new Error("The vault path is unavailable.");
+	const root = app.vault.adapter.getBasePath();
+	const copies: PreservedCopy[] = [];
+	for (const entry of paths) {
+		const samePath = (a: string, b: string): boolean => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+		const attachments = item.attachments?.filter((current) => current.mode === "linked" && current.path &&
+			samePath(current.path, entry.destinationPath) && (entry.archivePath || entry.archiveDirectory || current.itemkey === entry.itemkey)) ?? [];
+		if ((entry.archivePath || entry.archiveDirectory) && item.attachments?.some((current) => current.itemkey === entry.itemkey)) continue;
+		const attachment = attachments.length === 1 ? attachments[0] : undefined;
+		if (!attachment?.path || !attachment.itemkey || !path.isAbsolute(entry.sourcePath) ||
+			!path.isAbsolute(entry.destinationPath) || (entry.archivePath && !path.isAbsolute(entry.archivePath))) continue;
+		if (!samePath(attachment.path, entry.destinationPath) || samePath(entry.sourcePath, entry.destinationPath)) continue;
+		const relative = path.relative(root, entry.destinationPath);
+		if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+			throw new Error("The recovered attachment destination is outside the vault.");
+		}
+		if (entry.archiveDirectory) {
+			copies.push({
+				sourceKey: entry.itemkey, linkedKey: attachment.itemkey, sourcePath: entry.archiveDirectory,
+				originalPath: entry.sourcePath, destinationPath: entry.destinationPath,
+				sha256: await attachmentFingerprint(entry.destinationPath), resourcesOnly: true,
+				resourceSha256: await verifyAttachmentResourceArchive(entry.sourcePath, entry.archiveDirectory),
+			});
+			continue;
+		}
+		await attachmentFingerprint(entry.archivePath ?? entry.sourcePath);
+		copies.push({
+			sourceKey: entry.itemkey, linkedKey: attachment.itemkey, sourcePath: entry.archivePath ?? entry.sourcePath,
+			...(entry.archivePath ? { originalPath: entry.sourcePath } : {}),
+			destinationPath: entry.destinationPath, sha256: await attachmentFingerprint(entry.destinationPath),
+		});
+	}
+	await recordPreservedCopies(app, file, copies);
+}
 const MISMATCH_PREFIX = "==🔴Zotero/note attachment mismatch:";
 
-function mismatchLine(extras: AttachmentMoveCandidate["extras"]): string {
+function mismatchLine(extras: AttachmentMoveCandidate["extras"], copied = false): string {
 	const list = (origin: "zotero" | "note"): string => extras.filter((extra) => extra.origin === origin)
 		.map((extra) => `[[${extra.path}|${path.posix.basename(extra.path)}]]`).join(", ");
 	const zotero = list("zotero");
 	const note = list("note");
 	const missing = extras.filter((extra) => extra.origin === "missing").map((extra) => extra.path).join(", ");
 	const moved = zotero || note
-		? ` Saver moved ${zotero && note ? "these files" : zotero ? "the Zotero-only files" : "the note-only files"} into the vault and linked them from both the note and the Zotero item.`
+		? copied
+			? ` Saver linked these files from both the note and the Zotero item.${zotero ? " The Zotero-only files were copied into the vault." : ""}`
+			: ` Saver moved ${zotero && note ? "these files" : zotero ? "the Zotero-only files" : "the note-only files"} into the vault and linked them from both the note and the Zotero item.`
 		: "";
 	const dropped = missing
 		? ` This note${zotero || note ? " also" : ""} linked ${missing}, which pointed to a missing or empty file that no Zotero attachment replaced; Saver removed ${missing.includes(", ") ? "those links" : "that link"}.`
@@ -762,7 +972,8 @@ export async function finishAttachmentMove(
 	settings: LitNoteWriterSettings,
 	item: ZoteroItemPayload,
 	candidate: AttachmentMoveCandidate,
-	preservedSources: Array<{ itemkey: string; from: string; to: string; copied?: boolean; referenceCheckFailed?: boolean }> = [],
+	preservedSources: Array<{ itemkey: string; from: string; to: string; newKey?: string; archivePath?: string; archiveDirectory?: string; copied?: boolean; referenceCheckFailed?: boolean }> = [],
+	repairSnapshot?: string,
 ): Promise<{ trashed: string[] }> {
 	const notes = getLitNoteFiles(app, settings.litNotesFolder).filter((note) => {
 		const fm = app.metadataCache.getFileCache(note)?.frontmatter;
@@ -773,7 +984,7 @@ export async function finishAttachmentMove(
 	if (app.metadataCache.getFileCache(file)?.frontmatter?.citekey !== item.citekey) {
 		throw new Error("The note's citation key changed; review it individually.");
 	}
-	const preservedKeys = new Set(preservedSources.map((source) => source.itemkey));
+	const preservedKeys = new Set(preservedSources.filter((source) => source.newKey !== source.itemkey).map((source) => source.itemkey));
 	const attachmentItem = preservedKeys.size
 		? {
 			...item,
@@ -793,45 +1004,105 @@ export async function finishAttachmentMove(
 	}
 
 	const content = await app.vault.read(file);
+	if (repairSnapshot !== undefined && content !== repairSnapshot) {
+		throw new Error("The note changed while the attachment was being copied; its links were not changed.");
+	}
 	const oldHeader = header(content);
 	if (!oldHeader) throw new Error("The note has no Zotero info callout; restore it, then run the review again.");
 	const headerTargets = new Map<string, number>();
 	for (const link of existingAttachmentLinks(oldHeader)) {
 		const linkpath = attachmentLinkPath(link);
-		const target = linkpath ? app.metadataCache.getFirstLinkpathDest(parseLinktext(linkpath).path, file.path) : null;
+		const target = linkpath ? attachmentLinkDestination(app, linkpath, file.path) : null;
 		if (target) headerTargets.set(target.path, (headerTargets.get(target.path) ?? 0) + 1);
 	}
 	const incoming = (target: string): number => Object.values(app.metadataCache.resolvedLinks ?? {})
 		.reduce((total, destinations) => total + (destinations[target] ?? 0), 0);
-	const trashable = preservedSources.some((source) => source.referenceCheckFailed) ? [] : candidate.trashNoteFiles.filter((target) =>
+	const trashable = repairSnapshot !== undefined || preservedSources.some((source) => source.referenceCheckFailed) ? [] : candidate.trashNoteFiles.filter((target) =>
 		(headerTargets.get(target) ?? 0) > 0 && incoming(target) === headerTargets.get(target));
 
-	const newHeader = managedHeader(oldHeader, links, true);
+	const priorLinks = candidate.automatic ? await retainLiveNoteLinks(app, file.path,
+		existingAttachmentLinks(relativeVaultAttachmentLinks(app, oldHeader)), links) : [];
+	const newHeader = managedHeader(oldHeader, candidate.automatic
+		? [...priorLinks, ...links.filter((link) => !priorLinks.some((previous) => {
+			const first = attachmentLinkPath(previous);
+			const second = attachmentLinkPath(link);
+			const a = first && attachmentLinkDestination(app, first, file.path);
+			const b = second && attachmentLinkDestination(app, second, file.path);
+			return !!a && !!b && a.path === b.path;
+		}))]
+		: links, true);
 	await app.vault.process(file, (current) => {
 		if (current !== content) throw new Error("The note changed while Zotero moved its attachments; run the review again.");
 		let updated = current.replace(oldHeader, newHeader);
-		if (candidate.extras.length) updated = withMismatchLine(updated, mismatchLine(candidate.extras));
+		if (candidate.extras.length) updated = withMismatchLine(updated, mismatchLine(candidate.extras,
+			repairSnapshot !== undefined || preservedSources.some((source) => source.referenceCheckFailed)));
 		return updated;
 	});
-	if (candidate.extras.length || preservedKeys.size) {
+	if (candidate.extras.length) {
 		await app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-			if (candidate.extras.length) fm[MISMATCH_PROPERTY] = true;
-			if (preservedKeys.size) {
-				const existing = Array.isArray(fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY])
-					? fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY].filter((key): key is string => typeof key === "string")
-					: [];
-				fm[PRESERVED_ATTACHMENT_KEYS_PROPERTY] = [...new Set([...existing, ...preservedKeys])];
-			}
+			fm[MISMATCH_PROPERTY] = true;
 		});
 	}
-	if (preservedSources.length) {
+	if (repairSnapshot !== undefined && !candidate.automatic) {
+		const adapter = app.vault.adapter;
+		if (!(adapter instanceof FileSystemAdapter)) throw new Error("The vault path is unavailable; attachment links could not be checked.");
+		const updatedHeader = header(await app.vault.read(file));
+		if (!updatedHeader) throw new Error("The note's attachment links could not be checked after repair.");
+		const resolved = existingAttachmentLinks(updatedHeader).map((link) => {
+			const target = attachmentLinkPath(link);
+			const resolvedFile = target ? attachmentLinkDestination(app, target, file.path) : null;
+			return resolvedFile instanceof TFile ? path.resolve(adapter.getBasePath(), resolvedFile.path).toLowerCase() : "";
+		});
+		for (const source of preservedSources) {
+			await verifyAttachmentCopy(source.archivePath ?? source.from, source.to);
+			if (!resolved.includes(path.resolve(source.to).toLowerCase())) {
+				throw new Error(`The note does not link to the copied attachment: ${source.to}`);
+			}
+		}
+	}
+	const preservedCopies: PreservedCopy[] = [];
+	for (const source of preservedSources) {
+		if (source.archiveDirectory) {
+			if (!candidate.automatic || !source.newKey) throw new Error("Unexpected attachment resource archive.");
+			preservedCopies.push({
+				sourceKey: source.itemkey, linkedKey: source.newKey, sourcePath: source.archiveDirectory,
+				originalPath: source.from, destinationPath: source.to, resourcesOnly: true,
+				resourceSha256: await verifyAttachmentResourceArchive(source.from, source.archiveDirectory),
+				sha256: await attachmentFingerprint(source.to),
+			});
+			continue;
+		}
+		const preservedPath = source.archivePath ?? source.from;
+		if (source.archivePath) await verifyAttachmentCopy(source.from, source.archivePath);
+		if ((candidate.automatic || source.archivePath) && source.newKey) {
+			if (source.copied) await verifyAttachmentCopy(preservedPath, source.to);
+			preservedCopies.push({
+				sourceKey: source.itemkey, linkedKey: source.newKey, sourcePath: preservedPath,
+				...(source.archivePath ? { originalPath: source.from } : {}),
+				destinationPath: source.to, sha256: await attachmentFingerprint(source.to),
+			});
+		} else if (source.newKey && await preservedAttachmentMatches(preservedPath, source.to, false)) {
+			const sha256 = await attachmentFingerprint(source.to);
+			if (!await preservedAttachmentMatches(preservedPath, source.to, false, sha256)) {
+				throw new Error(`The copied attachment changed while it was being recorded: ${source.to}`);
+			}
+			preservedCopies.push({ sourceKey: source.itemkey, linkedKey: source.newKey, sourcePath: preservedPath,
+				...(source.archivePath ? { originalPath: source.from } : {}), destinationPath: source.to, sha256 });
+		} else if (repairSnapshot !== undefined) {
+			throw new Error(`The copied attachment could not be recorded: ${source.to}`);
+		}
+	}
+	await recordPreservedCopies(app, file, preservedCopies);
+	if (preservedSources.length && !candidate.automatic) {
 		const copied = preservedSources.filter((source) => source.copied).map((source) => path.basename(source.to));
 		const linked = preservedSources.filter((source) => !source.copied).map((source) => path.basename(source.to));
 		const actions = [
 			copied.length ? `Copied ${copied.join(", ")} into the vault and linked the copies in Obsidian and Zotero.` : "",
 			linked.length ? `Linked the existing vault copies of ${linked.join(", ")} in Obsidian and Zotero.` : "",
 		].filter(Boolean).join(" ");
-		const reason = preservedSources.some((source) => source.referenceCheckFailed)
+		const reason = repairSnapshot !== undefined
+			? "The originals were kept as safety copies."
+			: preservedSources.some((source) => source.referenceCheckFailed)
 			? "Zotero could not check for other references."
 			: "Another attachment references them.";
 		new Notice(`${actions} The Zotero originals remain. ${reason} Verify the references before manually deleting an original.`, 15000);

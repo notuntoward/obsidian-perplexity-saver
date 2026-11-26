@@ -80,6 +80,41 @@ test("review status fits its text and the status bar", async ({ page }) => {
 	expect(dimensions.height).toBeLessThanOrEqual(dimensions.barHeight);
 });
 
+test("the review overview fits long titles and paths on narrow screens", async ({ page }) => {
+	const result = await build({
+		entryPoints: [path.resolve("src/litNote/reviewOverviewModal.ts")],
+		bundle: true, write: false, format: "iife", globalName: "ReviewOverview",
+		external: ["obsidian"],
+	});
+	await page.addScriptTag({ content: result.outputFiles[0].text });
+	await page.evaluate(() => {
+		const api = (window as Window & { ReviewOverview?: {
+			ReviewOverviewModal: new (...args: unknown[]) => { update: (groups: unknown[], count: number) => void; onOpen: () => void };
+		} }).ReviewOverview;
+		if (!api) throw new Error("Review overview bundle is unavailable.");
+		const modal = new api.ReviewOverviewModal({}, () => {}, () => {}, () => {});
+		modal.update([{
+			kind: "uncertain", title: "Check Zotero items (2)", attachmentMove: false,
+			reviews: [
+				{ key: "one", itemkey: "one", title: "A very long paper title ".repeat(10), notePath: `lit/${"long-path".repeat(20)}.md`, requested: false },
+				{ key: "two", itemkey: "two", title: "Another paper", requested: false },
+			],
+		}], 2);
+		modal.onOpen();
+	});
+	const modal = page.locator(".modal").last();
+	await expect(modal.getByText("Back up your vault and Zotero data before making changes.")).toBeVisible();
+	await modal.getByText("Check Zotero items (2)").click();
+	await expect(modal.getByRole("button", { name: "Review one by one" })).toBeVisible();
+	for (const width of [1024, 320]) {
+		await page.setViewportSize({ width, height: 768 });
+		expect(await modal.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+	}
+	await modal.getByRole("searchbox", { name: "Find a review" }).fill("another");
+	await expect(modal.getByRole("button", { name: "Another paper" })).toBeVisible();
+	await expect(modal.getByRole("button", { name: "Review one by one" })).toBeHidden();
+});
+
 test("multiple recovery paths remain readable at narrow widths", async ({ page }) => {
 	await page.setViewportSize({ width: 360, height: 900 });
 	await page.evaluate(() => {
@@ -100,6 +135,33 @@ test("multiple recovery paths remain readable at narrow widths", async ({ page }
 	const overflows = await page.locator(".modal").evaluate((element) => element.scrollWidth > element.clientWidth);
 	expect(overflows).toBe(false);
 	await expect(page.locator(".lit-note-recovery-path button")).toHaveCount(2);
+});
+
+test("duplicate-note explanations show both links and open the selected note", async ({ page }) => {
+	await page.evaluate(() => {
+		const win = window as Window & {
+			AttachmentReview?: { askNoteDecision: (...args: unknown[]) => Promise<string> };
+			openedNote?: string; reviewDecision?: string;
+		};
+		if (!win.AttachmentReview) throw new Error("Attachment review bundle is unavailable.");
+		void win.AttachmentReview.askNoteDecision({
+			workspace: { openLinkText: async (notePath: string) => { win.openedNote = notePath; } },
+		}, "Multiple notes match this Zotero item",
+		"Correct the duplicate identities manually. No notes or attachments were changed.",
+		[{ label: "Close", value: "skip" }], {
+			title: "Paper", itemkey: "ABC", libraryURI: "library", compact: false,
+			notePaths: ["lit/first.md", "lit/second.md"],
+		}).then((decision) => { win.reviewDecision = decision; });
+	});
+	await expect(page.getByRole("link", { name: "lit/first.md", exact: true })).toBeVisible();
+	await expect(page.getByRole("link", { name: "lit/second.md", exact: true })).toBeVisible();
+	await expect(page.getByRole("button", { name: "Open notes side by side" })).toBeVisible();
+	await page.getByRole("link", { name: "lit/second.md", exact: true }).click();
+	await expect(page.locator(".modal")).toHaveCount(0);
+	await expect.poll(() => page.evaluate(() => {
+		const win = window as Window & { openedNote?: string; reviewDecision?: string };
+		return [win.openedNote, win.reviewDecision];
+	})).toEqual(["lit/second.md", "skip"]);
 });
 
 test("attachment review exposes file roles and choices at desktop and narrow widths", async ({ page }) => {

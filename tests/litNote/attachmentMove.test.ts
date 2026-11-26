@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, utimes, writeFile } from "fs/promises";
+import { mkdtemp, mkdir, rm, unlink, utimes, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import path from "path";
-import { buildAttachmentMoveCandidate, validateTrashNoteFile } from "../../src/litNote/attachmentMove";
+import { buildAttachmentMoveCandidate, buildAutomaticAttachmentMoveCandidate, validateTrashNoteFile, verifyAttachmentCopy, verifyAttachmentResourceArchive } from "../../src/litNote/attachmentMove";
 import type { AttachmentProblem } from "../../src/litNote/buildLitNote";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
 
@@ -54,6 +54,108 @@ async function fixture(files: Record<string, string> = { "paper.html": "zotero c
 }
 
 describe("buildAttachmentMoveCandidate", () => {
+	it("verifies missing-main-file resource archives and rejects changed or overlapping resources", async () => {
+		const f = await fixture({ "image.png": "resource" });
+		const mainFile = f.source("missing.html");
+		const archive = path.join(path.dirname(f.source("image.png")), "..", "archive");
+		await mkdir(archive);
+		await writeFile(path.join(archive, "image.png"), "resource");
+		expect(await verifyAttachmentResourceArchive(mainFile, archive)).toMatch(/^[a-f0-9]{64}$/);
+		await writeFile(path.join(archive, "image.png"), "changed");
+		await expect(verifyAttachmentResourceArchive(mainFile, archive)).rejects.toThrow("do not match");
+		await expect(verifyAttachmentResourceArchive(mainFile, path.dirname(mainFile))).rejects.toThrow("separate");
+		await writeFile(mainFile, "reappeared");
+		await expect(verifyAttachmentResourceArchive(mainFile, archive)).rejects.toThrow("reappeared");
+	});
+
+	it("keeps the nonempty note file for a same-name attachment and copies unmatched Zotero files", async () => {
+		const f = await fixture({ "paper.html": "different Zotero contents", "snapshot.html": "snapshot" });
+		const note = await f.inVault("paper.html", "preferred note contents");
+		const plan = await buildAutomaticAttachmentMoveCandidate(f.item, [{ absolutePath: note }], f.vault);
+		expect(plan).toMatchObject({
+			automatic: true,
+			attachments: [
+				{ sourcePath: f.source("paper.html"), destinationPath: note, resolution: "keep-note" },
+				{ sourcePath: f.source("snapshot.html"), destinationPath: path.join(f.base, "snapshot.html"), resolution: "move" },
+			],
+			linkNoteFiles: [], trashNoteFiles: [], extras: [],
+		});
+	});
+
+	it("keeps the note's uniquely matching attachment type when the Zotero filename matches the note name", async () => {
+		const f = await fixture();
+		const note = await f.inVault("renamed.html", "preferred note contents");
+		const plan = await buildAutomaticAttachmentMoveCandidate(
+			{ ...f.item, citekey: "paper" }, [{ absolutePath: note }], f.vault,
+		);
+		expect(plan?.attachments[0]).toMatchObject({ destinationPath: note, resolution: "keep-note" });
+	});
+
+	it("relinks a missing Zotero file to the nonempty matching note attachment", async () => {
+		const f = await fixture();
+		const note = await f.inVault("paper.html", "preferred note contents");
+		await unlink(f.source("paper.html"));
+		const plan = await buildAutomaticAttachmentMoveCandidate(f.item, [{ absolutePath: note }], f.vault);
+		expect(plan?.attachments[0]).toMatchObject({
+			sourcePath: f.source("paper.html"), sourceMissing: true,
+			destinationPath: note, resolution: "keep-note",
+		});
+		expect(plan?.attachments[0].sourceMtime).toBeUndefined();
+	});
+
+	it("reports a missing Zotero file when no nonempty matching note attachment exists", async () => {
+		const f = await fixture();
+		const note = await f.inVault("paper.html", "");
+		await unlink(f.source("paper.html"));
+		await expect(buildAutomaticAttachmentMoveCandidate(f.item, [{ absolutePath: note }], f.vault))
+			.rejects.toThrow("The Zotero attachment is missing or empty");
+	});
+
+	it("does not use an empty note attachment or overwrite an existing destination", async () => {
+		const f = await fixture();
+		const empty = await f.inVault("paper.html", "");
+		const plan = await buildAutomaticAttachmentMoveCandidate(f.item, [{ absolutePath: empty }], f.vault);
+		expect(plan?.attachments[0]).toMatchObject({
+			resolution: "move", destinationPath: path.join(f.base, "paper 2.html"),
+		});
+		expect(plan?.trashNoteFiles).toEqual([]);
+	});
+
+	it("plans a stored multi-file snapshot in its own unused vault directory", async () => {
+		const f = await fixture({});
+		const sourceDirectory = path.join(path.dirname(f.source("unused")), "SNAPKEY");
+		await mkdir(sourceDirectory);
+		const source = path.join(sourceDirectory, "snapshot.html");
+		await writeFile(source, "<img src='image.png'>");
+		await writeFile(path.join(sourceDirectory, "image.png"), "image");
+		await mkdir(path.join(f.base, "snapshot snapshot"));
+		const plan = await buildAutomaticAttachmentMoveCandidate({
+			...f.item, attachments: [{ itemkey: "SNAPKEY", isFile: true, mode: "stored", path: source }],
+		}, [], f.vault);
+		expect(plan?.attachments[0]).toMatchObject({
+			sourcePath: source, snapshotDirectory: true,
+			destinationPath: path.join(f.base, "snapshot snapshot 2", "snapshot.html"),
+		});
+	});
+
+	it("rejects an invalid attachment base without planning changes", async () => {
+		const f = await fixture();
+		await expect(buildAutomaticAttachmentMoveCandidate(
+			{ ...f.item, linkedAttachmentBaseDirectoryValidated: false }, [], f.vault,
+		)).rejects.toThrow("Linked Attachment Base Directory");
+	});
+
+	it("checks that a copied attachment is nonempty and byte-identical to its original", async () => {
+		const f = await fixture({ "paper.pdf": "real PDF contents" });
+		const copied = await f.inVault("Paper2024.pdf", "real PDF contents");
+		await expect(verifyAttachmentCopy(f.source("paper.pdf"), copied)).resolves.toBeUndefined();
+		await writeFile(copied, "different contents");
+		await expect(verifyAttachmentCopy(f.source("paper.pdf"), copied)).rejects.toThrow("does not match");
+		await writeFile(f.source("paper.pdf"), "");
+		await writeFile(copied, "");
+		await expect(verifyAttachmentCopy(f.source("paper.pdf"), copied)).rejects.toThrow("does not match");
+	});
+
 	it("requires a validated in-vault base directory, matching citekey and a user library", async () => {
 		const f = await fixture();
 		const links = [{ extension: ".html" }];

@@ -62,6 +62,8 @@ export interface ZoteroItemPayload {
 	attachments?: ZoteroAttachment[];
 	linkedAttachmentBaseDirectory?: string;
 	linkedAttachmentBaseDirectoryValidated?: boolean;
+	/** The companion supports automatic, source-preserving attachment reconciliation. */
+	automaticAttachments?: boolean;
 	/** Filename (without extension) Zotero's renaming template produces for this item. */
 	attachmentBaseName?: string;
 	relations?: ZoteroRelation[];
@@ -87,8 +89,9 @@ export interface LitNoteOpenRequest {
 }
 
 export interface LitNoteSyncRequest {
-	action: "sync" | "update" | "review-sync" | "bulk-review-sync" | "review-recheck";
+	action: "sync" | "update" | "review-sync" | "bulk-review-sync" | "review-recheck" | "review-recover";
 	data: ZoteroItemPayload[];
+	automaticAttachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string }>;
 }
 
 export interface LitNoteApplySyncRequest {
@@ -110,6 +113,18 @@ export interface LitNoteReviewFailureRequest {
 	error: string;
 }
 
+export interface LitNoteInitialReviewScanStartRequest {
+	action: "initial-review-scan-start";
+	scanId: string;
+}
+
+export interface LitNoteInitialReviewScanEndRequest {
+	action: "initial-review-scan-end";
+	scanId: string;
+	status: "complete" | "error";
+	error?: string;
+}
+
 export interface LitNoteUncertainReviewRequest {
 	action: "review-uncertain" | "review-uncertain-acknowledged";
 	itemkey: string;
@@ -119,14 +134,22 @@ export interface LitNoteUncertainReviewRequest {
 	title?: string;
 	attachments?: ZoteroAttachment[];
 	attachmentCheckError?: string;
-	attachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string }>;
+	attachmentPaths?: Array<{ itemkey: string; sourcePath: string; destinationPath: string; archivePath?: string; archiveDirectory?: string }>;
 }
 
 export interface LitNoteAttachmentMoveCompleteRequest {
-	action: "attachment-move-complete";
+	action: "attachment-move-complete" | "attachment-repair-complete";
 	data: [ZoteroItemPayload];
-	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; trashed?: boolean; preservedSource?: boolean; copied?: boolean; referenceCheckFailed?: boolean }>;
+	repairId?: string;
+	automaticAttachment?: boolean;
+	moved: Array<{ itemkey?: string; from: string; to: string; oldKey?: string; newKey?: string; archivePath?: string; archiveDirectory?: string; trashed?: boolean; preservedSource?: boolean; sourceMissing?: boolean; copied?: boolean; referenceCheckFailed?: boolean }>;
 	linked?: Array<{ path: string; newKey: string }>;
+}
+
+export interface LitNoteAttachmentRepairPrepareRequest {
+	action: "attachment-repair-prepare" | "attachment-auto-prepare";
+	data: [ZoteroItemPayload];
+	repairId?: string;
 }
 
 export interface LitNoteBulkLibraryRequest {
@@ -134,7 +157,13 @@ export interface LitNoteBulkLibraryRequest {
 	data: [ZoteroItemPayload];
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteBulkLibraryRequest;
+export interface LitNoteItemTrashCompleteRequest {
+	action: "item-trash-complete";
+	id: string;
+	error?: string;
+}
+
+export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteInitialReviewScanStartRequest | LitNoteInitialReviewScanEndRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteAttachmentRepairPrepareRequest | LitNoteBulkLibraryRequest | LitNoteItemTrashCompleteRequest;
 
 export type LitNoteItemStatus =
 	| "created"
@@ -144,6 +173,7 @@ export type LitNoteItemStatus =
 	| "set-zotero-key"
 	| "prepared"
 	| "pending-review"
+	| "attachment-error"
 	| "waiting-index"
 	| "skipped"
 	| "missing"
@@ -161,6 +191,8 @@ export interface LitNoteItemResult {
 }
 
 export interface LitNoteResponse {
+	attachmentMove?: AttachmentMoveCandidate;
+	initialReviewScan?: { scanId: string; status: "pending" | "complete" | "error"; error?: string };
 	success: boolean;
 	relationship?: "unset" | "inside" | "outside";
 	vaultPath?: string;
@@ -169,7 +201,8 @@ export interface LitNoteResponse {
 	requests?: Array<{
 		itemkey: string;
 		libraryURI: string;
-		operation?: "library-uri" | "library-recheck" | "note-update" | "attachment-move";
+		operation?: "library-uri" | "library-recheck" | "note-update" | "attachment-move" | "attachment-repair";
+		repairId?: string;
 		attachmentMove?: AttachmentMoveCandidate;
 		strategy?: "newest" | "zotero" | "skip";
 	}>;

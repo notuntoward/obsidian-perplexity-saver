@@ -1,30 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createdNotices } from "../__mocks__/obsidian";
-import { allReviews, clearReviews, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, markReviewUncertain, queueReview, removeReview, requestedReviews, reviewKey, setReviewListener } from "../../src/litNote/pendingReviews";
+import { acknowledgeUncertainReview, allReviews, clearReviews, consumeUncertainAcknowledgement, endInitialReviewScan, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishUncertainAttachmentRepair, markReviewUncertain, queueReview, removeReview, requestedReviews, requestRescan, reviewKey, setReviewListener, startInitialReviewScan } from "../../src/litNote/pendingReviews";
 import { setupReviewStatus } from "../../src/litNote/reviewStatus";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
+import { compareDuplicateReview, DUPLICATE_NOTES_REASON, watchDuplicateReviews } from "../../src/litNote/duplicateNotes";
 import type { App } from "obsidian";
 
 const state = vi.hoisted(() => ({
 	groups: [] as Array<{ kind: string; title: string; uri?: string; itemkey?: string }>,
 	select: undefined as ((group: unknown) => void) | undefined,
-	getSubtitle: undefined as ((group: { kind: string; title: string; uri?: string }) => string) | undefined,
-	getTitle: undefined as ((group: { kind: string; title: string; uri?: string; itemkey?: string }) => string) | undefined,
+	selectItem: undefined as ((group: unknown, item: unknown) => void) | undefined,
 }));
-vi.mock("commons/modal", () => ({
-	ItemSuggestModal: class {
-		constructor(_app: unknown, items: typeof state.groups, select: (group: unknown) => void, options: { getSubtitle: typeof state.getSubtitle; getTitle: typeof state.getTitle }) {
-			state.groups = items;
-			state.select = select;
-			state.getSubtitle = options.getSubtitle;
-			state.getTitle = options.getTitle;
+vi.mock("../../src/litNote/reviewOverviewModal", () => ({
+	ReviewOverviewModal: class {
+		constructor(_app: unknown, private select: (group: unknown) => void, selectItem: (group: unknown, item: unknown) => void, private dismiss: () => void) {
+			state.selectItem = selectItem;
+		}
+		update(groups: typeof state.groups): void {
+			state.groups = groups;
+			state.select = this.select;
 		}
 		open(): void {}
+		close(): void { this.dismiss(); }
 	},
 }));
 vi.mock("commons/workspace", () => ({ getMainWindow: () => undefined }));
 vi.mock("commons/os", () => ({ raiseWindow: vi.fn() }));
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
+vi.mock("../../src/litNote/duplicateNotes", async (original) => ({
+	...await original<typeof import("../../src/litNote/duplicateNotes")>(),
+	compareDuplicateReview: vi.fn(async () => undefined),
+	watchDuplicateReviews: vi.fn(() => vi.fn()),
+}));
 vi.mock("../../src/litNote/uncertainAttachments", () => ({
 	inspectUncertainAttachments: vi.fn(async () => ({
 		message: "Current attachment state",
@@ -37,8 +44,9 @@ const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "libra
 function setup() {
 	const button = { setText: vi.fn(), title: "", onclick: undefined as (() => void) | undefined };
 	const status = { hidden: false, createEl: () => button };
-	setupReviewStatus({} as App, status as unknown as HTMLElement);
-	return { status, button };
+	const workspace = { on: vi.fn((_event: string, _callback: () => void) => ({})), offref: vi.fn() };
+	setupReviewStatus({ workspace } as unknown as App, status as unknown as HTMLElement);
+	return { status, button, workspace };
 }
 
 async function settle(): Promise<void> {
@@ -54,6 +62,24 @@ describe("review status", () => {
 	});
 	afterEach(() => { setReviewListener(); clearReviews(); });
 
+	it("announces the end of a requested check, including one that finds nothing", () => {
+		setup();
+		requestRescan();
+		startInitialReviewScan("first");
+		endInitialReviewScan("first", "complete");
+		expect(createdNotices.at(-1)?.message).toBe("Zotero finished checking all literature notes. Nothing needs review.");
+		requestRescan();
+		startInitialReviewScan("second");
+		queueReview(item, "Attachment links differ");
+		createdNotices.length = 0;
+		endInitialReviewScan("second", "complete");
+		expect(createdNotices.at(-1)?.message).toContain("Zotero reviews need attention");
+		createdNotices.length = 0;
+		startInitialReviewScan("startup");
+		endInitialReviewScan("startup", "complete");
+		expect(createdNotices.some((notice) => notice.message.includes("Nothing needs review"))).toBe(false);
+	});
+
 	it("announces the status bar once and announces completion when the last review is removed", () => {
 		const { status } = setup();
 		expect(status.hidden).toBe(true);
@@ -67,6 +93,50 @@ describe("review status", () => {
 		expect(createdNotices.at(-1)?.message).toContain("All Zotero reviews are complete");
 	});
 
+	it("shows interrupted and other reviews together after the initial scan and counts down", () => {
+		const { status, button } = setup();
+		const other = { ...item, itemkey: "OTHER" };
+		startInitialReviewScan("startup");
+		markReviewUncertain({ ...item, operation: "attachment-move" });
+		queueReview(other, "Attachment links differ");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Checking Zotero/Obsidian match...");
+		button.onclick?.();
+		expect(createdNotices.at(-1)?.message).toContain("full list will appear");
+		endInitialReviewScan("startup", "complete");
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 2");
+		button.onclick?.();
+		expect(state.groups.map((group) => group.kind)).toEqual(["uncertain", "reason"]);
+		removeReview(reviewKey(other));
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+		acknowledgeUncertainReview(reviewKey(item));
+		consumeUncertainAcknowledgement(item);
+		expect(status.hidden).toBe(true);
+	});
+
+	it("hides the count during the initial scan and exposes errors until a same-id retry completes", () => {
+		const { status, button } = setup();
+		queueReview(item, "Attachment links differ");
+		expect(status.hidden).toBe(false);
+
+		startInitialReviewScan("startup-1");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Checking Zotero/Obsidian match...");
+		endInitialReviewScan("startup-1", "error", "Zotero unavailable");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero/Obsidian check failed");
+		expect(button.title).toContain("Zotero unavailable");
+		button.onclick?.();
+		expect(createdNotices.at(-1)?.message).toContain("Keep both apps open while Zotero retries");
+
+		startInitialReviewScan("startup-1");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Checking Zotero/Obsidian match...");
+		endInitialReviewScan("startup-1", "complete");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+	});
+
 	it("explains why multiple updates need checking without acknowledging them", () => {
 		const { button } = setup();
 		for (const itemkey of ["ABC", "DEF", "GHI"]) {
@@ -76,26 +146,52 @@ describe("review status", () => {
 		}
 		button.onclick?.();
 		expect(state.groups[0].title).toBe("Check Zotero items (3)");
-		expect(state.getSubtitle?.(state.groups[0])).toContain("couldn't confirm");
-		expect(state.getSubtitle?.(state.groups[0])).toContain("check each item and note in both apps");
 		expect(allReviews()).toHaveLength(3);
 		expect(allReviews().every((entry) => entry.uncertain && !entry.awaitingAcknowledgement)).toBe(true);
+	});
+
+	it("walks through interrupted reviews without reopening the list and stops on cancel", async () => {
+		const { button } = setup();
+		for (const itemkey of ["ABC", "DEF", "GHI"]) markReviewUncertain({ ...item, itemkey });
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("create").mockResolvedValueOnce("cancel");
+		button.onclick?.();
+		state.select?.(state.groups[0]);
+		await settle();
+		expect(askNoteDecision).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(askNoteDecision).mock.calls.map((call) => call[4]?.itemkey)).toEqual(["ABC", "DEF"]);
+		expect(allReviews()).toMatchObject([
+			{ itemkey: "ABC", awaitingAcknowledgement: true },
+			{ itemkey: "DEF", uncertain: true },
+			{ itemkey: "GHI", uncertain: true },
+		]);
 	});
 
 	it("labels a missing title and explains how to find the Zotero item", async () => {
 		const { button } = setup();
 		markReviewUncertain({ itemkey: "ABC", libraryURI: "library" });
 		button.onclick?.();
-		state.select?.(state.groups[0]);
-		expect(state.getTitle?.(state.groups[0])).toBe("Zotero item (key ABC)");
-		expect(state.getSubtitle?.(state.groups[0])).toContain("Select to open the item in Zotero and find its note");
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
-		state.select?.(allReviews()[0]);
+		state.selectItem?.(state.groups[0], allReviews()[0]);
 		await settle();
 		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Obsidian could not identify a matching note");
 		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).not.toContain("ABC");
 		expect(vi.mocked(askNoteDecision).mock.calls[0][4]).toMatchObject({ title: "Open item in Zotero", itemkey: "ABC" });
 		expect(allReviews()[0].uncertain).toBe(true);
+	});
+
+	it("compares duplicate notes locally instead of asking Zotero, and stops watching on cleanup", () => {
+		const button = { setText: vi.fn(), title: "", onclick: undefined as (() => void) | undefined };
+		const status = { hidden: false, createEl: () => button };
+		const app = { workspace: { on: vi.fn(() => ({})), offref: vi.fn() } } as unknown as App;
+		const settings = { litNotesFolder: "lit" };
+		const cleanup = setupReviewStatus(app, status as unknown as HTMLElement, settings);
+		queueReview(item, DUPLICATE_NOTES_REASON);
+		button.onclick?.();
+		state.selectItem?.(state.groups[0], allReviews()[0]);
+		expect(compareDuplicateReview).toHaveBeenCalledWith(app, settings, allReviews()[0]);
+		expect(requestedReviews()).toEqual([]);
+		cleanup();
+		expect(vi.mocked(watchDuplicateReviews).mock.results[0].value).toHaveBeenCalled();
 	});
 
 	it("requires an explicit check before clearing an interrupted operation", async () => {
@@ -105,12 +201,8 @@ describe("review status", () => {
 		button.onclick?.();
 		expect(state.groups.map((group) => group.kind)).toEqual(["uncertain"]);
 		expect(state.groups[0].title).toBe("Check Zotero items (1)");
-		expect(state.getSubtitle?.(state.groups[0])).toBe("Zotero couldn't confirm that changes finished. Select to check each item and note in both apps.");
-		state.select?.(state.groups[0]);
-		expect(state.getTitle?.(state.groups[0])).toBe("Work");
-		expect(state.getSubtitle?.(state.groups[0])).toBe("lit/note.md");
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
-		state.select?.(allReviews()[0]);
+		state.selectItem?.(state.groups[0], allReviews()[0]);
 		await settle();
 		expect(allReviews()).toHaveLength(1);
 		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("Zotero could not confirm that an update finished");
@@ -128,7 +220,7 @@ describe("review status", () => {
 			noteOpenFollowUp: "Return to Zotero reviews after checking the note.",
 		});
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("create");
-		state.select?.(allReviews()[0]);
+		state.selectItem?.(state.groups[0], allReviews()[0]);
 		await settle();
 		expect(allReviews()).toMatchObject([{ awaitingAcknowledgement: true }]);
 		expect(createdNotices.at(-1)?.message).toContain("Waiting for Zotero to acknowledge");
@@ -140,10 +232,8 @@ describe("review status", () => {
 		markReviewUncertain({ ...item, operation: "attachment-move" });
 		button.onclick?.();
 		expect(state.groups[0].title).toBe("Check attachment repairs (1)");
-		expect(state.getSubtitle?.(state.groups[0])).toContain("Zotero tried to put attachments in the vault");
-		state.select?.(state.groups[0]);
 		vi.mocked(askNoteDecision).mockResolvedValueOnce("cancel");
-		state.select?.(allReviews()[0]);
+		state.selectItem?.(state.groups[0], allReviews()[0]);
 		await settle();
 		const [, title, message, buttons] = vi.mocked(askNoteDecision).mock.calls[0];
 		expect(title).toBe("Check the attachment move");
@@ -151,13 +241,66 @@ describe("review status", () => {
 		expect(message).toContain("Current attachment state");
 		expect(message).toContain("Check that the files open");
 		expect(message).toContain("Check that the links open the correct files");
-		expect(message).toContain("Do not delete copies until you have checked them");
+		expect(message).toContain("copies the attachment into the vault and links the copy in Zotero and Obsidian");
+		expect(message).toContain("original stays in its current location");
+		expect(message).toContain("delete it yourself after checking that the copy opens in both apps");
+		expect(message).not.toContain("Confirming does not fix files or links");
 		expect(message).not.toContain("Zotero item key:");
-		expect(buttons[0].label).toBe("I've checked the item and note");
+		expect(buttons.map((button) => button.label)).toContain("I've checked the item and note");
+		expect(buttons.map((button) => button.label)).toContain("Copy and repair attachment links");
 		expect(vi.mocked(askNoteDecision).mock.calls[0][4]?.recoveryPaths).toEqual([
 			{ label: "Zotero attachment: PDF", path: "C:\\storage\\paper.pdf", status: "File exists." },
 		]);
 		expect(allReviews()[0].uncertain).toBe(true);
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("repair-attachments");
+		state.selectItem?.(state.groups[0], allReviews()[0]);
+		await settle();
+		expect(requestedReviews()).toMatchObject([{ operation: "attachment-repair", uncertain: true, repairId: expect.any(String) }]);
+	});
+
+	it("starts all interrupted attachment repairs together and retains failed ones", async () => {
+		const { button } = setup();
+		const other = { ...item, itemkey: "DEF" };
+		markReviewUncertain({ ...item, operation: "attachment-move" });
+		markReviewUncertain({ ...other, operation: "attachment-move" });
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("create");
+		button.onclick?.();
+		state.select?.(state.groups[0]);
+		await settle();
+		expect(vi.mocked(askNoteDecision).mock.calls[0][2]).toContain("original files remain");
+		expect(requestedReviews()).toMatchObject([
+			{ itemkey: "ABC", operation: "attachment-repair", repairId: expect.any(String) },
+			{ itemkey: "DEF", operation: "attachment-repair", repairId: expect.any(String) },
+		]);
+		finishUncertainAttachmentRepair(reviewKey(item));
+		failReview(other, "Could not copy");
+		expect(allReviews()).toMatchObject([
+			{ itemkey: "ABC", awaitingAcknowledgement: true },
+			{ itemkey: "DEF", uncertain: true, uncertainReason: "Could not copy" },
+		]);
+		consumeUncertainAcknowledgement(item);
+		expect(allReviews()).toMatchObject([{ itemkey: "DEF", uncertain: true }]);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+	});
+
+	it("starts an individual interrupted repair directly from the persistent overview", async () => {
+		const { button } = setup();
+		markReviewUncertain({ ...item, operation: "attachment-move" });
+		button.onclick?.();
+		vi.mocked(askNoteDecision).mockResolvedValueOnce("repair-attachments");
+		state.selectItem?.(state.groups[0], allReviews()[0]);
+		await settle();
+		expect(requestedReviews()).toMatchObject([{ itemkey: "ABC", operation: "attachment-repair" }]);
+	});
+
+	it("allows an opened note to be edited and the overview to be reopened", () => {
+		const { button, workspace } = setup();
+		queueReview(item, "Attachment links differ");
+		button.onclick?.();
+		const first = state.selectItem;
+		workspace.on.mock.calls[0][1]();
+		button.onclick?.();
+		expect(state.selectItem).not.toBe(first);
 	});
 
 	it("requires both library approval and backup confirmation before requesting corrections", async () => {

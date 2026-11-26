@@ -254,6 +254,9 @@ export class MockElement {
 	createDiv(opts?: { text?: string; cls?: string }): MockElement {
 		return this.createEl("div", opts);
 	}
+	createSpan(opts?: { text?: string; cls?: string }): MockElement {
+		return this.createEl("span", opts);
+	}
 	addClass(cls: string): void {
 		this.cls = this.cls ? `${this.cls} ${cls}` : cls;
 	}
@@ -265,6 +268,19 @@ export class MockElement {
 	addEventListener(type: string, cb: () => void): void {
 		(this.listeners[type] ??= []).push(cb);
 	}
+}
+
+// The shared property editor (commons/properties/review-modal) subclasses this when its module loads.
+export class AbstractInputSuggest<T> {
+	constructor(public app: unknown, public inputEl: HTMLInputElement | HTMLDivElement) {}
+	getSuggestions(_query: string): T[] | Promise<T[]> {
+		return [];
+	}
+	renderSuggestion(_value: T, _el: HTMLElement): void {}
+	selectSuggestion(_value: T, _evt: MouseEvent | KeyboardEvent): void {}
+	setValue(_value: string): void {}
+	open(): void {}
+	close(): void {}
 }
 
 export class SuggestModal<T> {

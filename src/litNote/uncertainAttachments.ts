@@ -2,11 +2,12 @@ import { stat } from "fs/promises";
 import path from "path";
 import { FileSystemAdapter, parseLinktext, TFile } from "obsidian";
 import type { App } from "obsidian";
+import { attachmentLinkDestination } from "./attachmentLinks";
 import type { PendingReview } from "./pendingReviews";
 
 export interface UncertainAttachmentDetails {
 	message: string;
-	paths: Array<{ label: string; path: string; status: string }>;
+	paths: Array<{ label: string; path: string; status?: string }>;
 }
 
 function samePath(first: string, second: string): boolean {
@@ -16,11 +17,11 @@ function samePath(first: string, second: string): boolean {
 	return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-async function fileStatus(filePath: string): Promise<string> {
+async function fileStatus(filePath: string): Promise<string | undefined> {
 	if (!path.isAbsolute(filePath)) return "Path is not absolute; file not checked.";
 	try {
 		const info = await stat(filePath);
-		return info.isFile() ? "File exists." : "Not a file.";
+		return info.isFile() ? undefined : "Not a file.";
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return "File is missing.";
 		return `Could not check file: ${error instanceof Error ? error.message : String(error)}`;
@@ -41,7 +42,7 @@ export async function inspectUncertainAttachments(app: App, review: PendingRevie
 		}
 		for (const reference of [...(cache.links ?? []), ...(cache.embeds ?? []), ...(cache.frontmatterLinks ?? [])]) {
 			const target = parseLinktext(reference.link).path;
-			const file = app.metadataCache.getFirstLinkpathDest(target, note.path);
+			const file = attachmentLinkDestination(app, target, note.path);
 			if (!extensions.has(path.extname(file instanceof TFile ? file.path : target).toLowerCase())) continue;
 			noteLinks.push({ target, path: file instanceof TFile ? adapter.getFullPath(file.path) : undefined });
 		}
@@ -53,9 +54,6 @@ export async function inspectUncertainAttachments(app: App, review: PendingRevie
 	} else if (!review.uncertainAttachments) {
 		messages.push("Zotero attachment details are unavailable. Keep Zotero open and try again.");
 	} else {
-		if (review.uncertainAttachmentsCheckedAt) {
-			messages.push(`Zotero attachment details last received at ${new Date(review.uncertainAttachmentsCheckedAt).toLocaleTimeString()}.`);
-		}
 		if (!review.uncertainAttachments.length) messages.push("Zotero reported no file attachments for this item.");
 	}
 	for (const attachment of review.uncertainAttachments ?? []) {
@@ -65,25 +63,22 @@ export async function inspectUncertainAttachments(app: App, review: PendingRevie
 			messages.push(`${label}: Zotero did not provide a file path.`);
 			continue;
 		}
-		const linkStatus = cache && adapter instanceof FileSystemAdapter
-			? noteLinks.some((link) => link.path && samePath(link.path, attachmentPath))
-				? "The note links to this path."
-				: "No note attachment link resolves to this path."
-			: "The note link could not be checked.";
-		paths.push({ label: "Zotero attachment", path: attachmentPath, status: `${label}: ${await fileStatus(attachmentPath)} ${linkStatus}` });
+		const status = await fileStatus(attachmentPath);
+		paths.push({ label: "Zotero attachment", path: attachmentPath, ...(status ? { status: `${label}: ${status}` } : {}) });
 	}
 	for (const link of noteLinks) {
 		if (!link.path) messages.push(`Obsidian attachment link does not resolve: ${link.target}`);
 		else if (!(review.uncertainAttachments ?? []).some((attachment) => attachment.path && link.path && samePath(attachment.path, link.path))) {
-			paths.push({ label: "Obsidian attachment", path: link.path, status: await fileStatus(link.path) });
+			const status = await fileStatus(link.path);
+			paths.push({ label: "Obsidian attachment", path: link.path, ...(status ? { status } : {}) });
 		}
 	}
 	for (const planned of review.uncertainAttachmentPaths ?? []) {
 		for (const [label, filePath] of [["Original before the attempt", planned.sourcePath], ["Planned vault location", planned.destinationPath]] as const) {
 			if (paths.some((entry) => samePath(entry.path, filePath))) continue;
-			paths.push({ label, path: filePath, status: await fileStatus(filePath) });
+			const status = await fileStatus(filePath);
+			paths.push({ label, path: filePath, ...(status ? { status } : {}) });
 		}
 	}
-	if (!review.uncertainAttachmentPaths) messages.push("The earlier attempt did not record its original and destination paths.");
 	return { message: messages.join("\n"), paths };
 }

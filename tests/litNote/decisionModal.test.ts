@@ -11,6 +11,8 @@ import { askAuthorFormatDecision } from "../../src/litNote/authorFormatModal";
 import type { DomModal } from "../__mocks__/obsidian";
 
 const state = vi.hoisted(() => ({ modals: [] as DomModal[], doc: undefined as Document | undefined }));
+const openNotesSideBySide = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../../src/litNote/noteComparison", () => ({ openNotesSideBySide }));
 const createdNotices = (Obsidian as unknown as { createdNotices: Array<{ message: string }> }).createdNotices;
 vi.mock("obsidian", async (original) => {
 	const mock = await original<typeof import("../__mocks__/obsidian")>();
@@ -44,6 +46,57 @@ async function settleMicrotasks(): Promise<void> {
 }
 
 describe("askNoteDecision", () => {
+	it.each(["lit/first.md", "lit/second.md"])("opens the selected duplicate note %s without applying changes", async (notePath) => {
+		state.doc = document.implementation.createHTMLDocument("pop-out");
+		const openLinkText = vi.fn().mockResolvedValue(undefined);
+		const promise = askNoteDecision({ workspace: { openLinkText } } as unknown as App,
+			"Multiple notes match this Zotero item", "Correct the duplicate Zotero identities manually.",
+			[{ label: "Close", value: "skip" }], {
+				title: "Paper", itemkey: "ABC", libraryURI: "library", compact: false,
+				notePaths: ["lit/first.md", "lit/second.md"],
+				noteOpenFollowUp: "Return to Zotero reviews after correcting the identities.",
+			});
+		await settleMicrotasks();
+		try {
+			const links = Array.from(latestModal().contentEl.querySelectorAll<HTMLAnchorElement>("a"));
+			expect(links.map((link) => link.textContent)).toEqual(expect.arrayContaining(["lit/first.md", "lit/second.md"]));
+			const link = links.find((entry) => entry.textContent === notePath)!;
+			link.click();
+			await expect(promise).resolves.toBe("skip");
+			await settleMicrotasks();
+			expect(openLinkText).toHaveBeenCalledWith(notePath, "", "tab");
+			expect(latestModal().closed).toBe(true);
+			expect(createdNotices.at(-1)?.message).toContain("Return to Zotero reviews");
+		} finally {
+			if (!latestModal().closed) latestModal().close();
+			await promise;
+		}
+	});
+
+	it("opens all duplicate notes side by side from the dialog", async () => {
+		const first = Object.assign(new TFile(), { path: "lit/first.md" });
+		const second = Object.assign(new TFile(), { path: "lit/second.md" });
+		const files = new Map([[first.path, first], [second.path, second]]);
+		const app = { workspace: { openLinkText: vi.fn() }, vault: { getAbstractFileByPath: (path: string) => files.get(path) ?? null } } as unknown as App;
+		const promise = askNoteDecision(app, "Multiple notes match this Zotero item", "Correct the duplicate Zotero identities manually.",
+			[{ label: "Close", value: "skip" }], {
+				title: "Paper", itemkey: "ABC", libraryURI: "library", compact: false,
+				notePaths: [first.path, second.path], noteOpenFollowUp: "Saver rechecks automatically.",
+			});
+		await settleMicrotasks();
+		try {
+			findButton("Open notes side by side").click();
+			await expect(promise).resolves.toBe("skip");
+			await settleMicrotasks();
+			expect(openNotesSideBySide).toHaveBeenCalledWith(app, [first, second]);
+			expect(latestModal().closed).toBe(true);
+			expect(createdNotices.at(-1)?.message).toBe("Saver rechecks automatically.");
+		} finally {
+			if (!latestModal().closed) latestModal().close();
+			await promise;
+		}
+	});
+
 	it("shows and copies each recovery path from the modal's window", async () => {
 		state.doc = document.implementation.createHTMLDocument("pop-out");
 		const popoutWindow = { name: "pop-out" };

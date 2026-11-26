@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { createReadStream } from "fs";
-import { stat } from "fs/promises";
+import { readdir, stat, lstat } from "fs/promises";
 import path from "path";
 import type { AttachmentProblem } from "./buildLitNote";
 import type { AttachmentMoveCandidate, AttachmentMoveOperation } from "./pendingReviews";
@@ -63,6 +63,88 @@ async function hashOf(file: FileInfo): Promise<string> {
 	return file.hash;
 }
 
+export async function attachmentFingerprint(filePath: string): Promise<string> {
+	const before = await fileInfo(filePath);
+	if (!before || before.size === 0) throw new Error(`The attachment is missing or empty: ${filePath}`);
+	const fingerprint = await hashOf(before);
+	const after = await fileInfo(filePath);
+	if (!after || after.size !== before.size || after.mtime !== before.mtime || after.ctime !== before.ctime) {
+		throw new Error(`The attachment changed while it was being checked: ${filePath}`);
+	}
+	return fingerprint;
+}
+
+export async function preservedAttachmentMatches(sourcePath: string, destinationPath: string, allowMissingSource: boolean, expectedHash?: string): Promise<boolean> {
+	const source = await fileInfo(sourcePath);
+	const destination = await fileInfo(destinationPath);
+	if (!destination || destination.size === 0) return false;
+	if (!source) {
+		if (!allowMissingSource) return false;
+		try {
+			await stat(sourcePath);
+			return false;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+				return !!expectedHash && await attachmentFingerprint(destinationPath) === expectedHash;
+			}
+			throw error;
+		}
+	}
+	if (source.size === 0 || source.size !== destination.size) return false;
+	const destinationHash = await hashOf(destination);
+	const identical = await hashOf(source) === destinationHash && (!expectedHash || destinationHash === expectedHash);
+	for (const before of [source, destination]) {
+		const after = await fileInfo(before.path);
+		if (!after || after.size !== before.size || after.mtime !== before.mtime || after.ctime !== before.ctime) {
+			throw new Error(`The attachment changed while it was being checked: ${before.path}`);
+		}
+	}
+	return identical;
+}
+
+export async function verifyAttachmentCopy(sourcePath: string, destinationPath: string): Promise<void> {
+	if (!await preservedAttachmentMatches(sourcePath, destinationPath, false)) {
+		throw new Error(`The copied attachment does not match the original: ${destinationPath}`);
+	}
+}
+
+export async function verifyAttachmentResourceArchive(sourcePath: string, archiveDirectory: string): Promise<string> {
+	const originalDirectory = path.dirname(sourcePath);
+	if (!path.isAbsolute(archiveDirectory) || same(originalDirectory, archiveDirectory) ||
+		inside(originalDirectory, archiveDirectory) || inside(archiveDirectory, originalDirectory)) {
+		throw new Error("The attachment resource archive must be separate from Zotero storage.");
+	}
+	try {
+		await lstat(sourcePath);
+		throw new Error("The missing attachment main file reappeared; resource recovery stopped.");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const fingerprint = async (directory: string): Promise<string> => {
+		if (!(await lstat(directory)).isDirectory()) throw new Error("The attachment resource archive is not a directory.");
+		const hash = createHash("sha256");
+		const visit = async (folder: string): Promise<void> => {
+			for (const name of (await readdir(folder)).sort()) {
+				const filePath = path.join(folder, name);
+				const info = await lstat(filePath);
+				hash.update(JSON.stringify([path.relative(directory, filePath).split(path.sep).join("/"), info.isDirectory() ? "directory" : "file"]));
+				if (info.isDirectory()) await visit(filePath);
+				else if (info.isFile()) hash.update(await digest(filePath));
+				else throw new Error("Unsupported attachment archive resource.");
+			}
+		};
+		await visit(directory);
+		return hash.digest("hex");
+	};
+	const original = await fingerprint(originalDirectory);
+	const archived = await fingerprint(archiveDirectory);
+	if (original !== archived || original !== await fingerprint(originalDirectory) ||
+		archived !== await fingerprint(archiveDirectory)) {
+		throw new Error("The archived attachment resources do not match the original directory.");
+	}
+	return archived;
+}
+
 export async function validateTrashNoteFile(
 	vaultRoot: string,
 	snapshot: NonNullable<AttachmentMoveCandidate["trashNoteSnapshots"]>[number],
@@ -95,6 +177,104 @@ function name(filePath: string): string {
 
 function extension(filePath: string): string {
 	return path.extname(filePath).toLocaleLowerCase();
+}
+
+export async function buildAutomaticAttachmentMoveCandidate(
+	item: ZoteroItemPayload,
+	noteLinks: NoteAttachmentLink[],
+	vaultRoot: string,
+): Promise<AttachmentMoveCandidate | undefined> {
+	const base = item.linkedAttachmentBaseDirectory;
+	if (!item.linkedAttachmentBaseDirectoryValidated || !base || !path.isAbsolute(base) ||
+		(!inside(vaultRoot, base) && !same(vaultRoot, base))) {
+		throw new Error("Zotero's Linked Attachment Base Directory is not valid inside the vault.");
+	}
+	if (item.libraryType !== "user") throw new Error("Zotero does not support linked attachments in group libraries.");
+	const notes: FileInfo[] = [];
+	for (const link of noteLinks) {
+		if (!link.absolutePath) continue;
+		const file = await fileInfo(link.absolutePath);
+		if (file && file.size > 0 && !notes.some((current) => same(current.path, file.path))) notes.push(file);
+	}
+	const reserved: string[] = [];
+	const operations: AttachmentMoveOperation[] = [];
+	for (const attachment of item.attachments ?? []) {
+		if (!attachment.isFile && attachment.mode !== "linked" && attachment.mode !== "stored") continue;
+		if (!attachment.itemkey || !attachment.path || !path.isAbsolute(attachment.path) ||
+			(attachment.mode !== "linked" && attachment.mode !== "stored")) {
+			throw new Error("A Zotero attachment path or identity is unavailable.");
+		}
+		const source = await fileInfo(attachment.path);
+		const sourcePath = attachment.path;
+		let matches = notes.filter((note) => name(note.path) === name(sourcePath));
+		if (!matches.length && path.parse(sourcePath).name.toLocaleLowerCase() === item.citekey.toLocaleLowerCase()) {
+			matches = notes.filter((note) => extension(note.path) === extension(sourcePath));
+		}
+		if (matches.length > 1) throw new Error(`Multiple note attachments have the same filename: ${name(sourcePath)}`);
+		const note = matches[0];
+		if ((!source && !note) || source?.size === 0) throw new Error(`The Zotero attachment is missing or empty: ${sourcePath}`);
+		if (!source) {
+			try {
+				await stat(sourcePath);
+				throw new Error(`The Zotero attachment is not a regular file: ${sourcePath}`);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+		if (note && same(note.path, sourcePath)) continue;
+		if (!note && inside(vaultRoot, sourcePath)) continue;
+		let destination = note?.path;
+		let snapshotDirectory = false;
+		if (!destination) {
+			if (attachment.mode === "stored" && extension(sourcePath) === ".html" &&
+				name(path.dirname(sourcePath)) === attachment.itemkey.toLocaleLowerCase()) {
+				const children = await readdir(path.dirname(sourcePath));
+				snapshotDirectory = children.some((child) => child.toLocaleLowerCase() !== name(sourcePath) && !child.startsWith(".zotero"));
+			}
+			const parsed = path.parse(sourcePath);
+			if (snapshotDirectory) {
+				let directory = path.join(base, `${parsed.name} snapshot`);
+				let index = 2;
+				while (reserved.some((current) => same(path.dirname(current), directory)) || await stat(directory).then(() => true, (error: NodeJS.ErrnoException) => {
+					if (error.code === "ENOENT") return false;
+					throw error;
+				})) directory = path.join(base, `${parsed.name} snapshot ${index++}`);
+				destination = path.join(directory, parsed.base);
+			} else {
+				destination = path.join(base, parsed.base);
+				let index = 2;
+				while (reserved.some((current) => same(current, destination)) || await fileInfo(destination)) {
+					destination = path.join(base, `${parsed.name} ${index++}${parsed.ext}`);
+				}
+			}
+		}
+		if (reserved.some((current) => same(current, destination))) {
+			throw new Error(`More than one Zotero attachment would use ${destination}.`);
+		}
+		reserved.push(destination);
+		operations.push({
+			itemkey: attachment.itemkey,
+			mode: attachment.mode,
+			basename: path.basename(sourcePath),
+			sourcePath,
+			destinationPath: destination,
+			...(snapshotDirectory ? { snapshotDirectory: true } : {}),
+			...(!source ? { sourceMissing: true as const } : {}),
+			resolution: note ? "keep-note" : "move",
+			conflict: false,
+			identical: false,
+			...(source ? { sourceMtime: source.mtime } : {}),
+			...(note ? { destinationMtime: note.mtime } : {}),
+		});
+	}
+	return operations.length ? {
+		baseDirectory: base,
+		automatic: true,
+		attachments: operations,
+		linkNoteFiles: [],
+		trashNoteFiles: [],
+		extras: [],
+	} : undefined;
 }
 
 function editDistance(first: string, second: string): number {

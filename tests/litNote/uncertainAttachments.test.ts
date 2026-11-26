@@ -37,11 +37,15 @@ describe("uncertain attachment inspection", () => {
 		} as PendingReview;
 		const result = await inspectUncertainAttachments(app, review);
 		expect(result.paths).toEqual([
-			{ label: "Zotero attachment", path: source, status: "Original: File exists. No note attachment link resolves to this path." },
-			{ label: "Zotero attachment", path: destination, status: "Vault: File exists. The note links to this path." },
+			{ label: "Zotero attachment", path: source },
+			{ label: "Zotero attachment", path: destination },
 			{ label: "Planned vault location", path: missing, status: "File is missing." },
 		]);
 		expect(result.message).toContain("Obsidian attachment link does not resolve: missing.pdf");
+		expect(result.message).not.toContain("last received");
+		expect(result.message).not.toContain("did not record");
+		expect(JSON.stringify(result.paths)).not.toContain("File exists.");
+		expect(JSON.stringify(result.paths)).not.toContain("No note attachment link resolves");
 	});
 
 	it("reports unavailable evidence rather than claiming links or copies are safe", async () => {
@@ -49,7 +53,7 @@ describe("uncertain attachment inspection", () => {
 		const result = await inspectUncertainAttachments(app, { uncertainAttachmentCheckError: "Zotero unavailable" } as PendingReview);
 		expect(result.message).toContain("The note's attachment links could not be checked.");
 		expect(result.message).toContain("Zotero unavailable");
-		expect(result.message).toContain("did not record");
+		expect(result.message).not.toContain("did not record");
 		expect(result.paths).toEqual([]);
 	});
 });
