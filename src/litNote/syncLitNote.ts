@@ -731,7 +731,9 @@ export async function syncLitNote(
 		citekey, zotero_item_key: item.itemkey, zotero_library_uri: item.libraryURI,
 	};
 	if (mode === "metadata") {
-		for (const field of METADATA_FIELDS) changes[field] = generated[field];
+		for (const field of METADATA_FIELDS) {
+			if (field !== "zotero_collections" || item.collections !== undefined) changes[field] = generated[field];
+		}
 		changes.aliases = buildAliases(item.title, fm.aliases);
 	}
 	const descriptions = Object.entries(changes)

@@ -849,6 +849,45 @@ describe("literature note reconciliation", () => {
 		expect(f.getBody()).toContain("Personal notes.");
 	});
 
+	it("does not update collections from an automatic sync payload yet", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["New Collection"];
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept());
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+	});
+
+	it("previews and updates collections during a manual metadata update", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["New Collection"];
+		const confirm = accept();
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "metadata", confirm);
+		const preview = confirm.mock.calls.find((call) => call[0] === "Rename and update the note")?.[1];
+		expect(result.status).toBe("updated");
+		expect(preview).toContain("zotero_collections:");
+		expect(f.fm.zotero_collections).toEqual(["new_collection"]);
+		expect(f.fm.tags).toEqual(["personal"]);
+	});
+
+	it("preserves collections when a manual update omits collection data", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "metadata", accept());
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+	});
+
+	it("removes collections when a manual update supplies an empty list", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = [];
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "metadata", accept());
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toBeUndefined();
+	});
+
 	it("previews metadata changes and preserves unique existing aliases", async () => {
 		const f = fixture();
 		f.fm.doi = "10.1/old";

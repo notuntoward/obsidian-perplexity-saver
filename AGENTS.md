@@ -1,5 +1,9 @@
 # Agent Instructions for this Obsidian plugin template
 
+For staged Zotero–Obsidian consistency work, use the canonical
+`doc/CONSISTENCY-PLAN.md` in the `zotero-obsidian-companion` checkout; update
+its state and decisions as the work progresses.
+
 ## Task scope and validation
 
 Cache exact instructions per checkout/task; read guides only for changed areas.
