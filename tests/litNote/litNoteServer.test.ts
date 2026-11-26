@@ -157,6 +157,7 @@ const createMockReq = (method: string, url: string, bodyObj: any) => {
 	return {
 		method,
 		url,
+		headers: { "content-type": "application/json" },
 		[Symbol.asyncIterator]: async function* () {
 			yield bodyStr;
 		},
@@ -1842,6 +1843,207 @@ describe("Lit Note Server", () => {
 		expect(result.results[0].status).toBe("error");
 		expect(ask).toHaveBeenCalledWith("Zotero item or update plan changed or expired", "Retry the update.",
 			expect.any(Array), undefined, expect.objectContaining({ itemkey: "ABC", notePath: "lit/note.md" }));
+	});
+
+	it("adds library identities only to unique unchanged literature notes", async () => {
+		const good = `${FOLDER}/good.md`, changed = `${FOLDER}/changed.md`, duplicate = `${FOLDER}/duplicate.md`, duplicate2 = `${FOLDER}/duplicate2.md`;
+		const { app } = makeApp([good, changed, duplicate, duplicate2]);
+		const values = new Map<string, Record<string, unknown>>([
+			[good, { category: "literaturenote", zotero_item_key: "GOOD", zotero_tags: ["personal"], personal: "keep" }],
+			[changed, { category: "literaturenote", zotero_item_key: "CHANGED" }],
+			[duplicate, { category: "literaturenote", zotero_item_key: "DUP" }],
+			[duplicate2, { category: "literaturenote", zotero_item_key: "DUP" }],
+		]);
+		app.metadataCache.getFileCache = (file: TFile) => ({ frontmatter: values.get(file.path) });
+		app.vault.read = vi.fn(async (file: TFile) => {
+			const fm = values.get(file.path)!;
+			return `---\ncategory: literaturenote\nzotero_item_key: ${String(fm.zotero_item_key)}\n---\n`;
+		});
+		app.fileManager.processFrontMatter = vi.fn(async (file: TFile, callback: (fm: Record<string, unknown>) => void) => {
+			const fm = values.get(file.path)!;
+			if (file.path === changed) fm.zotero_library_uri = "other";
+			callback(fm);
+		});
+		const result = await post(app, { action: "fill-missing-library-uris", notes: [
+			{ notePath: good, itemkey: "GOOD", libraryURI: "library" },
+			{ notePath: changed, itemkey: "CHANGED", libraryURI: "library" },
+			{ notePath: duplicate, itemkey: "DUP", libraryURI: "library" },
+		] });
+		expect(result.success).toBe(false);
+		expect(result.updated).toBe(1);
+		expect(result.errors).toHaveLength(2);
+		expect(values.get(good)).toEqual({ category: "literaturenote", zotero_item_key: "GOOD", zotero_tags: ["personal"], personal: "keep", zotero_library_uri: "library" });
+		expect(Object.keys(values.get(good)!)).toEqual(["category", "zotero_item_key", "zotero_tags", "zotero_library_uri", "personal"]);
+		expect(values.get(changed)?.zotero_library_uri).toBe("other");
+		expect(values.get(duplicate)?.zotero_library_uri).toBeUndefined();
+	});
+
+	it("places existing and new URIs after tags or the item key without changing their values", async () => {
+		const tag = `${FOLDER}/tag.md`, key = `${FOLDER}/key.md`, correct = `${FOLDER}/correct.md`, missing = `${FOLDER}/missing.md`;
+		const { app } = makeApp([tag, key, correct, missing]);
+		const values = new Map<string, Record<string, unknown>>([
+			[tag, { category: "literaturenote", zotero_item_key: "A", zotero_library_uri: "old-uri", zotero_tags: ["personal"], title: "keep" }],
+			[key, { category: "literaturenote", zotero_item_key: "B", title: "keep", zotero_library_uri: "other-uri" }],
+			[correct, { category: "literaturenote", zotero_tags: ["tag"], zotero_library_uri: "already", zotero_item_key: "C" }],
+			[missing, { category: "literaturenote", zotero_library_uri: "preserve" }],
+		]);
+		const bodies = new Map([
+			[tag, "---\ncategory: literaturenote\nzotero_item_key: A\nzotero_library_uri: old-uri\nzotero_tags: [personal]\ntitle: keep\n---\n"],
+			[key, "---\ncategory: literaturenote\nzotero_item_key: B\ntitle: keep\nzotero_library_uri: other-uri\n---\n"],
+			[correct, "---\ncategory: literaturenote\nzotero_tags: [tag]\nzotero_library_uri: already\nzotero_item_key: C\n---\n"],
+			[missing, "---\ncategory: literaturenote\nzotero_library_uri: preserve\n---\n"],
+		]);
+		app.vault.read = vi.fn(async (file: TFile) => bodies.get(file.path));
+		app.fileManager.processFrontMatter = vi.fn(async (file: TFile, callback: (fm: Record<string, unknown>) => void) => callback(values.get(file.path)!));
+		const result = await post(app, { action: "fill-missing-library-uris", notes: [] });
+		expect(result).toMatchObject({ success: false, updated: 0, reordered: 2, unfilled: 0 });
+		expect(result.errors).toHaveLength(1);
+		expect(Object.keys(values.get(tag)!)).toEqual(["category", "zotero_item_key", "zotero_tags", "zotero_library_uri", "title"]);
+		expect(values.get(tag)?.zotero_library_uri).toBe("old-uri");
+		expect(values.get(tag)?.zotero_tags).toEqual(["personal"]);
+		expect(Object.keys(values.get(key)!)).toEqual(["category", "zotero_item_key", "zotero_library_uri", "title"]);
+		expect(values.get(key)?.zotero_library_uri).toBe("other-uri");
+		expect(app.fileManager.processFrontMatter).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not reposition a URI changed since the fresh scan", async () => {
+		const path = `${FOLDER}/note.md`;
+		const { app } = makeApp([path]);
+		const fm: Record<string, unknown> = { category: "literaturenote", zotero_item_key: "KEY", zotero_library_uri: "old", zotero_tags: ["tag"] };
+		app.vault.read = vi.fn(async () => "---\ncategory: literaturenote\nzotero_item_key: KEY\nzotero_library_uri: old\nzotero_tags: [tag]\n---\n");
+		app.fileManager.processFrontMatter = vi.fn(async (_file: TFile, callback: (fm: Record<string, unknown>) => void) => {
+			fm.zotero_library_uri = "changed";
+			callback(fm);
+		});
+		const result = await post(app, { action: "fill-missing-library-uris", notes: [] });
+		expect(result).toMatchObject({ success: false, reordered: 0 });
+		expect(result.errors).toHaveLength(1);
+		expect(fm.zotero_library_uri).toBe("changed");
+	});
+
+	it("reports all unreadable frontmatter paths without changing any notes", async () => {
+		const good = `${FOLDER}/good.md`, bad = `${FOLDER}/bad.md`, other = `${FOLDER}/other.md`;
+		const { app } = makeApp([good, bad, other]);
+		app.vault.read = vi.fn(async (file: TFile) => file.path === good
+			? "---\ncategory: literaturenote\nzotero_item_key: GOOD\n---\n"
+			: "---\ninvalid: yaml\n------\n---\n");
+		const original = Obsidian.parseYaml;
+		const parser = vi.spyOn(Obsidian, "parseYaml").mockImplementation((input) => {
+			if (input.includes("------")) throw new Error("Invalid YAML");
+			return original(input);
+		});
+		try {
+			const result = await post(app, { action: "fill-missing-library-uris", notes: [{ notePath: good, itemkey: "GOOD", libraryURI: "library" }] });
+			expect(result).toMatchObject({ success: false, updated: 0, reordered: 0, unfilled: 1 });
+			expect(result.errors).toHaveLength(2);
+			expect(result.errors[0]).toContain(bad);
+			expect(result.errors[1]).toContain(other);
+			expect(result.errors[0]).toContain("Invalid YAML");
+			expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
+		} finally {
+			parser.mockRestore();
+		}
+	});
+
+	it("rejects web-origin library cleanup", async () => {
+		const { app } = makeApp();
+		startLitNoteServer(app, { litNotesFolder: FOLDER });
+		const req = createMockReq("POST", "/lit-note", { action: "fill-missing-library-uris", notes: [] });
+		Object.assign(req.headers, { origin: "https://example.test" });
+		const { res, endPromise } = createMockRes();
+		requestHandler(req, res);
+		await endPromise;
+		expect(res.writeHead.mock.calls[0][0]).toBe(403);
+		expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
+	});
+
+	it("removes only the old indicator from note metadata and reports failures", async () => {
+		const first = `${FOLDER}/first.md`;
+		const second = `${FOLDER}/second.md`;
+		const { app } = makeApp([first, second]);
+		const values = new Map<string, any>([
+			[first, { zotero_tags: ["personal", "obslitnote", "another"] }],
+			[second, { zotero_tags: ["obslitnote"] }],
+		]);
+		app.metadataCache.getFileCache = (file: TFile) => ({ frontmatter: values.get(file.path) });
+		app.fileManager.processFrontMatter = vi.fn(async (file: TFile, callback: (fm: any) => void) => {
+			if (file.path === second) throw new Error("locked");
+			callback(values.get(file.path));
+		});
+		const result = await post(app, { action: "cleanup-obs-lit-note-tag" });
+		expect(result).toEqual({ success: false, removed: 1, errors: [`${second}: locked`] });
+		expect(values.get(first).zotero_tags).toEqual(["personal", "another"]);
+		expect(values.get(second).zotero_tags).toEqual(["obslitnote"]);
+	});
+
+	it("cleans a sole normalized tag while preserving unrelated properties", async () => {
+		const path = `${FOLDER}/note.md`;
+		const { app } = makeApp([path]);
+		const frontmatter: Record<string, unknown> = { zotero_tags: ["obslitnote"], tags: ["personal"], title: "Keep" };
+		app.metadataCache.getFileCache = () => ({ frontmatter });
+		app.fileManager.processFrontMatter = vi.fn(async (_file: TFile, callback: (fm: Record<string, unknown>) => void) => callback(frontmatter));
+		const result = await post(app, { action: "cleanup-obs-lit-note-tag" });
+		expect(result).toEqual({ success: true, removed: 1, errors: [] });
+		expect(frontmatter).toEqual({ tags: ["personal"], title: "Keep" });
+	});
+
+	it("rejects web-origin cleanup requests", async () => {
+		const { app } = makeApp();
+		startLitNoteServer(app, { litNotesFolder: FOLDER });
+		const req = createMockReq("POST", "/lit-note", { action: "cleanup-obs-lit-note-tag" });
+		Object.assign(req.headers, { origin: "https://example.test" });
+		const { res, endPromise } = createMockRes();
+		requestHandler(req, res);
+		await endPromise;
+		expect(res.writeHead.mock.calls[0][0]).toBe(403);
+		expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
+	});
+
+	it("returns one complete indicator snapshot including not-yet-indexed files", async () => {
+		const ready = `${FOLDER}/ready.md`;
+		const pending = `${FOLDER}/pending.md`;
+		const legacy = `${FOLDER}/legacy.md`;
+		const { app } = makeApp([ready, pending, legacy]);
+		app.metadataCache.getFileCache = (file: TFile) => file.path === ready
+			? { frontmatter: { category: "literaturenote", zotero_item_key: "READY", zotero_library_uri: "library" } }
+			: null;
+		app.vault.cachedRead = vi.fn(async (file: TFile) => file.path === pending
+			? "---\ncategory: literaturenote\nzotero_item_key: PENDING\nzotero_library_uri: library\n---\n"
+			: "---\ncategory: literaturenote\n---\n");
+		startLitNoteServer(app, { litNotesFolder: FOLDER });
+		const { res, endPromise } = createMockRes();
+		requestHandler(createMockReq("GET", "/lit-note-indicator-identities", null), res);
+		await endPromise;
+		const result = JSON.parse(res.end.mock.calls[0][0] as string);
+		expect(result.identities.map((identity: { itemkey: string }) => identity.itemkey)).toEqual(["READY", "PENDING"]);
+		expect(result.unidentifiedNotes).toBe(1);
+		expect(app.vault.cachedRead).toHaveBeenCalledTimes(2);
+	});
+
+	it("adds notes without item keys to the local review during a scan without exposing fake Zotero identities", async () => {
+		const missing = `${FOLDER}/legacy.md`;
+		const valid = `${FOLDER}/valid.md`;
+		const { app } = makeApp([missing, valid]);
+		app.metadataCache.getFileCache = (file: TFile) => ({ frontmatter: file.path === missing
+			? { category: "literaturenote" }
+			: { category: "literaturenote", zotero_item_key: "ABC", citekey: "valid" } });
+		await post(app, { action: "initial-review-scan-start", scanId: "missing-key" });
+		const { res, endPromise } = createMockRes();
+		requestHandler(createMockReq("GET", "/lit-note-identities", null), res);
+		await endPromise;
+		expect(JSON.parse(res.end.mock.calls[0][0] as string).identities).toEqual([
+			expect.objectContaining({ itemkey: "ABC", notePath: valid }),
+		]);
+		expect(allReviews()).toMatchObject([{ missingItemKey: true, notePath: missing, requested: false }]);
+		expect((await getReviews(app)).pending).toEqual([]);
+		expect(requestedReviews()).toEqual([]);
+		await post(app, { action: "initial-review-scan-end", scanId: "missing-key", status: "complete" });
+		app.metadataCache.getFileCache = () => ({ frontmatter: { category: "literaturenote", zotero_item_key: "ABC" } });
+		await post(app, { action: "initial-review-scan-start", scanId: "recheck" });
+		const second = createMockRes();
+		requestHandler(createMockReq("GET", "/lit-note-identities", null), second.res);
+		await second.endPromise;
+		expect(allReviews()).toEqual([]);
 	});
 
 	it("returns indexed Zotero identities for literature notes", async () => {

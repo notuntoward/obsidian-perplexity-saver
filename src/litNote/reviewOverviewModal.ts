@@ -71,6 +71,7 @@ export class ReviewOverviewModal extends Modal {
 				? group.attachmentMove
 					? "Copy and link attachments in both apps. The original files remain for you to check and optionally delete."
 					: "Check each item and note in both apps."
+				: group.kind === "missing-item-key" ? "Open each note and add its verified Zotero item key. Then run Check all literature notes against Zotero again."
 				: group.kind === "library" ? group.uri
 				: group.kind === "bulk-update" ? group.summary
 				: group.kind === "attachment-move" ? group.baseDirectory
@@ -78,11 +79,19 @@ export class ReviewOverviewModal extends Modal {
 			if (description) details.createEl("p", { text: description });
 			for (const entry of group.reviews) {
 				const row = details.createDiv({ cls: "lit-note-review-item" });
-				const label = entry.title === entry.itemkey ? `Zotero item (${entry.itemkey})` : entry.title;
-				const button = row.createEl("button", { text: label, cls: "lit-note-review-item-button" });
-				button.disabled = !!entry.requested || !!entry.awaitingAcknowledgement;
-				button.addEventListener("click", () => this.onItem(group, entry));
-				if (entry.notePath) row.createDiv({ text: entry.notePath, cls: "lit-note-review-item-path" });
+				if (group.kind === "missing-item-key" && entry.notePath) {
+					const link = row.createEl("a", { text: entry.notePath, cls: "lit-note-review-item-path internal-link", attr: { href: "#" } });
+					link.addEventListener("click", (event) => {
+						event.preventDefault();
+						this.onItem(group, entry);
+					});
+				} else {
+					const label = entry.title === entry.itemkey ? `Zotero item (${entry.itemkey})` : entry.title;
+					const button = row.createEl("button", { text: label, cls: "lit-note-review-item-button" });
+					button.disabled = !!entry.requested || !!entry.awaitingAcknowledgement;
+					button.addEventListener("click", () => this.onItem(group, entry));
+					if (entry.notePath) row.createDiv({ text: entry.notePath, cls: "lit-note-review-item-path" });
+				}
 				if (entry.requested || entry.awaitingAcknowledgement) row.createDiv({ text: "Waiting for Zotero", cls: "lit-note-review-item-path" });
 				rows.push({ element: row, text: `${entry.title} ${entry.notePath ?? ""} ${entry.itemkey}`.toLowerCase() });
 			}

@@ -58,6 +58,26 @@ it("keeps the review list open and expanded while the count and items change", (
 	expect(content.firstElementChild?.textContent).toContain("Back up your vault");
 });
 
+it("explains how to correct a missing item key and open its note", () => {
+	const review: PendingReview = {
+		key: "missing-item-key:lit/legacy.md", itemkey: "", libraryURI: "", title: "legacy.md",
+		notePath: "lit/legacy.md", reason: "Missing Zotero item key", missingItemKey: true, requested: false,
+	};
+	const group: ReviewGroup = { kind: "missing-item-key", title: "Add missing Zotero item key (1)", reviews: [review] };
+	const onItem = vi.fn();
+	const modal = new ReviewOverviewModal({} as App, vi.fn(), onItem, vi.fn());
+	modal.update([group], 1);
+	modal.open();
+	const content = state.modal!.contentEl;
+	expect(content.textContent).toContain("add its verified Zotero item key");
+	expect(content.textContent).toContain("lit/legacy.md");
+	const link = content.querySelector<HTMLAnchorElement>("a.lit-note-review-item-path");
+	expect(link?.textContent).toBe("lit/legacy.md");
+	expect(link?.getAttribute("href")).toBe("#");
+	link!.click();
+	expect(onItem).toHaveBeenCalledWith(group, review);
+});
+
 it("filters reviews by title or note and hides bulk actions while filtered", () => {
 	const first: PendingReview = {
 		key: "one", itemkey: "one", libraryURI: "library", title: "First paper",

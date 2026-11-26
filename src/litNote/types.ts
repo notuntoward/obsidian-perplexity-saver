@@ -170,7 +170,16 @@ export interface LitNoteItemTrashCompleteRequest {
 	error?: string;
 }
 
-export type LitNoteRequest = LitNoteCreateRequest | LitNoteOpenRequest | LitNoteOpenPathRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteInitialReviewScanStartRequest | LitNoteInitialReviewScanEndRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteAttachmentRepairPrepareRequest | LitNoteBulkLibraryRequest | LitNoteItemTrashCompleteRequest;
+export interface LitNoteCleanupIndicatorRequest {
+	action: "cleanup-obs-lit-note-tag";
+}
+
+export interface LitNoteFillLibraryURIRequest {
+	action: "fill-missing-library-uris";
+	notes: Array<{ notePath: string; itemkey: string; libraryURI: string }>;
+}
+
+export type LitNoteRequest = LitNoteFillLibraryURIRequest | LitNoteCleanupIndicatorRequest | LitNoteCreateRequest | LitNoteOpenRequest | LitNoteOpenPathRequest | LitNoteSyncRequest | LitNoteApplySyncRequest | LitNoteCheckAttachmentBaseRequest | LitNoteReviewFailureRequest | LitNoteInitialReviewScanStartRequest | LitNoteInitialReviewScanEndRequest | LitNoteUncertainReviewRequest | LitNoteAttachmentMoveCompleteRequest | LitNoteAttachmentRepairPrepareRequest | LitNoteBulkLibraryRequest | LitNoteItemTrashCompleteRequest;
 
 export type LitNoteItemStatus =
 	| "created"
@@ -206,6 +215,7 @@ export interface LitNoteResponse {
 	relationship?: "unset" | "inside" | "outside";
 	vaultPath?: string;
 	citekeys?: string[];
+	unidentifiedNotes?: number;
 	identities?: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string; modifiedAt?: number; size?: number }>;
 	requests?: Array<{
 		itemkey: string;

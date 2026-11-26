@@ -1,10 +1,11 @@
-import { App, Notice } from "obsidian";
+import { App, Notice, TFile } from "obsidian";
+import { hasLiteratureNoteCategory } from "commons/litnote";
 import { raiseWindow } from "commons/os";
-import { getMainWindow } from "commons/workspace";
+import { getMainWindow, openFileInLeaf } from "commons/workspace";
 import { askNoteDecision } from "./decisionModal";
 import { randomUUID } from "crypto";
 import { inspectUncertainAttachments } from "./uncertainAttachments";
-import { acknowledgeUncertainReview, allReviews, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, requestUncertainAttachmentRepair, requestUncertainAttachmentRepairBatch, setReviewListener } from "./pendingReviews";
+import { acknowledgeUncertainReview, allReviews, requestAttachmentBatch, requestLibraryBatch, requestNoteBatch, requestReview, requestUncertainAttachmentRepair, requestUncertainAttachmentRepairBatch, removeReview, setReviewListener } from "./pendingReviews";
 import { ReviewOverviewModal } from "./reviewOverviewModal";
 import { compareDuplicateReview, isDuplicateReview, watchDuplicateReviews } from "./duplicateNotes";
 import type { DuplicateReviewSettings } from "./duplicateNotes";
@@ -16,6 +17,7 @@ export type ReviewGroup =
 	| { kind: "library"; title: string; uri: string; reviews: PendingReview[] }
 	| { kind: "bulk-update"; title: string; summary: string; reviews: PendingReview[] }
 	| { kind: "attachment-move"; title: string; baseDirectory: string; conflict: boolean; reviews: PendingReview[] }
+	| { kind: "missing-item-key"; title: string; reviews: PendingReview[] }
 	| { kind: "reason"; title: string; reviews: PendingReview[] };
 
 function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
@@ -23,9 +25,14 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 	const updates = new Map<string, PendingReview[]>();
 	const attachmentMoves = new Map<string, { baseDirectory: string; conflict: boolean; reviews: PendingReview[] }>();
 	const reasons = new Map<string, PendingReview[]>();
+	const missingItemKeys: PendingReview[] = [];
 	const uncertain: PendingReview[] = [];
 	const awaitingAck: PendingReview[] = [];
 	for (const review of reviews) {
+		if (review.missingItemKey) {
+			missingItemKeys.push(review);
+			continue;
+		}
 		if (review.uncertain) {
 			uncertain.push(review);
 			continue;
@@ -62,6 +69,7 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 		reasons.set(review.reason, group);
 	}
 	return [
+		...(missingItemKeys.length ? [{ kind: "missing-item-key" as const, reviews: missingItemKeys, title: `Add missing Zotero item key (${missingItemKeys.length})` }] : []),
 		...([true, false] as const).flatMap((attachmentMove) => {
 			const reviews = uncertain.filter((entry) => (entry.uncertainOperation === "attachment-move") === attachmentMove);
 			return reviews.length ? [{
@@ -335,6 +343,16 @@ export function setupReviewStatus(app: App, status: HTMLElement, settings?: Dupl
 	const button = status.createEl("button", { cls: "lit-note-review-status" });
 	let overview: ReviewOverviewModal | undefined;
 	const fileOpen = app.workspace.on("file-open", () => overview?.close());
+	const metadataChanged = app.metadataCache.on("changed", (file, _data, cache) => {
+		for (const entry of allReviews()) {
+			if (!entry.missingItemKey || entry.notePath !== file.path) continue;
+			const fm = cache.frontmatter;
+			if (hasLiteratureNoteCategory(fm) && typeof fm?.zotero_item_key === "string" && fm.zotero_item_key.trim()) {
+				removeReview(entry.key);
+				new Notice("Zotero item key added. To verify the association, use the command to check all literature notes again.", 10000);
+			}
+		}
+	});
 	let count = 0;
 	let announced = false;
 	let arrival: Notice | undefined;
@@ -413,7 +431,19 @@ export function setupReviewStatus(app: App, status: HTMLElement, settings?: Dupl
 			arrival = undefined;
 			if (overview) return;
 			overview = new ReviewOverviewModal(app, (group) => openGroup(app, group), (group, entry) => {
-				if (group.kind === "uncertain") {
+				if (group.kind === "missing-item-key") {
+					const file = entry.notePath && app.vault.getAbstractFileByPath(entry.notePath);
+					if (!(file instanceof TFile)) {
+						new Notice("The note is no longer at this path. Check all literature notes again.", 10000);
+						return;
+					}
+					overview?.close();
+					void openFileInLeaf(app, file).catch((error: unknown) => {
+						console.error("Could not open the literature note", error);
+						new Notice(`Could not open the literature note: ${error instanceof Error ? error.message : String(error)}`, 10000);
+					});
+				}
+				else if (group.kind === "uncertain") {
 					void reviewUncertainItem(app, entry).catch((error: unknown) => {
 						console.error("Could not open the Zotero review", error);
 						new Notice(`Could not open the Zotero review: ${error instanceof Error ? error.message : String(error)}`, 10000);
@@ -434,6 +464,7 @@ export function setupReviewStatus(app: App, status: HTMLElement, settings?: Dupl
 		stopWatching?.();
 		setReviewListener();
 		app.workspace.offref(fileOpen);
+		app.metadataCache.offref(metadataChanged);
 		overview?.close();
 		arrival?.hide();
 		progress?.hide();

@@ -23,7 +23,7 @@ import http from "http";
 import path from "path";
 import { realpath, stat } from "fs/promises";
 import { randomUUID } from "crypto";
-import { App, FileSystemAdapter, Notice, normalizePath, TFile } from "obsidian";
+import { App, FileSystemAdapter, getFrontMatterInfo, Notice, normalizePath, parseYaml, TFile } from "obsidian";
 import type { WorkspaceLeaf } from "obsidian";
 import {
 	focusLeafAndWindow,
@@ -36,9 +36,9 @@ import {
 import { setTimeoutIn } from "commons/windows";
 import { raiseWindow } from "commons/os";
 import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession } from "./decisionModal";
-import { getLitNoteFiles } from "commons/litnote";
+import { getLitNoteFiles, hasLiteratureNoteCategory, isDirectChildOfFolder } from "commons/litnote";
 import { finishAttachmentMove, recordRecoveredAutomaticAttachments, syncLitNote, type SyncResult } from "./syncLitNote";
-import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanBusyError, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
+import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, replaceMissingItemKeyReviews, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanBusyError, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
 import { clearItemTrashRequests, finishItemTrash, itemTrashRequests } from "./zoteroItemTrash";
 import type { BulkProposal } from "./pendingReviews";
 import { findIdenticalAttachments } from "./attachmentIdentity";
@@ -970,21 +970,176 @@ function resultsResponse(results: LitNoteItemResult[]): LitNoteResponse {
 	};
 }
 
+async function readIndexedFrontmatter(app: App, file: TFile, fresh = false): Promise<Record<string, unknown> | undefined> {
+	try {
+		const cache = fresh ? null : app.metadataCache.getFileCache(file);
+		if (cache) return cache.frontmatter;
+		const info = getFrontMatterInfo(await (fresh ? app.vault.read(file) : app.vault.cachedRead(file)));
+		if (!info.exists) return undefined;
+		const parsed: unknown = parseYaml(info.frontmatter);
+		if (parsed === null || parsed === undefined) return undefined;
+		if (typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Frontmatter is not a mapping.");
+		return parsed as Record<string, unknown>;
+	} catch (error) {
+		throw new Error(`Could not read frontmatter in ${file.path}: ${errorMessage(error)}`);
+	}
+}
+
+async function getIndicatorIdentities(app: App, settings: LitNoteServerSettings, fresh = false): Promise<{ identities: Array<{ itemkey: string; notePath: string; libraryURI?: string; citekey: string }>; unidentifiedNotes: number; unidentifiedNotePaths: string[] }> {
+	await ensureWorkspaceReady(app);
+	if (settings.litNotesFolder.trim() && !app.vault.getAbstractFileByPath(normalizePath(settings.litNotesFolder))) {
+		throw new Error("Literature notes folder is unavailable.");
+	}
+	const files = app.vault.getMarkdownFiles().filter((file) => isDirectChildOfFolder(file, settings.litNotesFolder));
+	const records = await Promise.all(files.map(async (file) => {
+		const fm = await readIndexedFrontmatter(app, file, fresh);
+		if (!hasLiteratureNoteCategory(fm)) return undefined;
+		if (typeof fm?.zotero_item_key !== "string" || !fm.zotero_item_key.trim()) return { kind: "missing" as const, path: file.path };
+		return { kind: "identity" as const, identity: {
+			itemkey: fm.zotero_item_key,
+			notePath: file.path,
+			libraryURI: typeof fm.zotero_library_uri === "string" ? fm.zotero_library_uri : undefined,
+			citekey: typeof fm.citekey === "string" ? fm.citekey : file.basename,
+		} };
+	}));
+	return {
+		identities: records.flatMap((record) => record?.kind === "identity" ? [record.identity] : []),
+		unidentifiedNotes: records.filter((record) => record?.kind === "missing").length,
+		unidentifiedNotePaths: records.flatMap((record) => record?.kind === "missing" ? [record.path] : []),
+	};
+}
+
+async function cleanupOldIndicatorTags(app: App, settings: LitNoteServerSettings): Promise<{ success: boolean; removed: number; errors: string[] }> {
+	const folderError = litNotesFolderError(settings.litNotesFolder);
+	if (folderError) throw new Error(folderError);
+	await ensureWorkspaceReady(app);
+	const errors: string[] = [];
+	let removed = 0;
+	for (const file of app.vault.getMarkdownFiles()) {
+		let frontmatter: Record<string, unknown> | undefined;
+		try {
+			frontmatter = await readIndexedFrontmatter(app, file);
+		} catch (error) {
+			errors.push(`${file.path}: ${errorMessage(error)}`);
+			continue;
+		}
+		const value: unknown = frontmatter?.zotero_tags;
+		if (value !== "obslitnote" && !(Array.isArray(value) && value.includes("obslitnote"))) continue;
+		try {
+			let changed = false;
+			await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+				const current: unknown = frontmatter.zotero_tags;
+				if (current === "obslitnote") {
+					delete frontmatter.zotero_tags;
+					changed = true;
+				} else if (Array.isArray(current) && current.includes("obslitnote")) {
+					const remaining = current.filter((tag: unknown) => tag !== "obslitnote");
+					if (remaining.length) frontmatter.zotero_tags = remaining;
+					else delete frontmatter.zotero_tags;
+					changed = true;
+				}
+			});
+			if (changed) removed++;
+		} catch (error) {
+			errors.push(`${file.path}: ${errorMessage(error)}`);
+		}
+	}
+	return { success: errors.length === 0, removed, errors };
+}
+
+async function fillMissingLibraryURIs(app: App, settings: LitNoteServerSettings, notes: Array<{ notePath: string; itemkey: string; libraryURI: string }>): Promise<{ success: boolean; updated: number; reordered: number; unfilled: number; errors: string[] }> {
+	const folderError = litNotesFolderError(settings.litNotesFolder);
+	if (folderError) throw new Error(folderError);
+	await ensureWorkspaceReady(app);
+	if (!app.vault.getAbstractFileByPath(normalizePath(settings.litNotesFolder))) throw new Error("Literature notes folder is unavailable.");
+	const files = app.vault.getMarkdownFiles().filter((file) => isDirectChildOfFolder(file, settings.litNotesFolder));
+	const reads = await Promise.all(files.map(async (file) => {
+		try {
+			return { file, fm: await readIndexedFrontmatter(app, file, true), error: undefined };
+		} catch (error) {
+			return { file, fm: undefined, error: errorMessage(error) };
+		}
+	}));
+	const readErrors = reads.flatMap((read) => read.error ? [read.error] : []);
+	if (readErrors.length) return { success: false, updated: 0, reordered: 0, unfilled: notes.length, errors: readErrors };
+	const snapshots = reads;
+	const counts = new Map<string, number>();
+	for (const { fm } of snapshots) {
+		if (hasLiteratureNoteCategory(fm) && typeof fm?.zotero_item_key === "string" && fm.zotero_item_key.trim()) {
+			counts.set(fm.zotero_item_key, (counts.get(fm.zotero_item_key) ?? 0) + 1);
+		}
+	}
+	const planned = new Map(notes.map((note) => [note.notePath, note]));
+	const errors: string[] = [];
+	let updated = 0, reordered = 0, unfilled = 0;
+	for (const { file, fm } of snapshots) {
+		const note = planned.get(file.path);
+		const hasURI = hasLiteratureNoteCategory(fm) && fm?.zotero_library_uri !== undefined;
+		if (!note && !hasURI) continue;
+		if (note) planned.delete(file.path);
+		try {
+			if (note && (counts.get(note.itemkey) !== 1 || !hasLiteratureNoteCategory(fm) || fm?.zotero_item_key !== note.itemkey || fm.zotero_library_uri !== undefined)) {
+				throw new Error("Note identity changed or is no longer unique.");
+			}
+			const originalURI = fm?.zotero_library_uri;
+			const originalKey = fm?.zotero_item_key;
+			const anchor = fm && Object.hasOwn(fm, "zotero_tags") ? "zotero_tags" : "zotero_item_key";
+			if (!fm || !Object.hasOwn(fm, anchor)) throw new Error("Neither zotero_tags nor zotero_item_key is present.");
+			const keys = Object.keys(fm);
+			if (!note && keys.indexOf("zotero_library_uri") === keys.indexOf(anchor) + 1) continue;
+			await app.fileManager.processFrontMatter(file, (current: Record<string, unknown>) => {
+				if (!hasLiteratureNoteCategory(current) || current.zotero_item_key !== originalKey || current.zotero_library_uri !== originalURI || (note && current.zotero_library_uri !== undefined)) {
+					throw new Error("Note identity changed; retry cleanup.");
+				}
+				const currentAnchor = Object.hasOwn(current, "zotero_tags") ? "zotero_tags" : "zotero_item_key";
+				if (!Object.hasOwn(current, currentAnchor)) throw new Error("Neither zotero_tags nor zotero_item_key is present.");
+				const uri = note ? note.libraryURI : current.zotero_library_uri;
+				const entries = Object.entries(current).filter(([key]) => key !== "zotero_library_uri");
+				for (const key of Object.keys(current)) delete current[key];
+				for (const [key, value] of entries) {
+					current[key] = value;
+					if (key === currentAnchor) current.zotero_library_uri = uri;
+				}
+			});
+			if (note) updated++; else reordered++;
+		} catch (error) {
+			if (note) unfilled++;
+			errors.push(`${file.path}: ${errorMessage(error)}`);
+		}
+	}
+	for (const note of planned.values()) {
+		unfilled++;
+		errors.push(`${note.notePath}: Note is unavailable or outside the literature folder.`);
+	}
+	return { success: errors.length === 0, updated, reordered, unfilled, errors };
+}
+
 async function handleRequest(
 	app: App,
 	settings: LitNoteServerSettings,
 	req: http.IncomingMessage,
 	res: http.ServerResponse
 ): Promise<void> {
-	if (req.method === "GET" && (req.url === "/lit-note-identities" || req.url === "/lit-notes")) {
+	if (req.method === "GET" && (req.url === "/lit-note-identities" || req.url === "/lit-note-indicator-identities" || req.url === "/lit-notes")) {
 		const folderError = litNotesFolderError(settings.litNotesFolder);
 		if (folderError) {
 			sendJson(res, 200, { success: false, error: folderError });
 			return;
 		}
 	}
+	if (req.method === "GET" && req.url === "/lit-note-indicator-identities") {
+		const { identities, unidentifiedNotes } = await getIndicatorIdentities(app, settings);
+		sendJson(res, 200, { success: true, identities, unidentifiedNotes });
+		return;
+	}
 	if (req.method === "GET" && req.url === "/lit-note-identities") {
 		await ensureWorkspaceReady(app);
+		const scan = currentInitialReviewScan();
+		if (scan?.status === "pending" && !scan.recoveryOnly) {
+			const { unidentifiedNotePaths } = await getIndicatorIdentities(app, settings);
+			const current = currentInitialReviewScan();
+			if (current?.scanId === scan.scanId && current.status === "pending") replaceMissingItemKeyReviews(unidentifiedNotePaths);
+		}
 		const identities = getLitNoteFiles(app, settings.litNotesFolder).flatMap((file) => {
 			const fm = app.metadataCache.getFileCache(file)?.frontmatter;
 			if (typeof fm?.zotero_item_key !== "string") return [];
@@ -1016,7 +1171,7 @@ async function handleRequest(
 						strategy: entry.attachmentStrategy,
 					} : {}),
 				})),
-			pending: allReviews().map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}) })),
+			pending: allReviews().filter((entry) => !entry.missingItemKey).map((entry) => ({ ...identity(entry), ...(entry.uncertain ? { uncertain: true } : {}) })),
 			acknowledgedUncertain: acknowledgedUncertainReviews(),
 			...(supportsBulk ? { obsidianSession } : {}),
 			...(supportsBulk && pendingRescan() ? { rescan: pendingRescan() } : {}),
@@ -1084,6 +1239,28 @@ async function handleRequest(
 	}
 	for (const key of activeReviews) beginReviewOperation(key);
 	try {
+		if (parsed.action === "fill-missing-library-uris") {
+			if (req.headers?.origin || !req.headers?.["content-type"]?.toLowerCase().startsWith("application/json")) {
+				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header." });
+				return;
+			}
+			if (!Array.isArray(parsed.notes) || parsed.notes.some((note) => !note || typeof note.notePath !== "string" || !note.notePath || typeof note.itemkey !== "string" || !note.itemkey || typeof note.libraryURI !== "string" || !note.libraryURI) || new Set(parsed.notes.map((note) => note.notePath)).size !== parsed.notes.length) {
+				sendJson(res, 400, { success: false, error: "Invalid library URI cleanup request." });
+				return;
+			}
+			const result = await runSerialized(() => fillMissingLibraryURIs(app, settings, parsed.notes));
+			sendJson(res, 200, result);
+			return;
+		}
+		if (parsed.action === "cleanup-obs-lit-note-tag") {
+			if (req.headers?.origin || !req.headers?.["content-type"]?.toLowerCase().startsWith("application/json")) {
+				sendJson(res, 403, { success: false, error: "Cleanup requires a local JSON request without an Origin header." });
+				return;
+			}
+			const result = await runSerialized(() => cleanupOldIndicatorTags(app, settings));
+			sendJson(res, 200, result);
+			return;
+		}
 		if (parsed.action === "initial-review-scan-start") {
 			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256) {
 				sendJson(res, 400, { success: false, error: "scanId must be a non-empty string of at most 256 characters." });

@@ -53,6 +53,7 @@ export interface PendingReview {
 	title: string;
 	notePath?: string;
 	reason: string;
+	missingItemKey?: true;
 	requested: boolean;
 	libraryNotePath?: string;
 	operation?: "library-uri" | "library-recheck" | "note-update" | "attachment-move" | "attachment-repair";
@@ -204,6 +205,21 @@ export function endInitialReviewScan(scanId: string, status: "complete" | "pause
 export function currentInitialReviewScan(): InitialReviewScanState | undefined {
 	const scan = currentInitialReviewScanId ? initialReviewScans.get(currentInitialReviewScanId) : undefined;
 	return scan && { ...scan };
+}
+
+export function replaceMissingItemKeyReviews(paths: string[]): void {
+	for (const [key, entry] of pending) {
+		if (entry.missingItemKey) pending.delete(key);
+	}
+	for (const notePath of paths) {
+		const key = `missing-item-key:${notePath}`;
+		pending.set(key, {
+			key, itemkey: "", libraryURI: "", notePath,
+			title: notePath.split("/").pop() ?? notePath,
+			reason: "Missing Zotero item key", missingItemKey: true, requested: false,
+		});
+	}
+	notify();
 }
 
 export function queueReview(item: ZoteroItemPayload, reason: string, notePath?: string, libraryNotePath?: string, proposal?: BulkProposal, attachmentMove?: AttachmentMoveCandidate): void {
@@ -405,6 +421,7 @@ export function finishAttachmentCorrection(key: string, error?: string): void {
 export function requestReview(key: string): void {
 	const entry = pending.get(key);
 	if (!entry) throw new Error("This review is no longer pending.");
+	if (entry.missingItemKey) throw new Error("Open the note and add its Zotero item key before requesting a review.");
 	if (entry.uncertain) throw new Error("Check both apps and acknowledge the interrupted operation first.");
 	if (acknowledgedUncertain.has(key)) throw new Error("Wait for Zotero to acknowledge the checked operation.");
 	entry.requested = true;

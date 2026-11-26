@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getMainWindow } from "commons/workspace";
+import { getMainWindow, openFileInLeaf } from "commons/workspace";
+import { TFile } from "obsidian";
 import { createdNotices } from "../__mocks__/obsidian";
-import { acknowledgeUncertainReview, allReviews, clearReviews, consumeUncertainAcknowledgement, endInitialReviewScan, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishUncertainAttachmentRepair, markReviewUncertain, pendingRescan, queueReview, removeReview, requestedReviews, requestRescan, reviewKey, setReviewListener, startInitialReviewScan } from "../../src/litNote/pendingReviews";
+import { acknowledgeUncertainReview, allReviews, clearReviews, consumeUncertainAcknowledgement, endInitialReviewScan, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishUncertainAttachmentRepair, markReviewUncertain, pendingRescan, queueReview, removeReview, replaceMissingItemKeyReviews, requestedReviews, requestReview, requestRescan, reviewKey, setReviewListener, startInitialReviewScan } from "../../src/litNote/pendingReviews";
 import { setupReviewStatus } from "../../src/litNote/reviewStatus";
 import { startRescan } from "../../src/litNote/noteMergeCommands";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
@@ -26,7 +27,7 @@ vi.mock("../../src/litNote/reviewOverviewModal", () => ({
 		close(): void { this.dismiss(); }
 	},
 }));
-vi.mock("commons/workspace", () => ({ getMainWindow: vi.fn((): Window | undefined => undefined) }));
+vi.mock("commons/workspace", () => ({ getMainWindow: vi.fn((): Window | undefined => undefined), openFileInLeaf: vi.fn(async () => undefined) }));
 vi.mock("commons/os", () => ({ raiseWindow: vi.fn() }));
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
 vi.mock("../../src/litNote/duplicateNotes", async (original) => ({
@@ -47,8 +48,11 @@ function setup() {
 	const button = { setText: vi.fn(), title: "", onclick: undefined as (() => void) | undefined };
 	const status = { hidden: false, createEl: () => button };
 	const workspace = { on: vi.fn((_event: string, _callback: () => void) => ({})), offref: vi.fn() };
-	setupReviewStatus({ workspace } as unknown as App, status as unknown as HTMLElement);
-	return { status, button, workspace };
+	const metadataCache = { on: vi.fn(), offref: vi.fn() };
+	const vault = { getAbstractFileByPath: vi.fn() };
+	const app = { workspace, metadataCache, vault } as unknown as App;
+	setupReviewStatus(app, status as unknown as HTMLElement);
+	return { status, button, workspace, metadataCache, vault, app };
 }
 
 async function settle(): Promise<void> {
@@ -63,6 +67,27 @@ describe("review status", () => {
 		vi.clearAllMocks();
 	});
 	afterEach(() => { setReviewListener(); clearReviews(); });
+
+	it("opens a missing-key note locally and removes its review after the key is added", async () => {
+		const { button, vault, metadataCache, app } = setup();
+		const notePath = "lit/legacy.md";
+		const file = Object.assign(Object.create(TFile.prototype), { path: notePath });
+		vault.getAbstractFileByPath.mockReturnValue(file);
+		replaceMissingItemKeyReviews([notePath]);
+		button.onclick?.();
+		expect(state.groups[0].title).toBe("Add missing Zotero item key (1)");
+		state.selectItem?.(state.groups[0], allReviews()[0]);
+		await settle();
+		expect(openFileInLeaf).toHaveBeenCalledWith(app, file);
+		expect(requestedReviews()).toEqual([]);
+		expect(() => requestReview(allReviews()[0].key)).toThrow("add its Zotero item key");
+		const changed = metadataCache.on.mock.calls[0][1] as (file: unknown, data: unknown, cache: unknown) => void;
+		changed(file, "", { frontmatter: { category: "literaturenote", zotero_item_key: "  " } });
+		expect(allReviews()).toHaveLength(1);
+		changed(file, "", { frontmatter: { category: "literaturenote", zotero_item_key: "ABC" } });
+		expect(allReviews()).toEqual([]);
+		expect(createdNotices.at(-1)?.message).toContain("verify the association");
+	});
 
 	it("announces the end of a requested check, including one that finds nothing", () => {
 		setup();
@@ -255,7 +280,7 @@ describe("review status", () => {
 	it("compares duplicate notes locally instead of asking Zotero, and stops watching on cleanup", () => {
 		const button = { setText: vi.fn(), title: "", onclick: undefined as (() => void) | undefined };
 		const status = { hidden: false, createEl: () => button };
-		const app = { workspace: { on: vi.fn(() => ({})), offref: vi.fn() } } as unknown as App;
+		const app = { workspace: { on: vi.fn(() => ({})), offref: vi.fn() }, metadataCache: { on: vi.fn(() => ({})), offref: vi.fn() } } as unknown as App;
 		const settings = { litNotesFolder: "lit" };
 		const cleanup = setupReviewStatus(app, status as unknown as HTMLElement, settings);
 		queueReview(item, DUPLICATE_NOTES_REASON);

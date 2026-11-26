@@ -231,10 +231,15 @@
 }
 
 .lit-note-review-item-path {
+	display: block;
 	margin-top: 0.25em;
 	color: var(--text-muted);
 	font-size: var(--font-small);
 	overflow-wrap: anywhere;
+}
+
+a.lit-note-review-item-path {
+	color: var(--link-color);
 }
 
 .lit-note-attachment-problem {

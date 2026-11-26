@@ -161,6 +161,9 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   A recovered automatic attachment plan returns
   `automaticRecoveryPending: true` so the companion retains its journal until
   the plan is durably handed off.
+- `{ action: "fill-missing-library-uris", notes: [{ notePath, itemkey, libraryURI }] }` fills missing identities only after the companion checks unique Zotero matches and the server rechecks the note and uniqueness. New and existing URIs go after `zotero_tags`, or `zotero_item_key` when tags are absent.
+- `GET /lit-note-indicator-identities` returns a complete cached/fallback-read identity snapshot and a count of notes without item keys for Zotero's indicator.
+- `{ action: "cleanup-obs-lit-note-tag" }` removes only the normalized old `obslitnote` value from note `zotero_tags`, returning counts and per-file errors.
 - `GET /lit-note-identities` returns indexed item keys, Obsidian note paths,
   library identities, and citation keys for reconciliation.
 - When citation keys differ, the companion sends `citationKeyCheck` for the
@@ -181,7 +184,7 @@ is `created | overwritten | opened | updated | skipped | missing | error`, or
 `prepared | set-zotero-key` for a pending reconciliation. Pending results are
 not success: the companion rechecks the item and validates the one-use token,
 then verifies a saved Zotero key and refreshes attachment paths before applying.
-The Zotero side tags items and reports errors from `results`; it no longer shows its own
+The Zotero side refreshes a non-tag indicator and reports errors from `results`; it no longer shows its own
 overwrite dialog.
 
 ## Invariants
