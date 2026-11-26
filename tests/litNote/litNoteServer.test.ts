@@ -292,6 +292,34 @@ describe("Lit Note Server", () => {
 		expect(old).toMatchObject({ success: false, initialReviewScan: { scanId: "startup-2", status: "pending" } });
 	});
 
+	it("preserves reviews and manual requests when a paused session starts", async () => {
+		const { app } = makeApp();
+		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		await post(app, { action: "initial-review-scan-start", scanId: "first" });
+		queueReview(item, "Attachment links differ");
+		await post(app, { action: "initial-review-scan-end", scanId: "first", status: "complete" });
+		const token = requestRescan();
+		await post(app, { action: "initial-review-scan-start", scanId: "paused", preserveExisting: true });
+		expect(allReviews()).toHaveLength(1);
+		expect((await getReviews(app)).rescan).toBe(token);
+		expect((await post(app, { action: "initial-review-scan-end", scanId: "paused", status: "paused" })).initialReviewScan.status).toBe("paused");
+		await post(app, { action: "initial-review-scan-start", scanId: "manual" });
+		expect(allReviews()).toHaveLength(0);
+		expect((await getReviews(app)).rescan).toBeUndefined();
+	});
+
+	it("reports a busy scan start as retryable while a review is running", async () => {
+		const { app } = makeApp();
+		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library" };
+		const candidate = { automatic: true, baseDirectory: "C:\\vault", attachments: [], linkNoteFiles: [], trashNoteFiles: [], extras: [] };
+		await post(app, { action: "initial-review-scan-start", scanId: "first" });
+		queueReview(item, "Automatic attachment reconciliation", undefined, undefined, undefined, candidate);
+		requestAutomaticAttachment(reviewKey(item), "snapshot");
+		await post(app, { action: "initial-review-scan-end", scanId: "first", status: "paused" });
+		const response = await post(app, { action: "initial-review-scan-start", scanId: "second" });
+		expect(response).toMatchObject({ success: false, retryable: true, initialReviewScan: { scanId: "first", status: "paused" } });
+	});
+
 	it("does not add or rediscover reviews after the initial scan completes", async () => {
 		const { app } = makeApp();
 		const first = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library" };
@@ -469,6 +497,22 @@ describe("Lit Note Server", () => {
 		expect(recordRecoveredAutomaticAttachments).toHaveBeenCalledWith(app, files.get(notePath), item, paths);
 		expect(syncLitNote).toHaveBeenLastCalledWith(app, expect.anything(), item, "auto", expect.any(Function), { expectedContent: "unchanged note" });
 		expect(allReviews()).toEqual([]);
+	});
+
+	it("repeats the acknowledgement of a recovered automatic attachment plan", async () => {
+		const notePath = `${FOLDER}/key.md`;
+		const { app } = makeApp([notePath]);
+		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", attachments: [], automaticAttachments: true };
+		const candidate = { automatic: true, baseDirectory: "C:\\vault", attachments: [], linkNoteFiles: [], trashNoteFiles: [], extras: [] };
+		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {
+			category: ["literaturenote"], zotero_item_key: "ABC", zotero_library_uri: "library", citekey: "key",
+		} });
+		app.vault.read = vi.fn().mockResolvedValue("unchanged note");
+		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "error", snapshot: "unchanged note", attachmentMove: candidate });
+		const request = { action: "review-recover", data: [item], automaticAttachmentPaths: [] };
+		expect((await post(app, request)).results).toMatchObject([{ status: "pending-review", automaticRecoveryPending: true }]);
+		expect((await post(app, request)).results).toMatchObject([{ status: "pending-review", automaticRecoveryPending: true }]);
+		expect(syncLitNote).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not turn a failed automatic attachment check into a review", async () => {

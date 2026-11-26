@@ -343,7 +343,7 @@ export function setupReviewStatus(app: App, status: HTMLElement, settings?: Dupl
 	setReviewListener((reviews, batch, scan) => {
 		reviews = reviews.filter((entry) => !entry.automaticAttachment);
 		overview?.update(groupsFor(reviews), reviews.length);
-		const scanPending = scan?.status === "pending";
+		const scanPending = scan?.status === "pending" && !scan.recoveryOnly;
 		const scanFailed = scan?.status === "error";
 		// Without this, a requested check that finds nothing ends silently: the status bar item just disappears.
 		if (scan?.requested && scanning === scan.scanId && !scanPending) {

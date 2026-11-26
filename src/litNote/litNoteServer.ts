@@ -36,7 +36,7 @@ import { raiseWindow } from "commons/os";
 import { askNoteDecision, withNoteDecisionSession, type AttachmentReviewRow, type CitekeyConflictDetails, type DecisionButton, type NoteDecision, type NoteDecisionSession } from "./decisionModal";
 import { getLitNoteFiles } from "commons/litnote";
 import { finishAttachmentMove, recordRecoveredAutomaticAttachments, syncLitNote, type SyncResult } from "./syncLitNote";
-import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
+import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beginReviewOperation, clearReviews, consumeUncertainAcknowledgement, currentInitialReviewScan, endInitialReviewScan, endReviewOperation, failReview, finishAttachmentCorrection, finishInterruptedRecovery, finishUncertainAttachmentRepair, finishLibraryCorrection, finishLibraryRecheck, finishNoteCorrection, isReviewBlocked, markReviewUncertain, pendingRescan, queueReview, removeReview, requestAutomaticAttachment, requestedReviews, resetReviewRequest, reviewKey, ReviewScanBusyError, ReviewScanCompleteError, startInitialReviewScan } from "./pendingReviews";
 import { clearItemTrashRequests, finishItemTrash, itemTrashRequests } from "./zoteroItemTrash";
 import type { BulkProposal } from "./pendingReviews";
 import { findIdenticalAttachments } from "./attachmentIdentity";
@@ -162,6 +162,10 @@ async function recoverInterruptedReview(
 	return runSerialized(async () => {
 		await ensureWorkspaceReady(app);
 		const key = reviewKey(item);
+		const existing = allReviews().find((entry) => entry.key === key);
+		if (existing?.automaticRecovery && existing.requested && existing.automaticAttachment) {
+			return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true };
+		}
 		const revision = beginInterruptedRecovery(key);
 		beginReviewOperation(key);
 		try {
@@ -197,8 +201,8 @@ async function recoverInterruptedReview(
 			if (result.attachmentMove?.automatic && result.snapshot !== undefined) {
 				queueReconciliation(app, settings, item, "Automatic attachment reconciliation", note.path, undefined, result.attachmentMove);
 				finishInterruptedRecovery(key, revision, false);
-				requestAutomaticAttachment(key, snapshot);
-				return { citekey: item.citekey, status: "pending-review" };
+				requestAutomaticAttachment(key, snapshot, true);
+				return { citekey: item.citekey, status: "pending-review", automaticRecoveryPending: true };
 			}
 			const fm = app.metadataCache.getFileCache(note)?.frontmatter;
 			if (item.automaticAttachments && result.status === "prepared" && fm?.citekey === item.citekey &&
@@ -1083,15 +1087,19 @@ async function handleRequest(
 				sendJson(res, 400, { success: false, error: "scanId must be a non-empty string of at most 256 characters." });
 				return;
 			}
+			if (parsed.preserveExisting !== undefined && typeof parsed.preserveExisting !== "boolean") {
+				sendJson(res, 400, { success: false, error: "preserveExisting must be a boolean." });
+				return;
+			}
 			try {
-				const scan = startInitialReviewScan(parsed.scanId);
+				const scan = startInitialReviewScan(parsed.scanId, parsed.preserveExisting);
 				sendJson(res, 200, { success: true, initialReviewScan: scan });
 			} catch (error) {
-				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error) });
+				sendJson(res, 200, { success: false, initialReviewScan: currentInitialReviewScan(), error: errorMessage(error), ...(error instanceof ReviewScanBusyError ? { retryable: true } : {}) });
 			}
 		} else if (parsed.action === "initial-review-scan-end") {
 			if (typeof parsed.scanId !== "string" || !parsed.scanId.trim() || parsed.scanId.length > 256 ||
-				(parsed.status !== "complete" && parsed.status !== "error") ||
+				(parsed.status !== "complete" && parsed.status !== "paused" && parsed.status !== "error") ||
 				(parsed.error !== undefined && typeof parsed.error !== "string")) {
 				sendJson(res, 400, { success: false, error: "Invalid initial review scan result." });
 				return;

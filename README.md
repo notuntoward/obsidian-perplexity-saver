@@ -58,6 +58,27 @@ This plugin serves as the Obsidian backbone for a complete literature note and c
 1. **Source Relinking**: Automatically matches and relinks `# Sources` in your Perplexity saves to your local Zotero items or existing literature notes.
 2. **Local HTTP Server**: Runs a zero-configuration local server on port `27124` that allows Zotero to instantly push new literature notes directly into your vault.
 
+Saving AI conversations does not require Zotero or its companion. Source relinking
+uses Zotero's local API and does not require the companion. Creating, opening,
+updating and checking literature notes from Zotero requires both Zotero and the
+Zotero Obsidian Companion, with Perplexity Saver enabled in the target vault.
+The companion's settings are in Zotero, not in Perplexity Saver's settings.
+To pause automatic consistency checks, open **Zotero → Settings → Obsidian**
+and enable **Pause automatic Zotero and Obsidian checks**. This option is not a
+Saver setting. A check already in progress finishes; while paused, differences
+may go unnoticed until you run **Check all literature notes against Zotero again**
+in Obsidian or resume automatic checks. Interrupted updates are still recovered,
+and existing reviews remain available.
+
+The **Zotero reviews** status entry appears for an active check, a check error,
+or pending reviews; it disappears when there is nothing to show, including while
+automatic checks are paused. Its absence does not prove that a check ran or that
+Zotero is connected. To diagnose a missing review, check the pause setting in
+Zotero and run **Check all literature notes against Zotero again** in Obsidian.
+Keep Zotero and the updated companion running: if the check does not start within
+20 seconds, Saver warns that the companion has not responded. A completed check
+reports whether anything needs review.
+
 ### Zotero and Obsidian setup
 
 1. Install and enable Perplexity Saver in the Obsidian vault, and install the [Zotero Obsidian Companion](https://github.com/notuntoward/zotero-obsidian-companion#installation) in Zotero 10. Use current versions of both plugins so unresolved file attachments can be reported correctly.
@@ -83,7 +104,7 @@ To check the setup, select a Zotero item with a citation key and an accessible s
 
 ### Updating existing literature notes
 
-With both plugins running, the companion checks citation keys and attachment links once at the start of the session. Automatic checks never open a decision dialog: when the initial check finishes, a notice directs you to **Zotero reviews** in Obsidian's status bar. The button shows the number of items needing review; all review types appear together, and the count drops as reviews are completed. The companion does not scan for new differences again until the apps restart. Restarting only Zotero is enough: its new check replaces the previous one, keeps interrupted or unacknowledged reviews, and rediscovers the others. Hover over the button for batch progress. The status entry disappears when all reviews are complete. Zotero must be running to prepare reviews using current data. Pending reviews are held in memory and rediscovered by the next initial check. When citation keys differ, Obsidian shows the key in each app and lets you choose which to keep. Before offering the Obsidian citation key, the companion checks accessible Zotero libraries for matching keys and identifies any other items found; it checks again before changing Zotero. If the check cannot be completed, the update stops with an error. Choosing the Obsidian citation key changes Zotero first; the companion verifies the saved key and checks attachment paths again before continuing. It waits for matching item snapshots, but this is a best-effort settling check, not a signal that other plugins have finished. If Obsidian is closed at startup, the initial check waits until it is available. The first automatic reconciliation of an older note requires confirmation in Obsidian; unchanged legacy notes can instead be associated with **Update Lit Note**. Notes without a Zotero item key cannot be associated automatically.
+With both plugins running and automatic checks enabled, the companion checks citation keys and attachment links once at the start of the session. Automatic checks never open a decision dialog: when the initial check finishes, a notice directs you to **Zotero reviews** in Obsidian's status bar. The button shows the number of items needing review; all review types appear together, and the count drops as reviews are completed. The companion does not scan for new differences again until the apps restart. Restarting only Zotero is enough: its new check replaces the previous one, keeps interrupted or unacknowledged reviews, and rediscovers the others. Hover over the button for batch progress. The status entry disappears when all reviews are complete. Zotero must be running to prepare reviews using current data. Pending reviews are held in memory and rediscovered by the next initial check; while paused, run a manual check to rediscover them after restarting Obsidian. When citation keys differ, Obsidian shows the key in each app and lets you choose which to keep. Before offering the Obsidian citation key, the companion checks accessible Zotero libraries for matching keys and identifies any other items found; it checks again before changing Zotero. If the check cannot be completed, the update stops with an error. Choosing the Obsidian citation key changes Zotero first; the companion verifies the saved key and checks attachment paths again before continuing. It waits for matching item snapshots, but this is a best-effort settling check, not a signal that other plugins have finished. If Obsidian is closed at startup, the initial check waits until it is available. The first automatic reconciliation of an older note requires confirmation in Obsidian; unchanged legacy notes can instead be associated with **Update Lit Note**. Notes without a Zotero item key cannot be associated automatically.
 
 The review window stays open as items finish and offers bulk actions for interrupted attachment repairs, missing library URIs, compatible yes-or-no note updates, and eligible attachment moves. It reminds you to back up your vault and Zotero data before making changes. For other interrupted updates, **Review one by one** advances through the group without reopening the list; closing a decision stops the sequence. Expand a group to review its items individually, or search for a title or note. Bulk actions are hidden while searching so they cannot unexpectedly affect items outside the search. It shows the count and proposed actions, and asks for confirmation before starting. A URI-only batch does not change attachment links or files; a read-only recheck clears resolved reviews and leaves other differences for review. The status-bar count is the number of notes still needing review, not the number of missing URIs. Each note and Zotero item is checked again before writing. Changed or ambiguous items remain in the review list instead of being guessed. A bulk note update may include moving identical files to Trash when the group explicitly says so; the same reference and content checks used for individual updates still apply. Bulk reviews require the updated companion to be installed and running.
 

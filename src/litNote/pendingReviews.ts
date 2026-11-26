@@ -61,6 +61,7 @@ export interface PendingReview {
 	proposal?: BulkProposal;
 	attachmentMove?: AttachmentMoveCandidate;
 	automaticAttachment?: boolean;
+	automaticRecovery?: boolean;
 	attachmentStrategy?: "newest" | "zotero" | "skip";
 	recheckStartedAt?: number;
 	uncertain?: boolean;
@@ -84,15 +85,22 @@ export interface ReviewBatch {
 
 export interface InitialReviewScanState {
 	scanId: string;
-	status: "pending" | "complete" | "error";
+	status: "pending" | "complete" | "paused" | "error";
 	error?: string;
 	/** Started because the user ran "Check all literature notes against Zotero again". */
 	requested?: true;
+	recoveryOnly?: true;
 }
 
 export class ReviewScanCompleteError extends Error {
 	constructor() {
 		super("The Zotero review scan is complete. Run \"Check all literature notes against Zotero again\" to check new issues.");
+	}
+}
+
+export class ReviewScanBusyError extends Error {
+	constructor() {
+		super("A Zotero review update is still running; retry the initial review scan when it finishes.");
 	}
 }
 
@@ -135,7 +143,7 @@ export function setReviewListener(listener?: (reviews: PendingReview[], batch?: 
 	notify();
 }
 
-export function startInitialReviewScan(scanId: string): InitialReviewScanState {
+export function startInitialReviewScan(scanId: string, preserveExisting = false): InitialReviewScanState {
 	if (!scanId.trim()) throw new Error("scanId must not be empty.");
 	if (replacedReviewScanIds.has(scanId)) throw new Error("This initial review scan was replaced by a newer Zotero session.");
 	const existing = initialReviewScans.get(scanId);
@@ -144,7 +152,7 @@ export function startInitialReviewScan(scanId: string): InitialReviewScanState {
 			if (currentInitialReviewScanId !== scanId) {
 				throw new Error("This initial review scan is no longer current; retry with the current scanId.");
 			}
-			initialReviewScans.set(scanId, { scanId, status: "pending" });
+			initialReviewScans.set(scanId, { scanId, status: "pending", ...(existing.requested ? { requested: true as const } : {}), ...(existing.recoveryOnly ? { recoveryOnly: true as const } : {}) });
 			notify();
 		}
 		return { ...(initialReviewScans.get(scanId) ?? existing) };
@@ -155,28 +163,30 @@ export function startInitialReviewScan(scanId: string): InitialReviewScanState {
 		// dropped because the new scan reports the ones that still apply. Interrupted or unacknowledged
 		// work is kept, and nothing is replaced while an update is still running.
 		if (batch || activeReviews.size || [...pending.values()].some((entry) => entry.operation)) {
-			throw new Error("A Zotero review update is still running; retry the initial review scan when it finishes.");
+			throw new ReviewScanBusyError();
 		}
-		for (const [key, entry] of pending) {
-			if (!entry.uncertain && !entry.awaitingAcknowledgement) pending.delete(key);
+		if (!preserveExisting) {
+			for (const [key, entry] of pending) {
+				if (!entry.uncertain && !entry.awaitingAcknowledgement) pending.delete(key);
+			}
 		}
 		for (const id of initialReviewScans.keys()) replacedReviewScanIds.add(id);
 		initialReviewScans.clear();
 	}
-	const scan: InitialReviewScanState = { scanId, status: "pending", ...(rescanRequest ? { requested: true as const } : {}) };
+	const scan: InitialReviewScanState = { scanId, status: "pending", ...(preserveExisting ? { recoveryOnly: true as const } : {}), ...(!preserveExisting && rescanRequest ? { requested: true as const } : {}) };
 	initialReviewScans.set(scanId, scan);
 	currentInitialReviewScanId = scanId;
-	rescanRequest = undefined;
+	if (!preserveExisting) rescanRequest = undefined;
 	notify();
 	return { ...scan };
 }
 
-export function endInitialReviewScan(scanId: string, status: "complete" | "error", error?: string): InitialReviewScanState {
+export function endInitialReviewScan(scanId: string, status: "complete" | "paused" | "error", error?: string): InitialReviewScanState {
 	const scan = initialReviewScans.get(scanId);
 	if (!scan) {
 		throw new Error("No matching initial review scan is pending.");
 	}
-	if (scan.status === "complete" || (scan.status === "error" && status === "error")) return { ...scan };
+	if (scan.status === "complete" || scan.status === "paused" || (scan.status === "error" && status === "error")) return { ...scan };
 	if (currentInitialReviewScanId !== scanId || scan.status !== "pending") {
 		if (scan.status === "error" && status === "complete") {
 			throw new Error("Retry the initial review scan before completing it.");
@@ -184,8 +194,8 @@ export function endInitialReviewScan(scanId: string, status: "complete" | "error
 		throw new Error("This initial review scan is no longer pending.");
 	}
 	const updated: InitialReviewScanState = status === "error"
-		? { scanId, status, ...(error ? { error } : {}), ...(scan.requested ? { requested: true as const } : {}) }
-		: { scanId, status, ...(scan.requested ? { requested: true as const } : {}) };
+		? { scanId, status, ...(error ? { error } : {}), ...(scan.requested ? { requested: true as const } : {}), ...(scan.recoveryOnly ? { recoveryOnly: true as const } : {}) }
+		: { scanId, status, ...(scan.requested ? { requested: true as const } : {}), ...(scan.recoveryOnly ? { recoveryOnly: true as const } : {}) };
 	initialReviewScans.set(scanId, updated);
 	notify();
 	return { ...updated };
@@ -226,7 +236,7 @@ export function queueReview(item: ZoteroItemPayload, reason: string, notePath?: 
 	notify();
 }
 
-export function requestAutomaticAttachment(key: string, snapshot: string): void {
+export function requestAutomaticAttachment(key: string, snapshot: string, recovery = false): void {
 	const entry = pending.get(key);
 	if (!entry?.attachmentMove?.automatic || entry.requested || entry.uncertain || entry.awaitingAcknowledgement) {
 		throw new Error("The automatic attachment plan is no longer available.");
@@ -234,6 +244,7 @@ export function requestAutomaticAttachment(key: string, snapshot: string): void 
 	entry.requested = true;
 	entry.operation = "attachment-move";
 	entry.automaticAttachment = true;
+	if (recovery) entry.automaticRecovery = true;
 	entry.repairSnapshot = snapshot;
 	entry.attachmentStrategy = "newest";
 	notify();

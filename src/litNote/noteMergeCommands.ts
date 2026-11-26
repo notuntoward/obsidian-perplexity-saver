@@ -30,12 +30,13 @@ class MergeSourceModal extends FuzzySuggestModal<TFile> {
 
 /** Ask Zotero to check every literature note again; warn when the Companion does not respond. */
 export function startRescan(app: App): void {
-	if (currentInitialReviewScan()?.status === "pending") {
+	const scan = currentInitialReviewScan();
+	if (scan?.status === "pending" && !scan.recoveryOnly) {
 		new Notice("Zotero is already checking all literature notes. The review list updates when the check finishes.", 8000);
 		return;
 	}
 	const token = requestRescan();
-	new Notice("Asked Zotero to check all literature notes again. The review list updates when the check finishes.", 8000);
+	new Notice("Asked Zotero to check all literature notes again. Interrupted recovery finishes first; the review list updates when the check finishes.", 8000);
 	const win = getMainWindow(app);
 	if (!win) return;
 	setTimeoutIn(win, () => {

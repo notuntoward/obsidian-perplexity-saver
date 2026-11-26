@@ -148,6 +148,13 @@ server in `src/litNote/litNoteServer.ts` (`127.0.0.1:27124`).
   have succeeded; a failed or unavailable Obsidian request must not be treated as
   acknowledged. Once complete, do not start another scan or add new reviews in
   the same session; surface new interrupted operations as errors, not hidden work.
+  A paused automatic scan starts with `preserveExisting: true` and ends with
+  `status: "paused"` after interrupted-operation recovery; manual scans still
+  run while paused. Its `recoveryOnly` state persists across retries, does not
+  show an empty status entry, and does not block a requested manual scan.
+  A recovered automatic attachment plan returns
+  `automaticRecoveryPending: true` so the companion retains its journal until
+  the plan is durably handed off.
 - `GET /lit-note-identities` returns indexed item keys, Obsidian note paths,
   library identities, and citation keys for reconciliation.
 - When citation keys differ, the companion sends `citationKeyCheck` for the

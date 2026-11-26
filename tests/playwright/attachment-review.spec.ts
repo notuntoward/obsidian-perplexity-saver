@@ -49,7 +49,7 @@ test.beforeEach(async ({ page }) => {
 	await page.addScriptTag({ content: result.outputFiles[0].text });
 });
 
-test("review status fits its text and the status bar", async ({ page }) => {
+test("review status fits its text and the status bar", async ({ page }, testInfo) => {
 	await page.setContent(`
 		<style>
 			* { box-sizing: border-box; }
@@ -62,22 +62,28 @@ test("review status fits its text and the status bar", async ({ page }) => {
 		</div></div>
 	`);
 	await page.addStyleTag({ path: path.resolve("styles.css") });
-	const dimensions = await page.locator(".lit-note-review-status").evaluate((button) => {
-		const range = document.createRange();
-		range.selectNodeContents(button);
-		const text = range.getBoundingClientRect();
-		const bounds = button.getBoundingClientRect();
-		const bar = button.closest(".status-bar")!.getBoundingClientRect();
-		return {
-			leftPadding: text.left - bounds.left,
-			rightPadding: bounds.right - text.right,
-			height: bounds.height,
-			barHeight: bar.height,
-		};
-	});
-	expect(dimensions.leftPadding).toBeGreaterThanOrEqual(6);
-	expect(dimensions.rightPadding).toBeGreaterThanOrEqual(6);
-	expect(dimensions.height).toBeLessThanOrEqual(dimensions.barHeight);
+	for (const width of [1200, 320]) {
+		await page.setViewportSize({ width, height: 300 });
+		const dimensions = await page.locator(".lit-note-review-status").evaluate((button) => {
+			const range = document.createRange();
+			range.selectNodeContents(button);
+			const text = range.getBoundingClientRect();
+			const bounds = button.getBoundingClientRect();
+			const bar = button.closest(".status-bar")!.getBoundingClientRect();
+			return {
+				leftPadding: text.left - bounds.left,
+				rightPadding: bounds.right - text.right,
+				height: bounds.height,
+				barHeight: bar.height,
+				right: bounds.right,
+			};
+		});
+		expect(dimensions.leftPadding).toBeGreaterThanOrEqual(6);
+		expect(dimensions.rightPadding).toBeGreaterThanOrEqual(6);
+		expect(dimensions.height).toBeLessThanOrEqual(dimensions.barHeight);
+		expect(dimensions.right).toBeLessThanOrEqual(width);
+		await page.screenshot({ path: testInfo.outputPath(`review-status-${width}.png`) });
+	}
 });
 
 test("the review overview fits long titles and paths on narrow screens", async ({ page }) => {

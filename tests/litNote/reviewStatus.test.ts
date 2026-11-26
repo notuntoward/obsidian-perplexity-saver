@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getMainWindow } from "commons/workspace";
 import { createdNotices } from "../__mocks__/obsidian";
-import { acknowledgeUncertainReview, allReviews, clearReviews, consumeUncertainAcknowledgement, endInitialReviewScan, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishUncertainAttachmentRepair, markReviewUncertain, queueReview, removeReview, requestedReviews, requestRescan, reviewKey, setReviewListener, startInitialReviewScan } from "../../src/litNote/pendingReviews";
+import { acknowledgeUncertainReview, allReviews, clearReviews, consumeUncertainAcknowledgement, endInitialReviewScan, failReview, finishAttachmentCorrection, finishLibraryCorrection, finishLibraryRecheck, finishUncertainAttachmentRepair, markReviewUncertain, pendingRescan, queueReview, removeReview, requestedReviews, requestRescan, reviewKey, setReviewListener, startInitialReviewScan } from "../../src/litNote/pendingReviews";
 import { setupReviewStatus } from "../../src/litNote/reviewStatus";
+import { startRescan } from "../../src/litNote/noteMergeCommands";
 import { askNoteDecision } from "../../src/litNote/decisionModal";
 import { compareDuplicateReview, DUPLICATE_NOTES_REASON, watchDuplicateReviews } from "../../src/litNote/duplicateNotes";
 import type { App } from "obsidian";
@@ -24,7 +26,7 @@ vi.mock("../../src/litNote/reviewOverviewModal", () => ({
 		close(): void { this.dismiss(); }
 	},
 }));
-vi.mock("commons/workspace", () => ({ getMainWindow: () => undefined }));
+vi.mock("commons/workspace", () => ({ getMainWindow: vi.fn((): Window | undefined => undefined) }));
 vi.mock("commons/os", () => ({ raiseWindow: vi.fn() }));
 vi.mock("../../src/litNote/decisionModal", () => ({ askNoteDecision: vi.fn() }));
 vi.mock("../../src/litNote/duplicateNotes", async (original) => ({
@@ -78,6 +80,16 @@ describe("review status", () => {
 		startInitialReviewScan("startup");
 		endInitialReviewScan("startup", "complete");
 		expect(createdNotices.some((notice) => notice.message.includes("Nothing needs review"))).toBe(false);
+	});
+
+	it("announces a requested check after a failed attempt is retried", () => {
+		setup();
+		requestRescan();
+		startInitialReviewScan("manual");
+		endInitialReviewScan("manual", "error", "Unavailable");
+		startInitialReviewScan("manual");
+		endInitialReviewScan("manual", "paused");
+		expect(createdNotices.at(-1)?.message).toContain("Nothing needs review");
 	});
 
 	it("announces the status bar once and announces completion when the last review is removed", () => {
@@ -135,6 +147,67 @@ describe("review status", () => {
 		endInitialReviewScan("startup-1", "complete");
 		expect(status.hidden).toBe(false);
 		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+	});
+
+	it("hides paused checks and recovery-only startup while retaining access to reviews", () => {
+		const { status, button } = setup();
+		startInitialReviewScan("paused", true);
+		expect(status.hidden).toBe(true);
+		markReviewUncertain({ ...item, operation: "attachment-move" });
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+		endInitialReviewScan("paused", "paused");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero reviews: 1");
+		button.onclick?.();
+		expect(state.groups.map((group) => group.kind)).toEqual(["uncertain"]);
+		acknowledgeUncertainReview(reviewKey(item));
+		consumeUncertainAcknowledgement(item);
+		expect(status.hidden).toBe(true);
+	});
+
+	it("allows a manual check during paused recovery and hides the status after a clean check", () => {
+		const { status, button } = setup();
+		startInitialReviewScan("recovery", true);
+		startRescan({} as App);
+		expect(pendingRescan()).toEqual(expect.any(String));
+		expect(createdNotices.at(-1)?.message).toContain("Interrupted recovery finishes first");
+		endInitialReviewScan("recovery", "paused");
+		expect(status.hidden).toBe(true);
+		startInitialReviewScan("manual");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Checking Zotero/Obsidian match...");
+		endInitialReviewScan("manual", "paused");
+		expect(status.hidden).toBe(true);
+		expect(createdNotices.at(-1)?.message).toContain("Nothing needs review");
+	});
+
+	it("warns when a manual check cannot reach Zotero without showing an empty status", () => {
+		vi.useFakeTimers();
+		vi.mocked(getMainWindow).mockReturnValue(window);
+		try {
+			const { status } = setup();
+			startRescan({} as App);
+			expect(status.hidden).toBe(true);
+			vi.advanceTimersByTime(20000);
+			expect(createdNotices.at(-1)?.message).toContain("Zotero has not started the check");
+			expect(status.hidden).toBe(true);
+		} finally {
+			vi.mocked(getMainWindow).mockReturnValue(undefined);
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps a failed recovery visible even while automatic checks are paused", () => {
+		const { status, button } = setup();
+		startInitialReviewScan("recovery", true);
+		endInitialReviewScan("recovery", "error", "Recovery failed");
+		expect(status.hidden).toBe(false);
+		expect(button.setText).toHaveBeenLastCalledWith("Zotero/Obsidian check failed");
+		startInitialReviewScan("recovery", true);
+		expect(status.hidden).toBe(true);
+		endInitialReviewScan("recovery", "paused");
+		expect(status.hidden).toBe(true);
 	});
 
 	it("explains why multiple updates need checking without acknowledging them", () => {

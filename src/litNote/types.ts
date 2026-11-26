@@ -116,12 +116,13 @@ export interface LitNoteReviewFailureRequest {
 export interface LitNoteInitialReviewScanStartRequest {
 	action: "initial-review-scan-start";
 	scanId: string;
+	preserveExisting?: boolean;
 }
 
 export interface LitNoteInitialReviewScanEndRequest {
 	action: "initial-review-scan-end";
 	scanId: string;
-	status: "complete" | "error";
+	status: "complete" | "paused" | "error";
 	error?: string;
 }
 
@@ -188,11 +189,13 @@ export interface LitNoteItemResult {
 	token?: string;
 	needsAttachmentCheck?: boolean;
 	deferUntilChanged?: boolean;
+	automaticRecoveryPending?: boolean;
 }
 
 export interface LitNoteResponse {
 	attachmentMove?: AttachmentMoveCandidate;
-	initialReviewScan?: { scanId: string; status: "pending" | "complete" | "error"; error?: string };
+	initialReviewScan?: { scanId: string; status: "pending" | "complete" | "paused" | "error"; error?: string; recoveryOnly?: true };
+	retryable?: boolean;
 	success: boolean;
 	relationship?: "unset" | "inside" | "outside";
 	vaultPath?: string;
