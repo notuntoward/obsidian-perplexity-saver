@@ -292,3 +292,61 @@ test("bulk move details are a readable list and the next step is explicit", asyn
 	}
 	await modal.getByRole("button", { name: "Cancel" }).click();
 });
+
+test("collection batch choices and values fit above a long review list", async ({ page }, testInfo) => {
+	const result = await build({
+		entryPoints: [path.resolve("src/litNote/reviewOverviewModal.ts")],
+		bundle: true, write: false, format: "iife", globalName: "ReviewOverview",
+		external: ["obsidian"],
+	});
+	await page.addStyleTag({ content: "button { height: 36px; white-space: nowrap; } :root { --text-muted: #555; --font-small: 0.9em; --background-modifier-border: #ccc; }" });
+	await page.addStyleTag({ path: path.resolve("styles.css") });
+	await page.addScriptTag({ content: result.outputFiles[0].text });
+	await page.evaluate(() => {
+		const api = (window as Window & { ReviewOverview?: {
+			ReviewOverviewModal: new (...args: unknown[]) => { update: (groups: unknown[], count: number) => void; onOpen: () => void };
+		} }).ReviewOverview;
+		if (!api) throw new Error("Review overview bundle is unavailable.");
+		const modal = new api.ReviewOverviewModal({}, () => {}, () => {}, () => {});
+		const reviews = Array.from({ length: 989 }, (_, index) => ({
+			key: String(index), itemkey: String(index), title: index === 0 ? "A paper with different collections" : `Paper ${index}`,
+			notePath: index === 0 ? `lit/${"long-path".repeat(10)}.md` : `lit/${index}.md`, requested: false,
+			proposal: { collectionReview: true, message: index === 0
+				? `Current Obsidian value: ${"long-collection".repeat(10)}\nCurrent Zotero value: Research, Reading`
+				: "Current Obsidian value: Older\nCurrent Zotero value: Current" },
+		}));
+		modal.update([{ kind: "collection-review", title: "Review Zotero collections (989)", reviews }], 989);
+		modal.onOpen();
+	});
+	const modal = page.locator(".modal").last();
+	const actions = modal.locator(".lit-note-review-collection-actions");
+	const buttons = actions.getByRole("button");
+	await expect(buttons).toHaveCount(3);
+	await expect(buttons.nth(1)).toHaveText("Keep Obsidian for all; stop managing");
+	for (const width of [1024, 320]) {
+		await page.setViewportSize({ width, height: 900 });
+		expect(await modal.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+		const dimensions = await modal.evaluate((el) => {
+			const actionGroup = el.querySelector(".lit-note-review-collection-actions")!;
+			const firstRow = el.querySelector(".lit-note-review-item")!;
+			const buttons = Array.from(actionGroup.querySelectorAll("button"));
+			const modalBounds = el.getBoundingClientRect();
+			return {
+				actionsBottom: actionGroup.getBoundingClientRect().bottom,
+				firstRowTop: firstRow.getBoundingClientRect().top,
+				buttonsFit: buttons.every((button) => {
+					const bounds = button.getBoundingClientRect();
+					const text = document.createRange();
+					text.selectNodeContents(button);
+					return bounds.left >= modalBounds.left && bounds.right <= modalBounds.right &&
+						Array.from(text.getClientRects()).every((rect) => rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom);
+				}),
+			};
+		});
+		expect(dimensions.actionsBottom).toBeLessThanOrEqual(dimensions.firstRowTop);
+		expect(dimensions.actionsBottom).toBeLessThan(900);
+		expect(dimensions.buttonsFit).toBe(true);
+		await expect(modal.getByText("Current Zotero value: Research, Reading")).toBeVisible();
+		await page.screenshot({ path: testInfo.outputPath(`collection-review-${width}.png`) });
+	}
+});

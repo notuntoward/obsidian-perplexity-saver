@@ -119,3 +119,40 @@ it("offers a single action to step through interrupted reviews", () => {
 	button!.click();
 	expect(onGroup).toHaveBeenCalledWith(group);
 });
+
+
+it("shows every collection difference and only offers a single batch choice", () => {
+	const proposal = { collectionReview: true as const, summary: "Missing baseline", title: "Review", message: "Current Obsidian value: A\nCurrent Zotero value: B", buttons: [] };
+	const first: PendingReview = { key: "one", itemkey: "one", libraryURI: "library", title: "First", notePath: "lit/one.md", reason: "Review", requested: false, proposal };
+	const second: PendingReview = { ...first, key: "two", itemkey: "two", title: "Second", proposal: { ...proposal, summary: "Changed baseline", message: "Current Obsidian value: C\nCurrent Zotero value: D" } };
+	const group: ReviewGroup = { kind: "collection-review", title: "Review Zotero collections (2)", reviews: [first, second] };
+	const onGroup = vi.fn();
+	const onItem = vi.fn();
+	const modal = new ReviewOverviewModal({} as App, onGroup, onItem, vi.fn());
+	modal.update([group], 2);
+	modal.open();
+	const content = state.modal!.contentEl;
+	expect(content.querySelector<HTMLDetailsElement>("details")!.open).toBe(true);
+	expect(content.textContent).toContain("Current Obsidian value: A");
+	expect(content.textContent).toContain("Current Zotero value: D");
+	expect(content.querySelectorAll(".lit-note-review-item button")).toHaveLength(0);
+	const buttons = Array.from(content.querySelectorAll("button"));
+	expect(buttons.map((button) => button.textContent)).toEqual(["Apply Zotero to all", "Keep Obsidian for all; stop managing", "Defer"]);
+	expect(buttons[0].compareDocumentPosition(content.querySelector(".lit-note-review-item")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+	buttons[0].click();
+	buttons[1].click();
+	buttons[2].click();
+	expect(onGroup.mock.calls).toEqual([[group, "apply-zotero-collections"], [group, "keep-obsidian-collections"], [group, "defer-collections"]]);
+	expect(onItem).not.toHaveBeenCalled();
+	const search = content.querySelector<HTMLInputElement>("input[type=search]")!;
+	search.value = "First";
+	search.dispatchEvent(new Event("input"));
+	expect(buttons.every((button) => button.hidden)).toBe(true);
+	search.value = "";
+	search.dispatchEvent(new Event("input"));
+	expect(buttons.every((button) => !button.hidden)).toBe(true);
+	modal.update([{ ...group, reviews: [{ ...first, collectionReviewNeedsRefresh: true, reason: "Changed" }, second] }], 2);
+	const failedButtons = Array.from(content.querySelectorAll("button"));
+	expect(failedButtons.map((button) => button.disabled)).toEqual([true, true, false]);
+	expect(content.textContent).toContain("Run Check all literature notes against Zotero again");
+});

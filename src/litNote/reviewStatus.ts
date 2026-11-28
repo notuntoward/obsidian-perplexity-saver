@@ -9,13 +9,14 @@ import { acknowledgeUncertainReview, allReviews, requestAttachmentBatch, request
 import { ReviewOverviewModal } from "./reviewOverviewModal";
 import { compareDuplicateReview, isDuplicateReview, watchDuplicateReviews } from "./duplicateNotes";
 import type { DuplicateReviewSettings } from "./duplicateNotes";
-import type { PendingReview } from "./pendingReviews";
+import type { CollectionChoice, PendingReview } from "./pendingReviews";
 
 export type ReviewGroup =
 	| { kind: "uncertain"; title: string; attachmentMove: boolean; reviews: PendingReview[] }
 	| { kind: "awaiting-ack"; title: string; reviews: PendingReview[] }
 	| { kind: "library"; title: string; uri: string; reviews: PendingReview[] }
 	| { kind: "bulk-update"; title: string; summary: string; reviews: PendingReview[] }
+	| { kind: "collection-review"; title: string; reviews: PendingReview[] }
 	| { kind: "attachment-move"; title: string; baseDirectory: string; conflict: boolean; reviews: PendingReview[] }
 	| { kind: "missing-item-key"; title: string; reviews: PendingReview[] }
 	| { kind: "reason"; title: string; reviews: PendingReview[] };
@@ -25,6 +26,7 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 	const updates = new Map<string, PendingReview[]>();
 	const attachmentMoves = new Map<string, { baseDirectory: string; conflict: boolean; reviews: PendingReview[] }>();
 	const reasons = new Map<string, PendingReview[]>();
+	const collectionReviews: PendingReview[] = [];
 	const missingItemKeys: PendingReview[] = [];
 	const uncertain: PendingReview[] = [];
 	const awaitingAck: PendingReview[] = [];
@@ -39,6 +41,10 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 		}
 		if (review.awaitingAcknowledgement) {
 			awaitingAck.push(review);
+			continue;
+		}
+		if (review.proposal?.collectionReview && !review.requested) {
+			collectionReviews.push({ ...review, proposal: structuredClone(review.proposal) });
 			continue;
 		}
 		if (review.libraryNotePath && !review.requested) {
@@ -81,6 +87,7 @@ function groupsFor(reviews: PendingReview[]): ReviewGroup[] {
 		...[...libraries].map(([uri, entries]): ReviewGroup => ({
 			kind: "library", uri, reviews: entries, title: `Add missing Zotero library URI (${entries.length})`,
 		})),
+		...(collectionReviews.length ? [{ kind: "collection-review" as const, reviews: collectionReviews, title: `Review Zotero collections (${collectionReviews.length})` }] : []),
 		...[...updates].map(([summary, entries]): ReviewGroup => ({
 			kind: "bulk-update", summary, reviews: entries, title: `Apply note changes (${entries.length})`,
 		})),
@@ -207,7 +214,24 @@ async function approveNoteBatch(app: App, group: Extract<ReviewGroup, { kind: "b
 
 let reviewingUncertain = false;
 
-function openGroup(app: App, group: ReviewGroup): void {
+function openGroup(app: App, group: ReviewGroup, collectionChoice?: CollectionChoice | "defer-collections"): void {
+	if (group.kind === "collection-review") {
+		if (collectionChoice === "defer-collections") {
+			new Notice("Collection reviews deferred.", 10000);
+			return;
+		}
+		if (!collectionChoice) return;
+		try {
+			requestNoteBatch("Review Zotero collections", group.reviews.map((review) => {
+				if (!review.proposal) throw new Error("The review list changed. Select the group again.");
+				return { key: review.key, proposal: review.proposal };
+			}), collectionChoice);
+		} catch (error) {
+			console.error("Could not start collection review", error);
+			new Notice(error instanceof Error ? error.message : String(error), 10000);
+		}
+		return;
+	}
 	if (group.kind === "awaiting-ack") {
 		new Notice("Start Zotero to finish confirming the checked operations.", 10000);
 		return;
@@ -430,7 +454,7 @@ export function setupReviewStatus(app: App, status: HTMLElement, settings?: Dupl
 			arrival?.hide();
 			arrival = undefined;
 			if (overview) return;
-			overview = new ReviewOverviewModal(app, (group) => openGroup(app, group), (group, entry) => {
+			overview = new ReviewOverviewModal(app, (group, choice) => openGroup(app, group, choice), (group, entry) => {
 				if (group.kind === "missing-item-key") {
 					const file = entry.notePath && app.vault.getAbstractFileByPath(entry.notePath);
 					if (!(file instanceof TFile)) {

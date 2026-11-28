@@ -77,6 +77,23 @@ export const FRONTMATTER_ORDER: string[] = [
 	"modified_date",
 ];
 
+/** Personal reading-status properties and their defaults for new literature notes. */
+export const LIT_NOTE_STATUS_DEFAULTS = { read: false, in_progress: false, linked: false } as const;
+
+/** Retired Zotero tag that marked items with a literature note; never written to notes. */
+export const OLD_INDICATOR_TAG = "obslitnote";
+
+/** Normalize a Zotero tag or collection name for zotero_tags / zotero_collections. */
+export function normalizePropertyValue(value: unknown): string {
+	return typeof value === "string" ? value.trim().toLowerCase().replace(/[\s_]+/g, "-") : "";
+}
+
+/** Normalize, deduplicate, and drop empty or excluded Zotero tag or collection values. */
+export function normalizePropertyList(values: readonly unknown[], exclude: readonly string[] = []): string[] {
+	const normalized = values.map(normalizePropertyValue).filter((entry) => entry && !exclude.includes(entry));
+	return [...new Set(normalized)];
+}
+
 /**
  * Return an object with keys ordered according to canonical FRONTMATTER_ORDER.
  * Any unlisted custom or review keys are placed after standard properties

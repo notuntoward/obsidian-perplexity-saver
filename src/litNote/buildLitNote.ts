@@ -42,6 +42,9 @@ import {
 	orderFrontmatter,
 	formatTimestampWithOffset,
 	extractAuthorsFromZoteroCreators,
+	LIT_NOTE_STATUS_DEFAULTS,
+	normalizePropertyList,
+	OLD_INDICATOR_TAG,
 } from "./propertyUtils";
 
 export {
@@ -455,8 +458,6 @@ export function buildLitNoteFrontmatter(
 	item: ZoteroItemPayload,
 	settings?: { authorFormatStyle?: NameStyle; authorDropVon?: boolean }
 ): Record<string, unknown> {
-	const normalizeTag = (t: unknown) => (typeof t === "string" ? t.toLowerCase().replace(/ /g, "_") : "");
-
 	const creators = extractAuthorsFromZoteroCreators(
 		item.creators,
 		settings?.authorFormatStyle ?? "last-first",
@@ -466,9 +467,7 @@ export function buildLitNoteFrontmatter(
 	const fm: Record<string, unknown> = {
 		category: ["literaturenote"],
 		tags: [],
-		read: false,
-		in_progress: false,
-		linked: false,
+		...LIT_NOTE_STATUS_DEFAULTS,
 	};
 
 	const aliases = buildAliases(item.title);
@@ -480,19 +479,8 @@ export function buildLitNoteFrontmatter(
 		fm.citekey = item.citekey.trim();
 	}
 
-	if (item.tags && item.tags.length > 0) {
-		const normTags = item.tags.map(normalizeTag).filter(Boolean);
-		if (normTags.length > 0) {
-			fm.zotero_tags = normTags;
-		}
-	}
-
-	if (item.collections && item.collections.length > 0) {
-		const normColls = item.collections.map(normalizeTag).filter(Boolean);
-		if (normColls.length > 0) {
-			fm.zotero_collections = normColls;
-		}
-	}
+	fm.zotero_tags = normalizePropertyList(item.tags ?? [], [OLD_INDICATOR_TAG]);
+	fm.zotero_collections = normalizePropertyList(item.collections ?? []);
 
 	if (creators.length > 0) {
 		fm.authors = creators;

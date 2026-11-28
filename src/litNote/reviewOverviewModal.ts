@@ -1,6 +1,6 @@
 import { App, Modal } from "obsidian";
 import { applyModalAppearance } from "commons/modal";
-import type { PendingReview } from "./pendingReviews";
+import type { CollectionChoice, PendingReview } from "./pendingReviews";
 import type { ReviewGroup } from "./reviewStatus";
 
 export class ReviewOverviewModal extends Modal {
@@ -9,7 +9,7 @@ export class ReviewOverviewModal extends Modal {
 
 	constructor(
 		app: App,
-		private readonly onGroup: (group: ReviewGroup) => void,
+		private readonly onGroup: (group: ReviewGroup, choice?: CollectionChoice | "defer-collections") => void,
 		private readonly onItem: (group: ReviewGroup, item: PendingReview) => void,
 		private readonly onDismiss: () => void,
 	) {
@@ -34,6 +34,7 @@ export class ReviewOverviewModal extends Modal {
 	private render(): void {
 		const scrollTop = this.contentEl.scrollTop;
 		const existingSearch = this.contentEl.querySelector<HTMLInputElement>(".lit-note-review-filter");
+		const hadCollectionGroup = !!this.contentEl.querySelector('details[data-group="collection-review"]');
 		const expanded = new Set(Array.from(this.contentEl.querySelectorAll<HTMLDetailsElement>("details[open]"))
 			.map((element) => element.dataset.group));
 		for (const child of Array.from(this.contentEl.children)) {
@@ -54,7 +55,7 @@ export class ReviewOverviewModal extends Modal {
 		});
 		search.value = this.filter;
 		const noMatches = this.contentEl.createEl("p", { text: "No reviews match your search." });
-		const sections: Array<{ element: HTMLElement; details: HTMLDetailsElement; rows: Array<{ element: HTMLElement; text: string }>; action?: HTMLButtonElement }> = [];
+		const sections: Array<{ element: HTMLElement; details: HTMLDetailsElement; rows: Array<{ element: HTMLElement; text: string }>; actions: HTMLButtonElement[] }> = [];
 		for (const group of this.groups) {
 			const key = group.kind === "reason" ? `${group.kind}:${group.reviews[0]?.reason}`
 				: group.kind === "library" ? `${group.kind}:${group.uri}`
@@ -64,7 +65,7 @@ export class ReviewOverviewModal extends Modal {
 			const section = this.contentEl.createEl("section", { cls: "lit-note-review-group" });
 			const details = section.createEl("details");
 			details.dataset.group = key;
-			details.open = expanded.has(key);
+			details.open = expanded.has(key) || (group.kind === "collection-review" && !hadCollectionGroup);
 			details.createEl("summary", { text: group.title });
 			const rows: Array<{ element: HTMLElement; text: string }> = [];
 			const description = group.kind === "uncertain"
@@ -74,12 +75,35 @@ export class ReviewOverviewModal extends Modal {
 				: group.kind === "missing-item-key" ? "Open each note and add its verified Zotero item key. Then run Check all literature notes against Zotero again."
 				: group.kind === "library" ? group.uri
 				: group.kind === "bulk-update" ? group.summary
+				: group.kind === "collection-review" ? "Choose one action for every note below. Defer leaves them in the review list."
 				: group.kind === "attachment-move" ? group.baseDirectory
 				: group.kind === "awaiting-ack" ? "Keep Zotero open while it confirms the checks." : "";
 			if (description) details.createEl("p", { text: description });
+			const actions: HTMLButtonElement[] = [];
+			if (group.kind === "collection-review") {
+				const actionGroup = details.createDiv({ cls: "lit-note-review-collection-actions" });
+				for (const [label, choice] of [
+					["Apply Zotero to all", "apply-zotero-collections"],
+					["Keep Obsidian for all; stop managing", "keep-obsidian-collections"],
+					["Defer", "defer-collections"],
+				] as const) {
+					const action = actionGroup.createEl("button", { text: label });
+					action.disabled = choice !== "defer-collections" && group.reviews.some((entry) => entry.collectionReviewNeedsRefresh);
+					action.addEventListener("click", () => this.onGroup(group, choice));
+					actions.push(action);
+				}
+			}
 			for (const entry of group.reviews) {
 				const row = details.createDiv({ cls: "lit-note-review-item" });
-				if (group.kind === "missing-item-key" && entry.notePath) {
+				if (group.kind === "collection-review") {
+					row.createDiv({ text: entry.title, cls: "lit-note-review-item-title" });
+					if (entry.notePath) row.createDiv({ text: entry.notePath, cls: "lit-note-review-item-path" });
+					if (entry.collectionReviewNeedsRefresh) row.createDiv({ text: `Review failed: ${entry.reason}. Run Check all literature notes against Zotero again before choosing.`, cls: "lit-note-review-item-path" });
+					const values = row.createDiv({ cls: "lit-note-review-collection-values" });
+					for (const line of (entry.proposal?.message ?? "").split("\n")) {
+						if (line) values.createDiv({ text: line });
+					}
+				} else if (group.kind === "missing-item-key" && entry.notePath) {
 					const link = row.createEl("a", { text: entry.notePath, cls: "lit-note-review-item-path internal-link", attr: { href: "#" } });
 					link.addEventListener("click", (event) => {
 						event.preventDefault();
@@ -102,12 +126,12 @@ export class ReviewOverviewModal extends Modal {
 				: group.kind === "library" ? "Add library to all"
 				: group.kind === "bulk-update" ? "Apply changes to all"
 				: group.kind === "attachment-move" ? "Move attachments for all" : "";
-			let action: HTMLButtonElement | undefined;
 			if (bulkLabel) {
-				action = section.createEl("button", { text: bulkLabel });
+				const action = section.createEl("button", { text: bulkLabel });
 				action.addEventListener("click", () => this.onGroup(group));
+				actions.push(action);
 			}
-			sections.push({ element: section, details, rows, action });
+			sections.push({ element: section, details, rows, actions });
 		}
 		const applyFilter = (): void => {
 			const query = this.filter.trim().toLowerCase();
@@ -121,7 +145,7 @@ export class ReviewOverviewModal extends Modal {
 				section.element.hidden = !!query && visible === 0;
 				if (!section.element.hidden) visibleGroups++;
 				if (query && visible) section.details.open = true;
-				if (section.action) section.action.hidden = !!query;
+				for (const action of section.actions) action.hidden = !!query;
 			}
 			noMatches.hidden = visibleGroups > 0;
 		};

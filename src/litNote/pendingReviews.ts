@@ -1,7 +1,10 @@
 import type { ZoteroAttachment, ZoteroItemPayload } from "./types";
 import type { CitekeyConflictDetails, DecisionButton } from "./decisionModal";
 
+export type CollectionChoice = "apply-zotero-collections" | "keep-obsidian-collections";
+
 export interface BulkProposal {
+	collectionReview?: true;
 	summary: string;
 	title: string;
 	message: string;
@@ -60,6 +63,8 @@ export interface PendingReview {
 	repairId?: string;
 	repairSnapshot?: string;
 	proposal?: BulkProposal;
+	collectionChoice?: CollectionChoice;
+	collectionReviewNeedsRefresh?: true;
 	attachmentMove?: AttachmentMoveCandidate;
 	automaticAttachment?: boolean;
 	automaticRecovery?: boolean;
@@ -233,6 +238,8 @@ export function queueReview(item: ZoteroItemPayload, reason: string, notePath?: 
 		title: item.title || item.citekey || item.itemkey,
 		notePath: notePath ?? pending.get(key)?.notePath, reason, libraryNotePath: pending.get(key)?.operation === "library-recheck" ? undefined : libraryNotePath,
 		proposal: pending.get(key)?.operation === "note-update" ? pending.get(key)?.proposal : proposal,
+		collectionChoice: pending.get(key)?.collectionChoice,
+		collectionReviewNeedsRefresh: pending.get(key)?.operation === "note-update" ? pending.get(key)?.collectionReviewNeedsRefresh : undefined,
 		attachmentMove: pending.get(key)?.operation === "attachment-move" ? pending.get(key)?.attachmentMove : attachmentMove,
 		automaticAttachment: pending.get(key)?.automaticAttachment,
 		attachmentStrategy: pending.get(key)?.attachmentStrategy,
@@ -307,14 +314,18 @@ export function requestLibraryBatch(libraryURI: string, selected: Array<{ key: s
 	notify();
 }
 
-export function requestNoteBatch(summary: string, selected: Array<{ key: string; proposal: BulkProposal }>): void {
+export function requestNoteBatch(summary: string, selected: Array<{ key: string; proposal: BulkProposal }>, choice?: CollectionChoice): void {
 	if (batch) throw new Error("A bulk correction is already running.");
 	const keys = selected.map((entry) => entry.key);
 	if (!keys.length || new Set(keys).size !== keys.length) throw new Error("No matching notes are available for bulk correction.");
 	const entries = keys.map((key) => pending.get(key));
-	if (entries.some((entry, index) => !entry || entry.proposal?.summary !== summary ||
+	if (choice !== undefined && choice !== "apply-zotero-collections" && choice !== "keep-obsidian-collections") {
+		throw new Error("Choose how to resolve the collection reviews.");
+	}
+	if (entries.some((entry, index) => !entry || !entry.proposal ||
+		(choice ? !entry.proposal.collectionReview : !!entry.proposal.collectionReview || entry.proposal.summary !== summary) ||
 		JSON.stringify(entry.proposal) !== JSON.stringify(selected[index].proposal) || entry.requested ||
-		entry.uncertain || acknowledgedUncertain.has(entry.key))) {
+		entry.uncertain || entry.collectionReviewNeedsRefresh || acknowledgedUncertain.has(entry.key))) {
 		throw new Error("The review list changed. Select the group again.");
 	}
 	batch = { kind: "note-update", label: summary, total: entries.length, completed: 0, succeeded: 0, rechecking: 0, recheckFailed: 0 };
@@ -322,6 +333,7 @@ export function requestNoteBatch(summary: string, selected: Array<{ key: string;
 		if (!entry) throw new Error("The review list changed. Select the group again.");
 		entry.requested = true;
 		entry.operation = "note-update";
+		entry.collectionChoice = choice;
 	}
 	notify();
 }
@@ -374,9 +386,11 @@ export function finishNoteCorrection(key: string, error?: string): void {
 	if (!entry || entry.operation !== "note-update" || !batch) return;
 	entry.requested = false;
 	entry.operation = undefined;
+	entry.collectionChoice = undefined;
 	if (error) {
 		entry.reason = error;
-		entry.proposal = undefined;
+		if (entry.proposal?.collectionReview) entry.collectionReviewNeedsRefresh = true;
+		else entry.proposal = undefined;
 	} else {
 		if (!entry.uncertain) pending.delete(key);
 		batch.succeeded++;

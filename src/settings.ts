@@ -2,6 +2,7 @@ import type { HeadlineMethod } from "./normalize/headlines";
 import type { NameStyle } from "./litNote/bibtexName";
 import type { CollectionAdoptions } from "./litNote/collectionAdoption";
 import { DEFAULT_TRANSCRIPT_HEADING } from "commons/youtube";
+import { DEFAULT_LIT_NOTES_FOLDER } from "./litNote/constants";
 
 export interface PerplexitySaverSettings {
 	searchesFolder: string;
@@ -96,7 +97,7 @@ export const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	autoFetchSourceTitles: true,
 	sourceTitleMaxChars: 100,
 	zoteroPort: 23119,
-	litNotesFolder: "lit/lit_notes",
+	litNotesFolder: DEFAULT_LIT_NOTES_FOLDER,
 	minTitleMatchScore: 95,
 	autoRelinkSources: false,
 	litNoteLastViewed: {},

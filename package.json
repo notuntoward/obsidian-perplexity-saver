@@ -18,7 +18,8 @@
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "bundle:repair": "node scripts/build-lit-note-repair.mjs"
   },
   "keywords": [
     "obsidian",

@@ -904,13 +904,184 @@ describe("literature note reconciliation", () => {
 		expect(f.getBody()).toContain("Personal notes.");
 	});
 
-	it("does not update collections from an automatic sync payload yet", async () => {
+	it("queues automatic collection changes when no baseline has been approved", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["New Collection"];
+		const confirm = accept();
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", confirm, { reconcileCollections: true });
+		expect(result.status).toBe("pending-review");
+		expect(confirm).not.toHaveBeenCalled();
+		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+	});
+	it("updates adopted collections automatically while the note still matches its baseline", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["New Collection"];
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const result = await syncLitNote(
+			f.app,
+			{ litNotesFolder: "lit" },
+			f.item,
+			"auto",
+			accept(),
+			{
+				collectionAdoption: { status: "managed", baseline: ["old_collection"] },
+				reconcileCollections: true,
+				persistCollectionAdoption: persist,
+			}
+		);
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual(["new-collection"]);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: ["new-collection"] });
+	});
+	it("updates adopted collections on the automatic attachment path when attachment links are unchanged", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		Object.assign(f.item, { citekey: "old", automaticAttachments: true, libraryType: "user", attachments: [], collections: ["Bike"],
+			linkedAttachmentBaseDirectory: path.resolve("test-vault", "attachments"), linkedAttachmentBaseDirectoryValidated: true });
+		const before = f.getBody();
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept(), {
+			collectionAdoption: { status: "managed", baseline: ["old_collection"] },
+			reconcileCollections: true,
+			persistCollectionAdoption: persist,
+		});
+		expect(result.error).toBeUndefined();
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual(["bike"]);
+		expect(f.fm.tags).toEqual(["personal"]);
+		expect(f.getBody()).toBe(before);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: ["bike"] });
+	});
+	it("preserves collections from an older peer that omits collection data", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept());
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+
+	});
+	it("leaves collection handling unchanged without startup-reconciliation context", async () => {
 		const f = fixture();
 		f.fm.zotero_collections = ["old_collection"];
 		f.item.collections = ["New Collection"];
 		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept());
 		expect(result.status).toBe("updated");
 		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+	});
+
+
+	it("keeps an empty collection list for an adopted empty membership", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = [];
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", accept(), {
+			reconcileCollections: true,
+			collectionAdoption: { status: "managed", baseline: ["old_collection"] },
+			persistCollectionAdoption: persist,
+		});
+		expect(result.status).toBe("updated");
+		expect(f.fm.zotero_collections).toEqual([]);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: [] });
+	});
+
+	it("holds automatic collection updates when Obsidian differs from the accepted baseline", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["note_edit"];
+		f.item.collections = ["Zotero Collection"];
+		const confirm = accept();
+		const result = await syncLitNote(
+			f.app,
+			{ litNotesFolder: "lit" },
+			f.item,
+			"auto",
+			confirm,
+			{ reconcileCollections: true, collectionAdoption: { status: "managed", baseline: ["last_accepted"] } }
+		);
+		expect(result.status).toBe("pending-review");
+		expect(confirm).not.toHaveBeenCalled();
+		expect(f.fm.zotero_collections).toEqual(["note_edit"]);
+	});
+
+	it.each([
+		["apply-zotero-collections", "updated", ["zotero-collection"], { status: "managed", baseline: ["zotero-collection"] }],
+		["keep-obsidian-collections", "updated", ["old_collection"], { status: "obsidian" }],
+	] as const)("resolves missing collection baselines with %s", async (choice, expectedStatus, expectedCollections, expectedState) => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["Zotero Collection"];
+		const decide = vi.fn(async (title: string, _message: string, buttons: DecisionButton[], review?: AttachmentReviewRow[]): Promise<NoteDecision> =>
+			review
+				? `review:${JSON.stringify(review.map((row) => row.kind === "note" ? "remove" : row.defaultValue))}`
+				: title === "Review Zotero collections"
+					? choice
+					: buttons.find((button) => ["use-zotero", "create"].includes(button.value))?.value ?? "cancel"
+		);
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const result = await syncLitNote(
+			f.app,
+			{ litNotesFolder: "lit" },
+			f.item,
+			"auto",
+			decide,
+			{ reconcileCollections: true, collectionReview: true, persistCollectionAdoption: persist }
+		);
+		expect(result.status).toBe(expectedStatus);
+		expect(f.fm.zotero_collections).toEqual(expectedCollections);
+		expect(persist).toHaveBeenCalledWith(expectedState);
+	});
+
+	it("applies a batch collection choice without modifying unrelated metadata or prompting about attachments", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["Research"];
+		const beforeBody = f.getBody();
+		const decide = vi.fn(async () => "apply-zotero-collections" as const);
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const options = { reconcileCollections: true, collectionReview: true, collectionOnly: true, persistCollectionAdoption: persist };
+		const plan = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", decide, { ...options, prepareOnly: true });
+		expect(plan.status).toBe("prepared");
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", decide, { ...options, expectedContent: plan.snapshot });
+		expect(result.status).toBe("updated");
+		expect(decide).toHaveBeenCalledTimes(2);
+		expect(f.fm.zotero_collections).toEqual(["research"]);
+		expect(f.fm.title).toBe("Old title");
+		expect(f.getBody()).toBe(beforeBody);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: ["research"] });
+	});
+
+	it("reports a partial batch collection update if saving the baseline fails", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["Research"];
+		const result = await syncLitNote(f.app, { litNotesFolder: "lit" }, f.item, "auto", async () => "apply-zotero-collections", {
+			reconcileCollections: true, collectionReview: true, collectionOnly: true,
+			persistCollectionAdoption: async () => { throw new Error("disk full"); },
+		});
+		expect(result.status).toBe("error");
+		expect(result.error).toContain("The note was changed, but the collection baseline was not saved");
+		expect(f.fm.zotero_collections).toEqual(["research"]);
+	});
+
+	it("leaves a deferred automatic collection review pending without writing", async () => {
+		const f = fixture();
+		f.fm.zotero_collections = ["old_collection"];
+		f.item.collections = ["Zotero Collection"];
+		const decide = vi.fn(async () => "defer-collections" as const);
+		const persist = vi.fn().mockResolvedValue(undefined);
+		const result = await syncLitNote(
+			f.app,
+			{ litNotesFolder: "lit" },
+			f.item,
+			"auto",
+			decide,
+			{ reconcileCollections: true, collectionReview: true, persistCollectionAdoption: persist }
+		);
+		expect(result.status).toBe("pending-review");
+		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
+		expect(persist).not.toHaveBeenCalled();
 	});
 
 	it("previews additions, removals and renames before adopting collections", async () => {
@@ -926,13 +1097,13 @@ describe("literature note reconciliation", () => {
 		expect(result.status).toBe("updated");
 		expect(preview).toContain("zotero_collections:");
 		expect(preview).toContain("old_collection");
-		expect(preview).toContain("new_collection");
+		expect(preview).toContain("new-collection");
 		expect(preview).toContain("Adopt the current Zotero collection membership");
-		expect(f.fm.zotero_collections).toEqual(["stay", "new_collection"]);
+		expect(f.fm.zotero_collections).toEqual(["stay", "new-collection"]);
 		expect(f.fm.tags).toEqual(["personal"]);
 		expect(f.fm.read).toBe(true);
 		expect(f.getBody()).toContain("Personal notes.");
-		expect(persist).toHaveBeenCalledWith(["stay", "new_collection"]);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: ["stay", "new-collection"] });
 	});
 
 	it("warns before replacing a collection value edited since adoption", async () => {
@@ -957,8 +1128,8 @@ describe("literature note reconciliation", () => {
 		)?.[1];
 		expect(result.status).toBe("updated");
 		expect(preview).toContain("edited after the last accepted update");
-		expect(f.fm.zotero_collections).toEqual(["zotero_collection"]);
-		expect(persist).toHaveBeenCalledWith(["zotero_collection"]);
+		expect(f.fm.zotero_collections).toEqual(["zotero-collection"]);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: ["zotero-collection"] });
 	});
 
 	it("reports a failed adoption-state save after changing the note", async () => {
@@ -977,7 +1148,7 @@ describe("literature note reconciliation", () => {
 		expect(result.status).toBe("error");
 		expect(result.error).toContain("may be partial");
 		expect(result.error).toContain("settings write failed");
-		expect(f.fm.zotero_collections).toEqual(["new_collection"]);
+		expect(f.fm.zotero_collections).toEqual(["new-collection"]);
 	});
 
 	it("preserves collections when a manual update omits collection data", async () => {
@@ -988,7 +1159,7 @@ describe("literature note reconciliation", () => {
 		expect(f.fm.zotero_collections).toEqual(["old_collection"]);
 	});
 
-	it("removes collections and records an empty adoption baseline", async () => {
+	it("keeps an empty collection list and records an empty adoption baseline", async () => {
 		const f = fixture();
 		f.fm.zotero_collections = ["old_collection"];
 		f.item.collections = [];
@@ -997,8 +1168,8 @@ describe("literature note reconciliation", () => {
 			{ persistCollectionAdoption: persist }
 		);
 		expect(result.status).toBe("updated");
-		expect(f.fm.zotero_collections).toBeUndefined();
-		expect(persist).toHaveBeenCalledWith([]);
+		expect(f.fm.zotero_collections).toEqual([]);
+		expect(persist).toHaveBeenCalledWith({ status: "managed", baseline: [] });
 	});
 
 	it("previews metadata changes and preserves unique existing aliases", async () => {

@@ -103,7 +103,7 @@ describe("Lit Note Builder", () => {
 				DOI: "10.1234/test",
 				url: "https://example.com/paper",
 				publicationTitle: "Journal of Testing",
-				tags: ["Machine Learning", "AI"],
+				tags: ["Machine Learning", "AI", "obsLitNote", "machine_learning"],
 				collections: ["My Collection"],
 				creators: [{ firstName: "Jane", lastName: "Doe", creatorType: "author" }],
 			};
@@ -118,8 +118,8 @@ describe("Lit Note Builder", () => {
 			expect(fm.url).toBe("https://example.com/paper");
 			expect(fm.publication).toBe("Journal of Testing");
 			expect(fm.aliases).toEqual(["A Very Long Title About Testing That Gets Truncated", "A Very Long Title About"]);
-			expect(fm.zotero_tags).toEqual(["machine_learning", "ai"]);
-			expect(fm.zotero_collections).toEqual(["my_collection"]);
+			expect(fm.zotero_tags).toEqual(["machine-learning", "ai"]);
+			expect(fm.zotero_collections).toEqual(["my-collection"]);
 			expect(fm.in_progress).toBe(false);
 			expect(fm.tags).toEqual([]);
 
@@ -140,6 +140,12 @@ describe("Lit Note Builder", () => {
 			expect(zoteroTagsIdx).toBeGreaterThan(-1);
 			expect(createdDateIdx).toBe(zoteroTagsIdx + 1);
 		});
+
+		it("always includes Zotero tags and collections as lists, even when empty", () => {
+		const fm = buildLitNoteFrontmatter({ title: "Paper", citekey: "Paper2024", tags: ["obsLitNote"] });
+		expect(fm.zotero_tags).toEqual([]);
+		expect(fm.zotero_collections).toEqual([]);
+	});
 
 		it("uses exportDate for created_date when provided in Zotero payload", () => {
 			const item: ZoteroItemPayload = {

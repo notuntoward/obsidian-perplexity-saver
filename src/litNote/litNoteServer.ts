@@ -45,6 +45,8 @@ import { acknowledgedUncertainReviews, allReviews, beginInterruptedRecovery, beg
 } from "./pendingReviews";
 import { clearItemTrashRequests, finishItemTrash, itemTrashRequests } from "./zoteroItemTrash";
 import type { BulkProposal } from "./pendingReviews";
+import { buildLitNoteFrontmatter } from "./buildLitNote";
+import { normalizePropertyList, OLD_INDICATOR_TAG } from "./propertyUtils";
 import { findIdenticalAttachments } from "./attachmentIdentity";
 import type { IdenticalAttachment } from "./attachmentIdentity";
 import { assertAttachmentsUnshared } from "./attachmentSharing";
@@ -62,6 +64,7 @@ import type { NameStyle } from "./bibtexName";
 import {
 	collectionAdoptionKey,
 	getCollectionAdoption,
+	sameCollectionMembership,
 	type CollectionAdoptions,
 	type CollectionAdoptionState,
 } from "./collectionAdoption";
@@ -159,18 +162,25 @@ function syncInput(
 		linkedAttachmentBaseDirectory: item.linkedAttachmentBaseDirectory,
 		libraryName: item.libraryName, zoteroChanges: item.zoteroChanges, automaticAttachments: item.automaticAttachments,
 	};
-	return JSON.stringify(mode === "auto" ? common : {
-		...common, tags: item.tags, collections: item.collections,
-		collectionAdoption: collectionAdoption ?? null,
-		creators: item.creators, date: item.date, itemType: item.itemType, DOI: item.DOI,
-		url: item.url, publicationTitle: item.publicationTitle, publisher: item.publisher, ISBN: item.ISBN,
-	});
+	return JSON.stringify(mode === "auto"
+		? {
+				...common,
+				...(item.collections !== undefined
+					? { collections: item.collections, collectionAdoption: collectionAdoption ?? null }
+					: {}),
+			}
+		: {
+				...common, tags: item.tags, collections: item.collections,
+				collectionAdoption: collectionAdoption ?? null,
+				creators: item.creators, date: item.date, itemType: item.itemType, DOI: item.DOI,
+				url: item.url, publicationTitle: item.publicationTitle, publisher: item.publisher, ISBN: item.ISBN,
+			});
 }
 
 async function persistCollectionAdoption(
 	settings: LitNoteServerSettings,
 	item: ZoteroItemPayload,
-	baseline: string[]
+	state: CollectionAdoptionState
 ): Promise<void> {
 	const key = collectionAdoptionKey(item);
 	if (!key || !settings.collectionAdoptions || !settings.saveCollectionAdoptions) {
@@ -180,10 +190,77 @@ async function persistCollectionAdoption(
 	}
 	const next = {
 		...settings.collectionAdoptions,
-		[key]: { status: "managed" as const, baseline },
+		[key]: state,
 	};
 	await settings.saveCollectionAdoptions(next);
 	settings.collectionAdoptions = next;
+}
+
+async function adoptMatchingCollections(
+	app: App,
+	settings: LitNoteServerSettings,
+	items: ZoteroItemPayload[]
+): Promise<Map<string, string>> {
+	const failures = new Map<string, string>();
+	if (!items.some((item) => item.collections !== undefined && collectionAdoptionKey(item) && getCollectionAdoption(settings.collectionAdoptions, item)?.status !== "obsidian")) return failures;
+	const filesByItem = new Map<string, TFile[]>();
+	for (const file of getLitNoteFiles(app, settings.litNotesFolder)) {
+		const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+		if (typeof fm?.zotero_item_key !== "string") continue;
+		const candidates = filesByItem.get(fm.zotero_item_key) ?? [];
+		candidates.push(file);
+		filesByItem.set(fm.zotero_item_key, candidates);
+	}
+	const next = { ...settings.collectionAdoptions };
+	let changed = false;
+	for (const item of items) {
+		const key = collectionAdoptionKey(item);
+		const adoption = getCollectionAdoption(settings.collectionAdoptions, item);
+		if (!key || !item.itemkey || !item.libraryURI || item.collections === undefined || isReviewBlocked(key) || adoption?.status === "obsidian") continue;
+		const candidates = (filesByItem.get(item.itemkey) ?? []).filter((file) => {
+			const fm = app.metadataCache.getFileCache(file)?.frontmatter;
+			return !fm?.zotero_library_uri || fm.zotero_library_uri === item.libraryURI;
+		});
+		if (candidates.length !== 1) continue;
+		let fm: Record<string, unknown> | undefined;
+		try {
+			fm = await readIndexedFrontmatter(app, candidates[0], true);
+		} catch (error) {
+			failures.set(key, errorMessage(error));
+			continue;
+		}
+		if (!hasLiteratureNoteCategory(fm) || fm?.zotero_item_key !== item.itemkey || fm.zotero_library_uri !== item.libraryURI) continue;
+		const collections = buildLitNoteFrontmatter(item, settings).zotero_collections;
+		let baseline: string[];
+		if (sameCollectionMembership(fm.zotero_collections, collections)) {
+			baseline = Array.isArray(collections) && collections.every((entry): entry is string => typeof entry === "string") ? collections : [];
+		} else if (adoption?.status === "managed" && sameCollectionMembership(fm.zotero_collections, normalizePropertyList(adoption.baseline))) {
+			baseline = normalizePropertyList(adoption.baseline);
+		} else {
+			continue;
+		}
+		if (adoption?.status === "managed" && sameCollectionMembership(adoption.baseline, baseline)) continue;
+		next[key] = { status: "managed", baseline };
+		changed = true;
+	}
+	if (!changed) return failures;
+	if (!settings.collectionAdoptions || !settings.saveCollectionAdoptions) {
+		throw new Error("Persistent collection adoption is unavailable; matching collection baselines were not saved.");
+	}
+	await settings.saveCollectionAdoptions(next);
+	settings.collectionAdoptions = next;
+	return failures;
+}
+
+async function seedCreatedCollections(settings: LitNoteServerSettings, item: ZoteroItemPayload): Promise<void> {
+	if (item.collections === undefined || !collectionAdoptionKey(item)) return;
+	const collections = buildLitNoteFrontmatter(item, settings).zotero_collections;
+	const baseline = Array.isArray(collections) && collections.every((entry): entry is string => typeof entry === "string") ? collections : [];
+	try {
+		await persistCollectionAdoption(settings, item, { status: "managed", baseline });
+	} catch (error) {
+		throw new Error(`The note was written, but its collection baseline could not be saved: ${errorMessage(error)}`);
+	}
 }
 
 function runSerialized<T>(fn: () => Promise<T>): Promise<T> {
@@ -571,11 +648,13 @@ async function handleCreateBatch(
 					continue;
 				}
 				await writeNote(app, settings, entry.item, existing);
+				await seedCreatedCollections(settings, entry.item);
 				await openFile(app, existing, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
 				});
 				results.push({ citekey: entry.citekey, status: "overwritten" });
 			} else {
 				const created = await writeNote(app, settings, entry.item, null);
+				await seedCreatedCollections(settings, entry.item);
 				await openFile(app, created, null, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
 				});
 				results.push({ citekey: entry.citekey, status: "created" });
@@ -957,6 +1036,7 @@ async function handleOpenBatch(
 					const entry = creatable[i];
 					try {
 						const file = await writeNote(app, settings, entry.item!, null);
+						await seedCreatedCollections(settings, entry.item!);
 						if (i === 0 && blankLeaf) {
 							blankLeafConsumed = true;
 							await openFile(app, file, blankLeaf, { transcriptHeading: settings.transcriptHeading, onNoteOpened: settings.onNoteOpened,
@@ -1082,18 +1162,17 @@ async function cleanupOldIndicatorTags(app: App, settings: LitNoteServerSettings
 			continue;
 		}
 		const value: unknown = frontmatter?.zotero_tags;
-		if (value !== "obslitnote" && !(Array.isArray(value) && value.includes("obslitnote"))) continue;
+		if (value !== OLD_INDICATOR_TAG && !(Array.isArray(value) && value.includes(OLD_INDICATOR_TAG))) continue;
 		try {
 			let changed = false;
 			await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
 				const current: unknown = frontmatter.zotero_tags;
-				if (current === "obslitnote") {
-					delete frontmatter.zotero_tags;
+				if (current === OLD_INDICATOR_TAG) {
+					frontmatter.zotero_tags = [];
 					changed = true;
-				} else if (Array.isArray(current) && current.includes("obslitnote")) {
-					const remaining = current.filter((tag: unknown) => tag !== "obslitnote");
-					if (remaining.length) frontmatter.zotero_tags = remaining;
-					else delete frontmatter.zotero_tags;
+				} else if (Array.isArray(current) && current.includes(OLD_INDICATOR_TAG)) {
+					const remaining = current.filter((tag: unknown) => tag !== OLD_INDICATOR_TAG);
+					frontmatter.zotero_tags = remaining;
 					changed = true;
 				}
 			});
@@ -1835,11 +1914,25 @@ async function handleRequest(
 			}
 			const results = await runSerialized(() => withNoteDecisionSession(app, async (session) => {
 				await ensureWorkspaceReady(app);
+				let adoptionFailures = new Map<string, string>();
+				if (parsed.action === "sync") {
+					try {
+						adoptionFailures = await adoptMatchingCollections(app, settings, items);
+					} catch (error) {
+						return items.map((item) => ({ citekey: item.citekey ?? "", status: "error" as const, error: errorMessage(error) }));
+					}
+				}
 				for (const [id, plan] of syncPlans) if (plan.expires < Date.now()) syncPlans.delete(id);
 				const entries: LitNoteItemResult[] = [];
 				let cancelled = false;
 				for (const item of items) {
 					try {
+						const adoptionError = item.itemkey && item.libraryURI ? adoptionFailures.get(reviewKey(item)) : undefined;
+						if (adoptionError) {
+							queueReconciliation(app, settings, item, adoptionError);
+							entries.push({ citekey: item.citekey, status: "pending-review" });
+							continue;
+						}
 						if (item.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
 							entries.push(automatic
 								? { citekey: item.citekey, status: "pending-review" }
@@ -1849,30 +1942,38 @@ async function handleRequest(
 						}
 						const decisions: SyncPlan["decisions"] = [];
 						const collectionAdoption =
-							mode === "metadata"
+							mode === "metadata" || item.collections !== undefined
 								? getCollectionAdoption(settings.collectionAdoptions, item)
 								: undefined;
 						const entry = await syncLitNote(app, settings, item, mode, async (title, message, buttons, review, conflict, bulkSummary) => {
 							if (automatic) throw new ReviewNeeded(title, conflict?.notePath, bulkSummary
 								? { summary: bulkSummary, title, message, buttons, conflict,
-													} : undefined);
+										...(buttons.some((button) => button.value === "apply-zotero-collections") ? { collectionReview: true as const } : {}),
+									} : undefined);
 							if (bulk) {
 								const proposal = { summary: bulkSummary, title, message, buttons, conflict,
-										};
+									...(buttons.some((button) => button.value === "apply-zotero-collections") ? { collectionReview: true as const } : {}),
+								};
+								const choice = bulkEntry?.proposal?.collectionReview ? bulkEntry.collectionChoice : "create";
 								if (review || !bulkEntry?.proposal || JSON.stringify(proposal) !== JSON.stringify(bulkEntry.proposal) ||
-									!buttons.some((button) => button.value === "create")) {
-									throw new Error("The proposed note changes changed; review this note individually.");
+									!choice || !buttons.some((button) => button.value === choice)) {
+									throw new Error("The proposed note changes changed; review this note again.");
 								}
-								decisions.push({ title, message, buttons, review, conflict, choice: "create",
-										});
-								return "create";
+								decisions.push({ title, message, buttons, review, conflict, choice });
+								return choice;
 							}
 							raiseAndFocus(app, app.workspace.getMostRecentLeaf());
 							const choice = await session.ask(title, message, buttons, review, conflict);
 							if (choice === "cancel") cancelled = true;
 							decisions.push({ title, message, buttons, review, conflict, choice });
 							return choice;
-						}, { prepareOnly: true, collectionAdoption });
+						}, {
+							prepareOnly: true,
+							...(item.collections !== undefined && (automatic || (requested && (!bulk || bulkEntry?.proposal?.collectionReview))) ? { reconcileCollections: true } : {}),
+							...(mode === "metadata" || item.collections !== undefined ? { collectionAdoption } : {}),
+							...(item.collections !== undefined && (automatic || (requested && (!bulk || bulkEntry?.proposal?.collectionReview))) ? { collectionReview: true } : {}),
+							...(bulkEntry?.proposal?.collectionReview ? { collectionOnly: true } : {}),
+						});
 						if (recheck && (entry.status === "prepared" || entry.status === "set-zotero-key")) {
 							queueReconciliation(app, settings, item, "Note changes need confirmation", entry.notePath);
 							entries.push({ citekey: entry.citekey, status: "pending-review" });
@@ -1880,6 +1981,15 @@ async function handleRequest(
 						}
 						if (recheck && entry.status === "missing") {
 							queueReconciliation(app, settings, item, "The matching note is missing; review its Zotero identity");
+							entries.push({ citekey: entry.citekey, status: "pending-review" });
+							continue;
+						}
+						if (entry.status === "pending-review" && item.itemkey && item.libraryURI) {
+							if (automatic) {
+								queueReconciliation(app, settings, item, entry.error ?? "Zotero collection changes need review", entry.notePath);
+							} else if (requested) {
+								resetReviewRequest(reviewKey(item));
+							}
 							entries.push({ citekey: entry.citekey, status: "pending-review" });
 							continue;
 						}
@@ -1998,7 +2108,7 @@ async function handleRequest(
 			syncPlans.delete(parsed.token);
 			const item = Array.isArray(parsed.data) && parsed.data.length === 1 ? parsed.data[0] : undefined;
 			const collectionAdoption =
-				item && plan?.mode === "metadata"
+				item && (plan?.mode === "metadata" || item.collections !== undefined)
 					? getCollectionAdoption(settings.collectionAdoptions, item)
 					: undefined;
 			if (item?.itemkey && item.libraryURI && isReviewBlocked(reviewKey(item))) {
@@ -2064,9 +2174,13 @@ async function handleRequest(
 						expectedContent: plan.snapshot,
 						expectedIdenticalAttachments: plan.identicalAttachments,
 						prepareOnly: parsed.action === "validate-zotero-key",
+						reconcileCollections: plan.mode === "auto" && item.collections !== undefined && (!plan.bulk || plan.decisions.some((decision) => decision.buttons.some((button) => button.value === "apply-zotero-collections"))),
 						collectionAdoption,
-						persistCollectionAdoption: async (baseline) =>
-							persistCollectionAdoption(settings, item, baseline),
+						collectionReview: plan.decisions.some((decision) =>
+							decision.buttons.some((button) => button.value === "apply-zotero-collections" || button.value === "keep-obsidian-collections")),
+						collectionOnly: !!plan.bulk && plan.decisions.some((decision) => decision.buttons.some((button) => button.value === "apply-zotero-collections")),
+						persistCollectionAdoption: async (state) =>
+							persistCollectionAdoption(settings, item, state),
 						beforeApply: async () => {
 							if (index !== plan.decisions.length) throw new Error("The note or its links changed after the decision; retry the update.");
 							if (duplicatePairs.length && plan.notePath && zoteroPaths) {
@@ -2119,14 +2233,19 @@ async function handleRequest(
 							};
 					}
 					if (plan.bulk && plan.reviewKey) {
-						if (result.status === "updated") finishNoteCorrection(plan.reviewKey);
+						if (result.status === "updated" || (result.status === "skipped" && plan.decisions.some((decision) => decision.choice === "keep-obsidian-collections"))) finishNoteCorrection(plan.reviewKey);
 						else finishNoteCorrection(plan.reviewKey, result.error ?? "The update was not completed; review this note individually.");
 						const { identity: _identity, attachmentProblems: _attachmentProblems, errorTitle: _errorTitle, dialogMessage: _dialogMessage, ...responseEntry } = result;
 						return responseEntry;
 					}
 					if (result.status === "error") await showReconciliationError(app, session, item, result, plan.notePath);
 					else if (plan.mode === "auto") reportedAutoErrors.delete(errorKey(item));
-					if (result.status === "updated" && (plan.reviewKey || plan.mode === "metadata")) {
+					const collectionReviewResolved = plan.decisions.some((decision) =>
+						decision.buttons.some((button) => button.value === "apply-zotero-collections" || button.value === "keep-obsidian-collections"));
+					if (
+						(result.status === "updated" && (plan.reviewKey || plan.mode === "metadata")) ||
+						(result.status === "skipped" && plan.reviewKey && collectionReviewResolved)
+					) {
 						removeReview(plan.reviewKey ?? reviewKey(item));
 					}
 					const { identity: _identity, attachmentProblems: _attachmentProblems, errorTitle: _errorTitle, dialogMessage: _dialogMessage, ...responseEntry } = result;
