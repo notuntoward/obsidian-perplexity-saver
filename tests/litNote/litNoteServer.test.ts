@@ -21,7 +21,6 @@ import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "fs/prom
 import { existsSync } from "fs";
 import { tmpdir } from "os";
 import type { ZoteroItemPayload } from "../../src/litNote/types";
-import { collectionAdoptionKey } from "../../src/litNote/collectionAdoption";
 import * as Obsidian from "obsidian";
 import { verifyAttachmentCopy } from "../../src/litNote/attachmentMove";
 
@@ -169,20 +168,11 @@ const createMockReq = (method: string, url: string, bodyObj: any) => {
 };
 
 function makeServerSettings() {
-	const settings: any = { litNotesFolder: FOLDER, collectionAdoptions: {} };
-	settings.saveCollectionAdoptions = vi.fn(async (adoptions: any) => {
-		settings.collectionAdoptions = adoptions;
-	});
-	return settings;
+	return { litNotesFolder: FOLDER };
 }
 
 async function post(app: any, bodyObj: any, settings?: any) {
-	const needsAdoptionState =
-		bodyObj.action === "update" &&
-		Array.isArray(bodyObj.data) &&
-		bodyObj.data.some((item: any) => item.collections !== undefined);
-	const requestSettings =
-		settings ?? (needsAdoptionState ? makeServerSettings() : { litNotesFolder: FOLDER });
+	const requestSettings = settings ?? { litNotesFolder: FOLDER };
 	startLitNoteServer(app, requestSettings);
 	const req = createMockReq("POST", "/lit-note", bodyObj);
 	const { res, endPromise } = createMockRes();
@@ -281,162 +271,45 @@ describe("Lit Note Server", () => {
 		expect(allReviews()).toHaveLength(1);
 	});
 
-	it("adopts matching existing notes together without creating reviews", async () => {
-		const paths = ["lit/lit_notes/first.md", "lit/lit_notes/second.md"];
-		const { app } = makeApp(paths);
-		const settings = makeServerSettings();
-		const items = ["ONE", "TWO"].map((itemkey) => ({ title: itemkey, citekey: itemkey, itemkey, libraryURI: "library", collections: ["Research", "Health"] }));
-		app.metadataCache.getFileCache.mockImplementation((file: TFile) => ({ frontmatter: {
-			category: ["literaturenote"], zotero_item_key: file.path === paths[0] ? "ONE" : "TWO", zotero_library_uri: "library", zotero_collections: ["health", "research"],
-		} }));
-		app.vault.read = vi.fn(async (file: TFile) => `---\ncategory: [literaturenote]\nzotero_item_key: ${file.path === paths[0] ? "ONE" : "TWO"}\nzotero_library_uri: library\nzotero_collections: [health, research]\n---\nbody`);
-		vi.mocked(syncLitNote).mockImplementation(async (_app, _settings, item) => ({ citekey: item.citekey, status: "skipped" }));
-		const response = await post(app, { action: "sync", data: items }, settings);
-		expect(response.results.map((entry: { status: string }) => entry.status)).toEqual(["skipped", "skipped"]);
-		expect(settings.saveCollectionAdoptions).toHaveBeenCalledOnce();
-		for (const item of items) expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "managed", baseline: ["research", "health"] });
-		expect(allReviews()).toEqual([]);
-	});
 
-	it.each([
-		{ status: "managed" as const, baseline: ["data_bases"] },
-		{ status: "managed" as const, baseline: ["old-value"] },
-		{ status: "managed" as const, baseline: [] },
-	])("refreshes a stale baseline when the note and Zotero already agree: %j", async (adoption) => {
-		const { app } = makeApp(["lit/lit_notes/first.md"]);
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Data Bases"] };
-		settings.collectionAdoptions[collectionAdoptionKey(item)!] = adoption;
-		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { category: ["literaturenote"], zotero_item_key: "ONE", zotero_library_uri: "library", zotero_collections: ["data-bases"] } });
-		app.vault.read = vi.fn(async () => "---\ncategory: [literaturenote]\nzotero_item_key: ONE\nzotero_library_uri: library\nzotero_collections: [data-bases]\n---\nPersonal notes");
-		vi.mocked(syncLitNote).mockImplementation(async (_app, _settings, payload, _mode, _prompt, options) => {
-			expect(options?.collectionAdoption).toEqual({ status: "managed", baseline: ["data-bases"] });
-			return { citekey: payload.citekey, status: "skipped" };
-		});
-		const response = await post(app, { action: "sync", data: [item] }, settings);
-		expect(response.results).toMatchObject([{ status: "skipped" }]);
-		expect(settings.saveCollectionAdoptions).toHaveBeenCalledOnce();
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "managed", baseline: ["data-bases"] });
-		expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
-		expect(app.vault.modify).not.toHaveBeenCalled();
-		expect(allReviews()).toEqual([]);
-	});
 
-	it.each([false, true])("migrates a repaired baseline before a Zotero-only change but preserves real note edits (edited: %s)", async (edited) => {
-		const { app } = makeApp(["lit/lit_notes/first.md"]);
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Bike", "Hot Takes"] };
-		const adoption = { status: "managed" as const, baseline: ["hot_takes"] };
-		settings.collectionAdoptions[collectionAdoptionKey(item)!] = adoption;
-		const current = edited ? "note-edit" : "hot-takes";
-		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { category: ["literaturenote"], zotero_item_key: "ONE", zotero_library_uri: "library", zotero_collections: ["hot-takes"] } });
-		app.vault.read = vi.fn(async () => `---\ncategory: [literaturenote]\nzotero_item_key: ONE\nzotero_library_uri: library\nzotero_collections: [${current}]\n---\nPersonal notes`);
-		vi.mocked(syncLitNote).mockImplementation(async (_app, _settings, payload, _mode, _prompt, options) => {
-			expect(options?.collectionAdoption).toEqual(edited ? adoption : { status: "managed", baseline: ["hot-takes"] });
-			return { citekey: payload.citekey, status: edited ? "pending-review" : "skipped", error: edited ? "Collections differ" : undefined };
-		});
-		await post(app, { action: "sync", data: [item] }, settings);
-		if (edited) {
-			expect(settings.saveCollectionAdoptions).not.toHaveBeenCalled();
-			expect(allReviews()).toHaveLength(1);
-		} else {
-			expect(settings.saveCollectionAdoptions).toHaveBeenCalledOnce();
-			expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "managed", baseline: ["hot-takes"] });
-			expect(allReviews()).toEqual([]);
-		}
-		expect(app.fileManager.processFrontMatter).not.toHaveBeenCalled();
-	});
 
-	it("does not resume collection management when stopped, even if values match", async () => {
-		const { app } = makeApp(["lit/lit_notes/first.md"]);
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Research"] };
-		settings.collectionAdoptions[collectionAdoptionKey(item)!] = { status: "obsidian" };
-		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { category: ["literaturenote"], zotero_item_key: "ONE", zotero_library_uri: "library", zotero_collections: ["research"] } });
-		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "skipped" });
-		await post(app, { action: "sync", data: [item] }, settings);
-		expect(settings.saveCollectionAdoptions).not.toHaveBeenCalled();
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "obsidian" });
-	});
 
-	it.each([undefined, { status: "managed" as const, baseline: ["old-value"] }])("does not adopt an indexed match if the actual note differs (state: %j)", async (adoption) => {
-		const { app } = makeApp(["lit/lit_notes/first.md"]);
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Research"] };
-		if (adoption) settings.collectionAdoptions[collectionAdoptionKey(item)!] = adoption;
-		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { category: ["literaturenote"], zotero_item_key: "ONE", zotero_library_uri: "library", zotero_collections: ["research"] } });
-		app.vault.read = vi.fn(async () => "---\ncategory: [literaturenote]\nzotero_item_key: ONE\nzotero_library_uri: library\nzotero_collections: [edited]\n---\nbody");
-		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "pending-review", error: "Collections differ" });
-		await post(app, { action: "sync", data: [item] }, settings);
-		expect(settings.saveCollectionAdoptions).not.toHaveBeenCalled();
-		expect(allReviews()).toHaveLength(1);
-	});
 
-	it("routes one unreadable note to review while adopting other matching notes", async () => {
+	it("routes one unreadable note to review while syncing other items", async () => {
 		const paths = ["lit/lit_notes/first.md", "lit/lit_notes/second.md"];
 		const { app } = makeApp(paths);
 		const settings = makeServerSettings();
 		const items = ["ONE", "TWO"].map((itemkey) => ({ title: itemkey, citekey: itemkey, itemkey, libraryURI: "library", collections: ["Research"] }));
-		app.metadataCache.getFileCache.mockImplementation((file: TFile) => ({ frontmatter: { category: ["literaturenote"], zotero_item_key: file.path === paths[0] ? "ONE" : "TWO", zotero_library_uri: "library", zotero_collections: ["research"] } }));
+		app.metadataCache.getFileCache.mockImplementation((file: TFile) => ({ frontmatter: { category: ["literaturenote"], zotero_item_key: file.path === paths[0] ? "ONE" : "TWO", zotero_library_uri: "library", zotero_collections: ["research"], zotero_tags: [] } }));
 		app.vault.read = vi.fn(async (file: TFile) => {
 			if (file.path === paths[0]) throw new Error("read denied");
 			return "---\ncategory: [literaturenote]\nzotero_item_key: TWO\nzotero_library_uri: library\nzotero_collections: [research]\n---\nbody";
 		});
-		vi.mocked(syncLitNote).mockResolvedValue({ citekey: "TWO", status: "skipped" });
+		vi.mocked(syncLitNote).mockImplementation(async (_app, _settings, payload) =>
+			payload.itemkey === "ONE"
+				? { citekey: payload.citekey, status: "error", error: "read denied" }
+				: { citekey: payload.citekey, status: "skipped" }
+		);
 		const response = await post(app, { action: "sync", data: items }, settings);
 		expect(response.results.map((entry: { status: string }) => entry.status)).toEqual(["pending-review", "skipped"]);
-		expect(allReviews()).toMatchObject([{ itemkey: "ONE", reason: expect.stringContaining("read denied") }]);
-		expect(settings.collectionAdoptions[collectionAdoptionKey(items[1])!]).toEqual({ status: "managed", baseline: ["research"] });
+		expect(allReviews()).toMatchObject([{ itemkey: "ONE", requested: false }]);
 	});
 
-	it("does not adopt a matching note while an interrupted review is unresolved", async () => {
+	it("blocks syncing while an interrupted review is unresolved", async () => {
 		const { app } = makeApp(["lit/lit_notes/first.md"]);
 		const settings = makeServerSettings();
 		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Research"] };
 		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: { category: ["literaturenote"], zotero_item_key: "ONE", zotero_library_uri: "library", zotero_collections: ["research"] } });
 		app.vault.read = vi.fn(async () => "---\ncategory: [literaturenote]\nzotero_item_key: ONE\nzotero_library_uri: library\nzotero_collections: [research]\n---\nbody");
-		settings.collectionAdoptions[collectionAdoptionKey(item)!] = { status: "managed", baseline: ["old-value"] };
 		markReviewUncertain(item);
 		const response = await post(app, { action: "sync", data: [item] }, settings);
 		expect(response.results[0].status).toBe("pending-review");
-		expect(settings.saveCollectionAdoptions).not.toHaveBeenCalled();
 		expect(syncLitNote).not.toHaveBeenCalled();
 	});
 
-	it.each(["create", "open"])("records a collection baseline when %s creates a note", async (action) => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ONE", libraryURI: "library", collections: ["Research"] };
-		if (action === "open") vi.mocked(askNoteDecision).mockResolvedValue("create");
-		const response = await post(app, { action, data: [item] }, settings);
-		expect(response.results[0].status).toBe("created");
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "managed", baseline: ["research"] });
-	});
 
-	it("queues automatic collection conflicts for review", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", collections: ["Collection"] };
-		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "pending-review", error: "No accepted baseline" });
-		const response = await post(app, { action: "sync", data: [item] }, settings);
-		expect(response.results).toMatchObject([{ status: "pending-review" }]);
-		expect(allReviews()).toMatchObject([{ itemkey: "ABC", reason: "No accepted baseline" }]);
-	});
 
-	it("returns deferred collection reviews to the pending queue", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", collections: ["Collection"] };
-		queueReview(item, "No accepted baseline");
-		requestReview(reviewKey(item));
-		vi.mocked(syncLitNote).mockResolvedValueOnce({ citekey: "key", status: "pending-review", error: "Deferred" });
-		const response = await post(app, { action: "review-sync", data: [item] }, settings);
-		expect(response.results).toMatchObject([{ status: "pending-review" }]);
-		expect(allReviews()).toMatchObject([{ itemkey: "ABC", requested: false }]);
-		expect(syncLitNote).toHaveBeenCalledWith(app, expect.anything(), item, "auto", expect.any(Function), {
-			prepareOnly: true, reconcileCollections: true, collectionAdoption: undefined, collectionReview: true,
-		});
-	});
 
 	it("rejects an automatic plan when collection membership changes after review", async () => {
 		const { app } = makeApp();
@@ -785,7 +658,7 @@ describe("Lit Note Server", () => {
 		app.vault.getMarkdownFiles = vi.fn(() => [note]);
 		app.vault.read = vi.fn().mockResolvedValue("> [!info]- Zotero<!-- zotero-attachments:start --> | **[[lit/sources/paper.pdf|PDF]]**<!-- zotero-attachments:end -->\n");
 		app.metadataCache.getFileCache.mockReturnValue({ frontmatter: {
-			category: ["literaturenote"], citekey: "key", zotero_item_key: "ABC", zotero_library_uri: "library",
+			category: ["literaturenote"], citekey: "key", zotero_item_key: "ABC", zotero_library_uri: "library", zotero_tags: [], zotero_collections: [],
 		}, links: [],
 		});
 		app.metadataCache.getFirstLinkpathDest = vi.fn((link: string) => link === attachmentPath ? files.get(attachmentPath) : null);
@@ -1820,35 +1693,6 @@ describe("Lit Note Server", () => {
 		expect(ask).not.toHaveBeenCalled();
 	});
 
-	it.each(["apply-zotero-collections", "keep-obsidian-collections"] as const)("revalidates and applies a batch collection choice: %s", async (choice) => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", collections: ["Research"] };
-		const summary = "Review differing Zotero collections";
-		const buttons: DecisionButton[] = [
-			{ label: "Apply Zotero", value: "apply-zotero-collections" },
-			{ label: "Keep Obsidian / stop managing", value: "keep-obsidian-collections" },
-			{ label: "Defer", value: "defer-collections" },
-		];
-		const reconcile: typeof syncLitNote = async (_app, _settings, current, _mode, prompt, options) => {
-			const selected = await prompt("Review Zotero collections", "Obsidian: old; Zotero: research", buttons, undefined, { title: "Work", itemkey: "ABC", libraryURI: "library", notePath: "lit/lit_notes/key.md" }, summary);
-			if (options?.prepareOnly) return { citekey: current.citekey, status: "prepared", snapshot: "note" };
-			await options?.beforeApply?.();
-			await options?.persistCollectionAdoption?.(selected === "apply-zotero-collections" ? { status: "managed", baseline: ["research"] } : { status: "obsidian" });
-			return { citekey: current.citekey, status: selected === "apply-zotero-collections" ? "updated" : "skipped" };
-		};
-		vi.mocked(syncLitNote).mockImplementation(reconcile);
-		const queued = await post(app, { action: "sync", data: [item] }, settings);
-		expect(queued.results[0].status).toBe("pending-review");
-		expect(allReviews()[0].proposal).toMatchObject({ summary, collectionReview: true });
-		requestNoteBatch(summary, [{ key: reviewKey(item), proposal: allReviews()[0].proposal! }], choice);
-		const prepared = await post(app, { action: "bulk-review-sync", data: [item] }, settings);
-		expect(prepared.results[0].status).toBe("prepared");
-		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [item] }, settings);
-		expect(applied.results[0].status).toBe(choice === "apply-zotero-collections" ? "updated" : "skipped");
-		expect(allReviews()).toEqual([]);
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual(choice === "apply-zotero-collections" ? { status: "managed", baseline: ["research"] } : { status: "obsidian" });
-	});
 
 	it("does not apply a bulk update when its proposal has changed", async () => {
 		const { app } = makeApp();
@@ -1973,104 +1817,13 @@ describe("Lit Note Server", () => {
 		expect(syncLitNote).toHaveBeenCalledWith(
 			app, expect.anything(), data[0], action === "sync" ? "auto" : "metadata",
 			expect.any(Function),
-				action === "sync"
-					? { prepareOnly: true }
-					: { prepareOnly: true, collectionAdoption: undefined }
+				{ prepareOnly: true }
 			);
 		}
 	);
 
-	it("applies and persists a reviewed collection resolution", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = { title: "Work", citekey: "key", itemkey: "ABC", libraryURI: "library", collections: ["Collection"] };
-		queueReview(item, "No accepted baseline");
-		requestReview(reviewKey(item));
-		const ask = vi.fn().mockResolvedValue("apply-zotero-collections");
-		vi.mocked(withNoteDecisionSession).mockImplementationOnce(async (_app, run) => run({ ask }));
-		const buttons: DecisionButton[] = [
-			{ label: "Apply Zotero", value: "apply-zotero-collections", cta: true },
-			{ label: "Keep Obsidian / stop managing", value: "keep-obsidian-collections" },
-			{ label: "Defer", value: "defer-collections" },
-		];
-		vi.mocked(syncLitNote).mockImplementationOnce(async (_app, _settings, _item, _mode, prompt) => {
-			await prompt("Review Zotero collections", "Review", buttons);
-			return { citekey: "key", status: "prepared", snapshot: "original note" };
-		});
-		const prepared = await post(app, { action: "review-sync", data: [item] }, settings);
-		expect(prepared.results[0].status).toBe("prepared");
-		vi.mocked(syncLitNote).mockImplementationOnce(async (_app, _settings, _item, _mode, prompt, options) => {
-			expect(options?.collectionReview).toBe(true);
-			await prompt("Review Zotero collections", "Review", buttons);
-			await options?.persistCollectionAdoption?.({ status: "managed", baseline: ["collection"] });
-			return { citekey: "key", status: "updated" };
-		});
-		const applied = await post(app, { action: "apply-sync", token: prepared.results[0].token, data: [item] }, settings);
-		expect(applied.results[0].status).toBe("updated");
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({ status: "managed", baseline: ["collection"] });
-		expect(allReviews()).toEqual([]);
-	});
 
-	it("persists an approved manual collection baseline", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = {
-			citekey: "key",
-			itemkey: "ABC",
-			libraryURI: "library",
-			collections: ["New Collection"],
-		};
-		vi.mocked(syncLitNote)
-			.mockResolvedValueOnce({
-				citekey: "key",
-				status: "prepared",
-				snapshot: "original note",
-			})
-			.mockImplementationOnce(async (_app, _settings, _item, _mode, _prompt, options) => {
-				await options?.persistCollectionAdoption?.({ status: "managed", baseline: ["new_collection"] });
-				return { citekey: "key", status: "updated" };
-			});
-		const prepared = await post(app, { action: "update", data: [item] }, settings);
-		const applied = await post(
-			app,
-			{ action: "apply-sync", token: prepared.results[0].token, data: [item] },
-			settings
-		);
-		expect(applied.results[0].status).toBe("updated");
-		expect(settings.saveCollectionAdoptions).toHaveBeenCalledOnce();
-		expect(settings.collectionAdoptions[collectionAdoptionKey(item)!]).toEqual({
-			status: "managed",
-			baseline: ["new_collection"],
-		});
-	});
 
-	it("rejects a manual plan when collection adoption state changes after review", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const item = {
-			citekey: "key",
-			itemkey: "ABC",
-			libraryURI: "library",
-			collections: ["Collection"],
-		};
-		vi.mocked(syncLitNote).mockResolvedValueOnce({
-			citekey: "key",
-			status: "prepared",
-			snapshot: "original note",
-		});
-		const prepared = await post(app, { action: "update", data: [item] }, settings);
-		settings.collectionAdoptions[collectionAdoptionKey(item)!] = { status: "obsidian" };
-		const applied = await post(
-			app,
-			{ action: "apply-sync", token: prepared.results[0].token, data: [item] },
-			settings
-		);
-		expect(applied.results[0]).toMatchObject({
-			status: "error",
-			error: expect.stringContaining("changed or expired"),
-		});
-		expect(syncLitNote).toHaveBeenCalledOnce();
-	});
 
 	it("requires an unchanged Zotero payload and consumes the prepared plan once", async () => {
 		const { app } = makeApp();
@@ -2255,48 +2008,6 @@ describe("Lit Note Server", () => {
 		expect(syncLitNote).toHaveBeenCalledTimes(1);
 	});
 
-	it("cancels a reviewed manual collection batch before applying any item", async () => {
-		const { app } = makeApp();
-		const settings = makeServerSettings();
-		const ask = vi.fn().mockResolvedValueOnce("create").mockResolvedValueOnce("cancel");
-		vi.mocked(withNoteDecisionSession).mockImplementationOnce(async (_app, run) =>
-			run({ ask })
-		);
-		vi.mocked(syncLitNote).mockImplementation(
-			async (_app, _settings, item, _mode, prompt, options) => {
-				await prompt("Update Zotero metadata", "Review collection changes.", [
-					{ label: "Apply", value: "create" },
-					{ label: "Cancel", value: "cancel" },
-				]);
-				return options?.prepareOnly && item.citekey === "first"
-					? { citekey: item.citekey, status: "prepared", snapshot: "note" }
-					: { citekey: item.citekey, status: "skipped" };
-			}
-		);
-		const result = await post(
-			app,
-			{
-				action: "update",
-				data: [
-					{ citekey: "first", itemkey: "A", libraryURI: "library", collections: ["One"] },
-					{
-						citekey: "second",
-						itemkey: "B",
-						libraryURI: "library",
-						collections: ["Two"],
-					},
-				],
-			},
-			settings
-		);
-		expect(result.results.map((entry: { status: string }) => entry.status)).toEqual([
-			"skipped",
-			"skipped",
-		]);
-		expect(ask).toHaveBeenCalledTimes(2);
-		expect(syncLitNote).toHaveBeenCalledTimes(2);
-		expect(settings.saveCollectionAdoptions).not.toHaveBeenCalled();
-	});
 
 	it("cancels the whole reconciliation batch without applying earlier plans", async () => {
 		const { app } = makeApp();

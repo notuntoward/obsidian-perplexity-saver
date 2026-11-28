@@ -5,7 +5,6 @@
 import type { App, PluginManifest } from "obsidian";
 import { DEFAULT_LIT_NOTES_FOLDER } from "./constants";
 import { hasLiteratureNoteCategory, isDirectChildOfFolder } from "commons/litnote";
-import { isCollectionAdoptions, type CollectionAdoptions } from "./collectionAdoption";
 import {
 	isEmptyValue,
 	LIT_NOTE_STATUS_DEFAULTS,
@@ -115,22 +114,6 @@ export function repairLitNoteFrontmatter(
 	return changes;
 }
 
-/** Renormalize managed collection baselines so they keep matching repaired notes. */
-export function repairCollectionBaselines(adoptions: CollectionAdoptions): { adoptions: CollectionAdoptions; changed: number } {
-	let changed = 0;
-	const repaired: CollectionAdoptions = {};
-	for (const [key, state] of Object.entries(adoptions)) {
-		if (state.status !== "managed") {
-			repaired[key] = state;
-			continue;
-		}
-		const baseline = normalizePropertyList(state.baseline);
-		if (JSON.stringify(baseline) !== JSON.stringify(state.baseline)) changed++;
-		repaired[key] = { status: "managed", baseline };
-	}
-	return { adoptions: repaired, changed };
-}
-
 export interface LitNoteRepairReport {
 	mode: "dry run" | "applied";
 	litNotesFolder: string;
@@ -138,15 +121,12 @@ export interface LitNoteRepairReport {
 	notesChanged: number;
 	changeCounts: Record<string, number>;
 	examples: Record<string, string[]>;
-	collectionBaselinesChanged: number;
-	settingsBackup?: string;
 	errors: string[];
 }
 
 /**
  * Repair every literature note directly inside Saver's literature-notes folder.
- * Dry run by default; `{ apply: true }` requires Perplexity Saver to be disabled
- * because its stored collection baselines are rewritten too.
+ * Dry run by default; `{ apply: true }` writes changes through Obsidian's frontmatter API.
  */
 export async function runLitNoteRepair(
 	app: App,
@@ -157,18 +137,12 @@ export async function runLitNoteRepair(
 	const plugins = (app as App & { plugins?: { manifests?: Record<string, PluginManifest>; enabledPlugins?: Set<string> } }).plugins;
 	const directory = plugins?.manifests?.[SAVER_PLUGIN_ID]?.dir;
 	if (!directory) throw new Error("Saver's registered installation directory is unavailable; repair stopped.");
-	if (apply && (!plugins?.enabledPlugins || plugins.enabledPlugins.has(SAVER_PLUGIN_ID))) {
-		throw new Error("Disable Perplexity Saver before applying the repair, then re-enable it afterwards.");
-	}
 	const settingsPath = `${directory}/data.json`;
 	if (!(await adapter.exists(settingsPath))) throw new Error(`Saver settings are missing at ${settingsPath}; repair stopped.`);
 	const settingsText = await adapter.read(settingsPath);
 	const settings = JSON.parse(settingsText) as Record<string, unknown>;
 	if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
 		throw new Error("Saver settings must be an object; repair stopped.");
-	}
-	if (settings.collectionAdoptions !== undefined && !isCollectionAdoptions(settings.collectionAdoptions)) {
-		throw new Error("Saver's collection baselines are invalid; repair stopped.");
 	}
 	const litNotesFolder = options.litNotesFolder ??
 		(typeof settings.litNotesFolder === "string"
@@ -189,7 +163,6 @@ export async function runLitNoteRepair(
 		notesChanged: 0,
 		changeCounts: {},
 		examples: {},
-		collectionBaselinesChanged: 0,
 		errors: [],
 	};
 	for (const file of app.vault.getMarkdownFiles()) {
@@ -220,14 +193,5 @@ export async function runLitNoteRepair(
 		}
 	}
 
-	if (isCollectionAdoptions(settings.collectionAdoptions)) {
-		const repaired = repairCollectionBaselines(settings.collectionAdoptions);
-		report.collectionBaselinesChanged = repaired.changed;
-		if (apply && repaired.changed) {
-			report.settingsBackup = `${settingsPath}.before-lit-note-repair-${Date.now()}`;
-			await adapter.write(report.settingsBackup, settingsText);
-			await adapter.write(settingsPath, JSON.stringify({ ...settings, collectionAdoptions: repaired.adoptions }, null, "\t"));
-		}
-	}
 	return report;
 }

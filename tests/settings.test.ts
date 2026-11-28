@@ -51,6 +51,18 @@ const createMockPlugin = () => ({
 		litNoteServerSettings: null as any,
 		saveSettings: vi.fn().mockResolvedValue(undefined),
 	});
+it("removes obsolete collection baselines without changing other saved settings", async () => {
+		const plugin = Object.create(PerplexitySaverPlugin.prototype) as PerplexitySaverPlugin;
+		const saved = { collectionAdoptions: { old: { status: "managed", baseline: ["research"] } }, externalSetting: { retained: true } };
+		const saveData = vi.fn().mockResolvedValue(undefined);
+		Object.assign(plugin, { loadData: vi.fn().mockResolvedValue(saved), saveData });
+		await plugin.loadSettings();
+		expect(plugin.settings).not.toHaveProperty("collectionAdoptions");
+		expect((plugin.settings as unknown as Record<string, unknown>).externalSetting).toEqual({ retained: true });
+		expect(saveData).toHaveBeenCalledWith(expect.objectContaining({ externalSetting: { retained: true } }));
+		expect(saveData.mock.calls[0][0]).not.toHaveProperty("collectionAdoptions");
+	});
+
 it("getSettingDefinitions returns all expected top-level settings and groups", () => {
 		const plugin = createMockPlugin();
 		const tab = new PerplexitySaverSettingTab({} as any, plugin as any);

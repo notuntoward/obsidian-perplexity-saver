@@ -17,7 +17,6 @@ import { DUPLICATE_NOTES_REASON, matchingLitNotes } from "./duplicateNotes";
 import { getMainWindow } from "commons/workspace";
 import { setTimeoutIn } from "commons/windows";
 import type { ZoteroItemPayload } from "./types";
-import { sameCollectionMembership, type CollectionAdoptionState } from "./collectionAdoption";
 import type { LitNoteWriterSettings } from "./writeLitNote";
 import { litNotesFolderError } from "./writeLitNote";
 import { METADATA_FIELDS } from "./metadataFields";
@@ -183,6 +182,17 @@ function isStringArray(input: unknown): input is string[] {
 	return Array.isArray(input) && input.every((entry: unknown) => typeof entry === "string");
 }
 
+function sameStringMembership(left: unknown, right: unknown): boolean {
+	const list = (input: unknown): string[] | undefined =>
+		input === undefined ? [] : isStringArray(input) ? input : undefined;
+	const a = list(left);
+	const b = list(right);
+	if (!a || !b) return false;
+	const leftSet = new Set(a);
+	const rightSet = new Set(b);
+	return leftSet.size === rightSet.size && [...leftSet].every((entry) => rightSet.has(entry));
+}
+
 export async function syncLitNote(
 	app: App,
 	settings: LitNoteWriterSettings,
@@ -191,11 +201,7 @@ export async function syncLitNote(
 	prompt: Prompt,
 	options: {
 		prepareOnly?: boolean;
-		collectionAdoption?: CollectionAdoptionState;
 		reconcileCollections?: boolean;
-		collectionReview?: boolean;
-		collectionOnly?: boolean;
-		persistCollectionAdoption?: (state: CollectionAdoptionState) => Promise<void>;
 		expectedContent?: string;
 		expectedIdenticalAttachments?: IdenticalAttachment[];
 		beforeApply?: () => Promise<void> | void;
@@ -353,112 +359,28 @@ export async function syncLitNote(
 			"Restore the info callout or update the note manually. Attachment links were not changed."
 		);
 	const generated = buildLitNoteFrontmatter(item, settings);
-	const collectionBaseline = Array.isArray(generated.zotero_collections)
-		? generated.zotero_collections.filter(
-				(collection): collection is string => typeof collection === "string"
-			)
-		: [];
-	const baselineMatchesNote =
-		options.collectionAdoption?.status === "managed" &&
-		sameCollectionMembership(fm.zotero_collections, options.collectionAdoption.baseline);
-	const collectionNeedsReview =
-		mode === "auto" &&
-		options.reconcileCollections &&
-		item.collections !== undefined &&
-		options.collectionAdoption?.status !== "obsidian" &&
-		(options.collectionAdoption?.status !== "managed" || !baselineMatchesNote);
-	let collectionDecision: NoteDecision | undefined;
-	if (collectionNeedsReview) {
-		const reason =
-			options.collectionAdoption?.status === "managed"
-				? "The note's zotero_collections value differs from its last accepted baseline."
-				: "This note has no accepted Zotero collections baseline.";
-		if (!options.collectionReview) {
-			return {
-				status: "pending-review",
-				citekey,
-				error: reason,
-				notePath: file.path,
-			};
-		}
-		collectionDecision = await prompt(
-			"Review Zotero collections",
-			`${reason}\n\nCurrent Obsidian value: ${value(fm.zotero_collections)}\nCurrent Zotero value: ${value(generated.zotero_collections)}\n\nChoose how to resolve collection management for this note.`,
-			[
-				{ label: "Apply Zotero", value: "apply-zotero-collections", cta: true },
-				{ label: "Keep Obsidian / stop managing", value: "keep-obsidian-collections" },
-				{ label: "Defer", value: "defer-collections" },
-			],
-			undefined,
-			identity,
-			"Review differing Zotero collections"
-		);
-		if (collectionDecision !== "apply-zotero-collections" &&
-			collectionDecision !== "keep-obsidian-collections") {
-			return {
-				status: "pending-review",
-				citekey,
-				error: reason,
-				notePath: file.path,
-			};
-		}
-	}
+	const missingZoteroTags = fm.zotero_tags === undefined;
+	const missingZoteroCollections = fm.zotero_collections === undefined;
+	const missingZoteroLists = missingZoteroTags || missingZoteroCollections;
 	const applyCollections =
 		item.collections !== undefined &&
-		(mode === "metadata" ||
-			(mode === "auto" && options.reconcileCollections &&
-				((options.collectionAdoption?.status === "managed" &&
-					baselineMatchesNote) ||
-					collectionDecision === "apply-zotero-collections")));
+		(mode === "metadata" || (mode === "auto" && options.reconcileCollections));
 	const collectionChanged =
-		applyCollections &&
-		(!sameCollectionMembership(fm.zotero_collections, generated.zotero_collections) ||
-			(generated.zotero_collections === undefined && fm.zotero_collections !== undefined));
-	const collectionStateToPersist: CollectionAdoptionState | undefined =
-		mode === "metadata" && item.collections !== undefined
-			? { status: "managed", baseline: collectionBaseline }
-			: collectionDecision === "keep-obsidian-collections"
-				? { status: "obsidian" }
-				: applyCollections
-					? { status: "managed", baseline: collectionBaseline }
-					: undefined;
-	if (!options.prepareOnly && collectionStateToPersist && !options.persistCollectionAdoption) {
-		return failure(
-			"Collection adoption storage is unavailable",
-			"Persistent collection adoption is unavailable; no collection metadata was adopted."
-		);
-	}
-	const writeCollections = () =>
+		applyCollections && !sameStringMembership(fm.zotero_collections, generated.zotero_collections);
+	const writeManagedLists = () =>
 		app.fileManager.processFrontMatter(file, (current: Record<string, unknown>) => {
-			for (const key of ["zotero_item_key", "zotero_library_uri", "zotero_collections"]) {
-				if (value(current[key]) !== (originalValues[key] ?? value(undefined))) throw new Error(`The note's ${key} changed; retry.`);
+			for (const key of ["zotero_item_key", "zotero_library_uri", "zotero_tags", "zotero_collections"]) {
+				if (value(current[key]) !== (originalValues[key] ?? value(undefined))) {
+					throw new Error("The note's " + key + " changed; retry.");
+				}
 			}
-			if (generated.zotero_collections === undefined) delete current.zotero_collections;
-			else current.zotero_collections = generated.zotero_collections;
+			if (collectionChanged) current.zotero_collections = generated.zotero_collections ?? [];
+			if (missingZoteroTags) current.zotero_tags = generated.zotero_tags ?? [];
+			if (missingZoteroCollections) {
+				current.zotero_collections =
+					item.collections === undefined ? [] : generated.zotero_collections ?? [];
+			}
 		});
-	if (options.collectionOnly && collectionDecision) {
-		if ((await app.vault.read(file)) !== content) {
-			return failure("Note changed during decision", "The note changed while the decision was pending; retry.");
-		}
-		if (options.prepareOnly) return { status: "prepared", citekey, snapshot: content, notePath: file.path, identicalAttachments: [] };
-		if (!collectionStateToPersist || !options.persistCollectionAdoption) {
-			return failure("Collection adoption storage is unavailable", "Persistent collection adoption is unavailable; no collection metadata was adopted.");
-		}
-		await options.beforeApply?.();
-		let noteUpdated = false;
-		try {
-			if ((await app.vault.read(file)) !== content) throw new Error("The note changed while the decision was pending; retry.");
-			if (collectionChanged) {
-				await writeCollections();
-				noteUpdated = true;
-			}
-			await options.persistCollectionAdoption(collectionStateToPersist);
-			return result(collectionDecision === "apply-zotero-collections" ? "updated" : "skipped");
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			return failure("Collection update could not be completed", noteUpdated ? `The note was changed, but the collection baseline was not saved: ${message}` : message);
-		}
-	}
 	const filenameMatchesZotero = file.path === target && !legacy && !reassociating;
 	if (
 		noteKey &&
@@ -467,7 +389,7 @@ export async function syncLitNote(
 		mode === "auto" &&
 		!item.zoteroChanges &&
 		!collectionChanged &&
-		collectionDecision === undefined
+		!missingZoteroLists
 	) {
 		if (options.prepareOnly) {
 			return {
@@ -833,7 +755,7 @@ export async function syncLitNote(
 				unmatchedZoteroLinks.length || repairedLinks.length
 					? managedHeader(relativeHeader, links, true)
 					: relativeHeader;
-			if (updatedHeader === oldHeader && !collectionChanged) return result("skipped");
+			if (updatedHeader === oldHeader && !collectionChanged && !missingZoteroLists) return result("skipped");
 			if (options.prepareOnly)
 				return {
 					status: "prepared",
@@ -855,25 +777,16 @@ export async function syncLitNote(
 		} catch (error) {
 			return automaticAttachmentError(error instanceof Error ? error.message : String(error));
 		}
-		if (collectionChanged) {
-			const attachmentsUpdated = updatedHeader !== oldHeader;
-			let noteUpdated = false;
+		if (collectionChanged || missingZoteroLists) {
 			try {
-				if (!collectionStateToPersist || !options.persistCollectionAdoption) {
-					throw new Error("Persistent collection adoption is unavailable; no collection metadata was adopted.");
-				}
-				await writeCollections();
-				noteUpdated = true;
-				await options.persistCollectionAdoption(collectionStateToPersist);
+				await writeManagedLists();
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return failure(
-					"Collection update could not be completed",
-					noteUpdated
-						? `The note was changed, but the collection baseline was not saved: ${message}`
-						: attachmentsUpdated
-							? `Attachment links were updated, but the collections were not: ${message}`
-							: message
+					"Zotero list properties could not be updated",
+					updatedHeader !== oldHeader
+						? "Attachment links were updated, but the Zotero list properties were not: " + message
+						: message
 				);
 			}
 		}
@@ -1268,7 +1181,7 @@ export async function syncLitNote(
 		!headerEdits.length &&
 		!keptLinks.length &&
 		relativeHeader === oldHeader &&
-		collectionDecision === undefined
+		!missingZoteroLists
 	)
 		return result("skipped");
 	if (
@@ -1285,7 +1198,7 @@ export async function syncLitNote(
 		!headerEdits.length &&
 		!keptLinks.length &&
 		!collectionChanged &&
-		collectionDecision === undefined
+		!missingZoteroLists
 	) {
 		if (relativeHeader === oldHeader) return result("skipped");
 		if (options.prepareOnly)
@@ -1348,7 +1261,12 @@ export async function syncLitNote(
 		}
 		changes.aliases = buildAliases(item.title, fm.aliases);
 	} else if (collectionChanged) {
-		changes.zotero_collections = generated.zotero_collections;
+		changes.zotero_collections = generated.zotero_collections ?? [];
+	}
+	if (missingZoteroTags) changes.zotero_tags = generated.zotero_tags ?? [];
+	if (missingZoteroCollections) {
+		changes.zotero_collections =
+			item.collections === undefined ? [] : generated.zotero_collections ?? [];
 	}
 	const descriptions = Object.entries(changes)
 		.filter(([key, next]) => value(fm[key]) !== value(next))
@@ -1359,19 +1277,6 @@ export async function syncLitNote(
 		);
 	if (mode === "metadata" && value(fm.aliases) !== value(changes.aliases)) {
 		descriptions.push("Links using an alias that is removed or changed may break.");
-	}
-	if (mode === "metadata" && item.collections !== undefined) {
-		if (!options.collectionAdoption) {
-			descriptions.push(
-				"Adopt the current Zotero collection membership for future synchronization."
-			);
-		} else if (options.collectionAdoption.status === "obsidian") {
-			descriptions.push("Re-enable Zotero collection management for this note.");
-		} else if (!baselineMatchesNote) {
-			descriptions.push(
-				"The note's Zotero collections were edited after the last accepted update; applying will replace them with Zotero's current membership."
-			);
-		}
 	}
 	if (file.path !== target)
 		descriptions.unshift(
@@ -1411,7 +1316,7 @@ export async function syncLitNote(
 		);
 	if (oldHeader !== newHeader && !removedSelected.length && !selectedAdditions.length)
 		descriptions.push("Update the note's managed attachment list.");
-	if (!descriptions.length && !item.zoteroChanges && collectionDecision === undefined) {
+	if (!descriptions.length && !item.zoteroChanges && !missingZoteroLists) {
 		return keptLinks.length
 			? {
 					...failure(
@@ -1505,34 +1410,7 @@ export async function syncLitNote(
 			identity,
 			bulkSummary
 		);
-		if (decision !== "create") return collectionDecision ? { status: "pending-review", citekey, error: "Collection changes remain unresolved.", notePath: file.path } : result("skipped");
-	}
-	if (!descriptions.length && collectionDecision !== undefined && !item.zoteroChanges) {
-		if (options.prepareOnly) {
-			if ((await app.vault.read(file)) !== content) {
-				return failure(
-					"Note changed during decision",
-					"The note changed while the decision was pending; retry.",
-					"Retry the update."
-				);
-			}
-			return {
-				status: "prepared",
-				citekey,
-				snapshot: content,
-				notePath: file.path,
-				identicalAttachments,
-			};
-		}
-		await options.beforeApply?.();
-		if ((await app.vault.read(file)) !== content) {
-			return failure("Note changed during decision", "The note changed while the decision was pending; retry.");
-		}
-		if (!collectionStateToPersist || !options.persistCollectionAdoption) {
-			return failure("Collection adoption storage is unavailable", "Persistent collection adoption is unavailable; no collection metadata was adopted.");
-		}
-		await options.persistCollectionAdoption(collectionStateToPersist);
-		return result(collectionDecision === "apply-zotero-collections" ? "updated" : "skipped");
+		if (decision !== "create") return result("skipped");
 	}
 	if (!descriptions.length) return result("skipped");
 
@@ -1603,9 +1481,6 @@ export async function syncLitNote(
 				else current[key] = next;
 			}
 		});
-		if (collectionStateToPersist) {
-			await options.persistCollectionAdoption?.(collectionStateToPersist);
-		}
 		if (file.path !== target) {
 			await app.fileManager.renameFile(file, target);
 			identity.notePath = file.path;

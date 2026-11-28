@@ -1,6 +1,5 @@
 import type { HeadlineMethod } from "./normalize/headlines";
 import type { NameStyle } from "./litNote/bibtexName";
-import type { CollectionAdoptions } from "./litNote/collectionAdoption";
 import { DEFAULT_TRANSCRIPT_HEADING } from "commons/youtube";
 import { DEFAULT_LIT_NOTES_FOLDER } from "./litNote/constants";
 
@@ -59,7 +58,6 @@ export interface PerplexitySaverSettings {
 	 */
 	autoRelinkSources: boolean;
 	litNoteLastViewed: Record<string, number>;
-	collectionAdoptions: CollectionAdoptions;
 	/**
 	 * When enabled, validates that author and creator names are in '<last_name>, <first_name>'
 	 * format before creating literature notes from Zotero items.
@@ -101,7 +99,6 @@ export const DEFAULT_SETTINGS: PerplexitySaverSettings = {
 	minTitleMatchScore: 95,
 	autoRelinkSources: false,
 	litNoteLastViewed: {},
-	collectionAdoptions: {},
 	validateAuthorNameFormat: false,
 	authorFormatStyle: "last-first",
 	authorDropVon: false,

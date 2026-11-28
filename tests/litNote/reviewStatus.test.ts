@@ -11,12 +11,12 @@ import type { App } from "obsidian";
 
 const state = vi.hoisted(() => ({
 	groups: [] as Array<{ kind: string; title: string; uri?: string; itemkey?: string }>,
-	select: undefined as ((group: unknown, choice?: "apply-zotero-collections" | "keep-obsidian-collections" | "defer-collections") => void) | undefined,
+	select: undefined as ((group: unknown) => void) | undefined,
 	selectItem: undefined as ((group: unknown, item: unknown) => void) | undefined,
 }));
 vi.mock("../../src/litNote/reviewOverviewModal", () => ({
 	ReviewOverviewModal: class {
-		constructor(_app: unknown, private select: (group: unknown, choice?: "apply-zotero-collections" | "keep-obsidian-collections" | "defer-collections") => void, selectItem: (group: unknown, item: unknown) => void, private dismiss: () => void) {
+		constructor(_app: unknown, private select: (group: unknown) => void, selectItem: (group: unknown, item: unknown) => void, private dismiss: () => void) {
 			state.selectItem = selectItem;
 		}
 		update(groups: typeof state.groups): void {
@@ -457,51 +457,7 @@ describe("review status", () => {
 		expect(createdNotices.at(-1)?.message).toContain("1 recheck failed");
 	});
 
-	it("groups collection conflicts with different baselines and requests one common choice", () => {
-		const { button } = setup();
-		const other = { ...item, itemkey: "OTHER", title: "Other" };
-		const first = { collectionReview: true as const, summary: "Missing baseline", title: "Review", message: "Obsidian: A; Zotero: B", buttons: [] };
-		const second = { ...first, summary: "Changed baseline", message: "Obsidian: C; Zotero: D" };
-		queueReview(item, "Missing", "lit/one.md", undefined, first);
-		queueReview(other, "Changed", "lit/two.md", undefined, second);
-		button.onclick?.();
-		const group = state.groups.find((entry) => entry.kind === "collection-review")!;
-		expect(state.groups.filter((entry) => entry.kind === "collection-review")).toHaveLength(1);
-		expect(group.title).toContain("(2)");
-		state.select?.(group, "defer-collections");
-		expect(requestedReviews()).toEqual([]);
-		state.select?.(group, "keep-obsidian-collections");
-		expect(askNoteDecision).not.toHaveBeenCalled();
-		expect(requestedReviews()).toMatchObject([
-			{ operation: "note-update", collectionChoice: "keep-obsidian-collections", proposal: first },
-			{ operation: "note-update", collectionChoice: "keep-obsidian-collections", proposal: second },
-		]);
-		queueReview(item, "Updated", "lit/one.md", undefined, { ...first, message: "new" });
-		expect(requestedReviews()[0]).toMatchObject({ collectionChoice: "keep-obsidian-collections", proposal: first });
-		finishNoteCorrection(reviewKey(item), "Stale");
-		expect(allReviews().find((entry) => entry.key === reviewKey(item))).toMatchObject({ collectionChoice: undefined, collectionReviewNeedsRefresh: true, proposal: first });
-		finishNoteCorrection(reviewKey(other));
-		const failed = allReviews().find((entry) => entry.key === reviewKey(item))!;
-		expect(() => requestNoteBatch("Collections", [{ key: failed.key, proposal: failed.proposal! }], "apply-zotero-collections")).toThrow();
-		queueReview(item, "Fresh", "lit/one.md", undefined, first);
-		requestNoteBatch("Collections", [{ key: failed.key, proposal: first }], "apply-zotero-collections");
-		expect(requestedReviews()[0].collectionChoice).toBe("apply-zotero-collections");
-		finishNoteCorrection(failed.key);
-	});
 
-	it("rejects missing, mixed, invalid and stale collection batch choices atomically", () => {
-		const other = { ...item, itemkey: "OTHER" };
-		const proposal = { collectionReview: true as const, summary: "Collections", title: "Review", message: "old", buttons: [] };
-		queueReview(item, "Review", undefined, undefined, proposal);
-		queueReview(other, "Review", undefined, undefined, { ...proposal, collectionReview: undefined });
-		const selected = allReviews().map((entry) => ({ key: entry.key, proposal: entry.proposal! }));
-		expect(() => requestNoteBatch("Collections", [selected[0]])).toThrow();
-		expect(() => requestNoteBatch("Collections", selected, "apply-zotero-collections")).toThrow();
-		expect(() => requestNoteBatch("Collections", [selected[0]], "defer-collections" as never)).toThrow();
-		queueReview(item, "Review", undefined, undefined, { ...proposal, message: "new" });
-		expect(() => requestNoteBatch("Collections", [selected[0]], "apply-zotero-collections")).toThrow();
-		expect(requestedReviews()).toEqual([]);
-	});
 
 	it("shows the actions in a bulk note review before asking for a backup", async () => {
 		const { button } = setup();

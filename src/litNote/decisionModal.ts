@@ -26,9 +26,6 @@ export type NoteDecision =
 	| "keep-link"
 	| "replace-link"
 	| "repair-attachments"
-	| "apply-zotero-collections"
-	| "keep-obsidian-collections"
-	| "defer-collections"
 	| `attachment:${number}`
 	| `review:${string}`
 	| "cancel";
